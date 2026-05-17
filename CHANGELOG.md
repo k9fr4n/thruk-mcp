@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-17
+
+### Added
+
+- Comprehensive test suite: **63 passing tests, 82 % coverage**
+  (was 15 tests, ~50 %).
+  - `tests/test_tools.py` covers the 29 MCP tools (URL / method /
+    key params for each), including a regression test for the v0.2
+    acknowledge payload-key bug.
+  - `tests/test_resources.py` covers the 5 MCP resources.
+  - `tests/test_prompts.py` covers the 3 MCP prompts.
+  - `tests/test_config.py` covers `ThrukConfig.from_env()`.
+  - `tests/test_run_background.py` covers the 302 \u2192 200 polling cycle
+    and the pass-through fallback.
+- `mypy` type-checking baseline (`warn_redundant_casts`,
+  `warn_unused_ignores`, `warn_unreachable`, `no_implicit_optional`,
+  `check_untyped_defs`). 0 errors on `src/`.
+- `ruff format` integrated alongside `ruff check`.
+- `.pre-commit-config.yaml` (ruff + ruff-format + mypy + standard
+  pre-commit hooks).
+- Coverage gate in CI: `pytest --cov-fail-under=80`.
+- Codecov upload on Python 3.12 CI matrix entry.
+- `[tool.coverage.*]` configuration with branch coverage and sensible
+  excludes. `integration` pytest marker registered for future live
+  tests.
+
+### Changed
+
+- **API cleanup** (small breaking change): `thruk_query` and
+  `thruk_run_background_query` arguments are now `params: dict` and
+  `data: dict` instead of `params_json: str` / `data_json: str`. The
+  previous JSON-string parameters were impossible to call through
+  FastMCP because pydantic auto-decodes JSON-looking strings before
+  reaching the function. Migration: pass a dict literal instead of a
+  JSON string.
+
 ## [0.3.0] - 2026-05-17
 
 ### Added
@@ -96,7 +132,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GitHub Actions CI (ruff + pytest matrix on 3.10/3.11/3.12 + Docker
   build) and release workflow (multi-arch image with provenance + SBOM).
 
-[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/k9fr4n/thruk-mcp/releases/tag/v0.1.0
