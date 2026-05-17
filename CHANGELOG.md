@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-17
+
+### Added
+
+- **Security & multi-tenant knobs**:
+  - `THRUK_READ_ONLY=true` strips every write tool from the server
+    (acknowledge, schedule_*_downtime, recheck, delete_*,
+    run_background_query). Read tools remain available.
+  - `THRUK_ENABLED_TOOLS=thruk_list_*,thruk_problems` restricts the
+    exposed tool surface via fnmatch wildcards. Empty = no filter.
+  - `THRUK_AUDIT_LOG=true` (default) emits one JSON line per write
+    tool invocation on the `thruk_mcp.audit` logger (stderr). Sensitive
+    keys (`api_key`, `password`, `token`) redacted as `***`. Payload:
+    `ts`, `tool`, `user`, `args`, `target`, `status`, `error`.
+  - `THRUK_MAX_CONCURRENT=N` caps in-flight HTTP requests with an
+    `asyncio.Semaphore` to protect the Thruk core from a looping LLM.
+- New module `src/thruk_mcp/audit.py`: `configure()`, `audited()`
+  decorator, `_redact()` helper.
+- 9 new security tests; coverage now **84.02 %** (was 82.10 %).
+- Codecov badge, Python versions badge and ghcr.io badge in README.
+- `catalog/server.yaml` declares the 4 new env vars in `config.env`
+  and `config.parameters` so the Docker MCP Toolkit UI renders them.
+- Strict Codecov upload in CI (`fail_ci_if_error: true`, scoped token,
+  `flags: unittests`).
+
+### Fixed
+
+- README and CHANGELOG: 6 literal `\u2014` / `\u2192` escape sequences
+  left over from earlier heredoc commits replaced with real Unicode
+  characters (em-dash, right-arrow).
+
 ## [0.4.0] - 2026-05-17
 
 ### Added
@@ -132,7 +163,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GitHub Actions CI (ruff + pytest matrix on 3.10/3.11/3.12 + Docker
   build) and release workflow (multi-arch image with provenance + SBOM).
 
-[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.1.0...v0.2.0
