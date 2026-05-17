@@ -37,9 +37,7 @@ async def test_backends_prefix_added() -> None:
 @pytest.mark.asyncio
 async def test_http_error_raises_thruk_error() -> None:
     async with respx.mock() as router:
-        router.get("https://thruk.test/r/hosts").mock(
-            return_value=httpx.Response(500, text="boom")
-        )
+        router.get("https://thruk.test/r/hosts").mock(return_value=httpx.Response(500, text="boom"))
         async with ThrukClient(CFG) as client:
             with pytest.raises(ThrukError):
                 await client.get("/hosts")
