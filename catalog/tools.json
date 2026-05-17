@@ -16,6 +16,7 @@
   { "name": "thruk_list_notifications",               "description": "List notification log entries (class=3), optionally filtered by contact." },
   { "name": "thruk_recent_events",                    "description": "Most recent monitoring events from the last N hours." },
   { "name": "thruk_query",                            "description": "Escape hatch: call any Thruk REST endpoint with method, params, body." },
+  { "name": "thruk_run_background_query",             "description": "Run a long-running Thruk REST request via background=1 and poll the job until completion." },
   { "name": "thruk_schedule_downtime",                "description": "Schedule a downtime on a host or service." },
   { "name": "thruk_schedule_host_services_downtime",  "description": "Schedule a downtime on ALL services of a given host." },
   { "name": "thruk_schedule_propagated_host_downtime","description": "Schedule a host downtime and propagate it to all child hosts (optionally triggered)." },

@@ -94,27 +94,80 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 `catalog/server.yaml`, `catalog/tools.json` and `catalog/readme.md` follow the [docker/mcp-registry](https://github.com/docker/mcp-registry) schema and can be submitted to the official Docker MCP Catalog via PR.
 
-## Tools
+## What's exposed
 
-| Tool                          | Purpose                                            |
-| ----------------------------- | -------------------------------------------------- |
-| `thruk_list_hosts`            | List/filter hosts                                  |
-| `thruk_get_host`              | Detail of a single host                            |
-| `thruk_list_services`         | List/filter services                               |
-| `thruk_get_service`           | Detail of a single service                         |
-| `thruk_list_hostgroups`       | List host groups                                   |
-| `thruk_list_servicegroups`    | List service groups                                |
-| `thruk_problems`              | Current unhandled host & service problems          |
-| `thruk_stats`                 | Aggregated host/service stats                      |
-| `thruk_list_downtimes`        | Active or all scheduled downtimes                  |
-| `thruk_list_comments`         | Comments (incl. ack flags)                         |
-| `thruk_sites`                 | List configured Thruk backends                     |
-| `thruk_schedule_downtime`     | Schedule downtime on host or service               |
-| `thruk_delete_downtime`       | Delete a downtime by id                            |
-| `thruk_acknowledge`           | Acknowledge a problem                              |
-| `thruk_remove_acknowledgement`| Remove an acknowledgement                          |
-| `thruk_recheck`               | Schedule an immediate (forced) check               |
-| `thruk_query`                 | Raw call to any Thruk REST endpoint                |
+### 29 MCP Tools
+
+**Read — state**
+`thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
+`thruk_list_hostgroups`, `thruk_list_servicegroups`, `thruk_problems`, `thruk_stats`,
+`thruk_sites`.
+
+**Read — history & comments**
+`thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`, `thruk_recent_events`,
+`thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`.
+
+**Write — downtime management**
+`thruk_schedule_downtime` (host/service), `thruk_schedule_host_services_downtime`
+(all services of a host), `thruk_schedule_propagated_host_downtime` (parent+children),
+`thruk_schedule_hostgroup_downtime`, `thruk_schedule_servicegroup_downtime`,
+`thruk_delete_downtime`, `thruk_delete_active_downtimes`,
+`thruk_delete_downtimes_by_filter`.
+
+**Write — problem handling**
+`thruk_acknowledge`, `thruk_remove_acknowledgement`, `thruk_recheck`.
+
+**Escape hatches**
+`thruk_query` (raw call to any REST endpoint), `thruk_run_background_query`
+(long-running endpoint via Thruk's `?background=1` mechanism with automatic
+job polling).
+
+> All list-style tools share a consistent `limit` / `offset` / `sort` / `columns`
+> contract. By default they return a tight subset of columns (~10 fields per row)
+> to keep LLM token consumption low. Pass `columns=""` to opt out and receive
+> every column the Thruk row contains.
+
+### 5 MCP Resources
+
+URI templates that MCP clients with a resource browser (Claude Desktop, VS
+Code, ...) can "open" like files:
+
+| URI | Content |
+| --- | --- |
+| `thruk://hosts/{name}` | Full host JSON |
+| `thruk://services/{host}/{service}` | Full service JSON |
+| `thruk://hostgroups/{name}` | Host group config + members |
+| `thruk://problems` | Current unhandled problems (hosts + services) |
+| `thruk://stats` | Aggregated host/service stats (cached) |
+
+### 3 MCP Prompts
+
+Pre-canned workflows the user can invoke as a slash-command in the MCP
+client UI:
+
+| Prompt | Arguments | Purpose |
+| --- | --- | --- |
+| `investigate_alert` | `host`, optional `service` | 7-step incident triage |
+| `schedule_maintenance` | `target`, `duration_minutes`, `kind` | Safe downtime workflow with confirmation |
+| `diagnose_flapping` | `host`, `service` | Root-cause a flapping service |
+
+## Robustness
+
+- **Connection retries** \u2014 `httpx.AsyncHTTPTransport(retries=3)` handles DNS
+  failures, connection refusals, TLS handshakes.
+- **HTTP retries with backoff** \u2014 5xx and 429 responses are retried up to
+  3 times with exponential backoff + jitter (cap 5 s).
+- **Opt-in TTL cache** \u2014 slow-moving endpoints (`/sites`, `/processinfo`,
+  `/hosts/stats`, `/services/stats`, `/contacts`, `/timeperiods`, ...) are
+  cached in-process for 15 s. Any tool can request caching via
+  `cache_ttl=` on the underlying client. This absorbs the burst of identical
+  calls an LLM agent typically issues across a multi-tool turn.
+- **Pagination helper** \u2014 `ThrukClient.get_all()` is an async generator that
+  iterates pages of 500 rows up to a configurable hard limit (default 50 000),
+  so internal callers can scan entire backends without manual offset math.
+- **Long-running queries** \u2014 the `thruk_run_background_query` tool wraps
+  Thruk's `?background=1` flow and polls `/thruk/jobs/<id>/output` until the
+  job completes (5 min default timeout).
 
 ## Environment variables
 
