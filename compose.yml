@@ -1,0 +1,9 @@
+services:
+  thruk-mcp:
+    build: .
+    image: ghcr.io/k9fr4n/thruk-mcp:dev
+    container_name: thruk-mcp
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8001:8001"
