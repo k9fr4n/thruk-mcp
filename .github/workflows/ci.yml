@@ -6,10 +6,12 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
 jobs:
   lint-test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12"]
     steps:
@@ -20,7 +22,16 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
-      - run: pytest -v
+      - run: ruff format --check src tests
+      - run: mypy src
+      - name: pytest with coverage
+        run: pytest -v --cov=thruk_mcp --cov-report=term --cov-report=xml --cov-fail-under=80
+      - name: Upload coverage to Codecov
+        if: matrix.python == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
 
   docker:
     needs: lint-test

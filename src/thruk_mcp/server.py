@@ -1,4 +1,5 @@
 """MCP server definition: tools mapped to Thruk REST endpoints."""
+
 from __future__ import annotations
 
 import json
@@ -306,8 +307,19 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first.
         Pagination via `limit`/`offset`. Default columns are a tight subset;
         pass `columns=''` for all columns."""
-        data = await _fetch_logs("/logs", host, service, since, until,
-                                 message_regex, limit, offset, sort, columns, backends)
+        data = await _fetch_logs(
+            "/logs",
+            host,
+            service,
+            since,
+            until,
+            message_regex,
+            limit,
+            offset,
+            sort,
+            columns,
+            backends,
+        )
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -334,8 +346,20 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
                 extra["state"] = HOST_STATE_MAP[s]
             elif s in SVC_STATE_MAP:
                 extra["state"] = SVC_STATE_MAP[s]
-        data = await _fetch_logs("/alerts", host, service, since, until,
-                                 None, limit, offset, sort, columns, backends, extra=extra)
+        data = await _fetch_logs(
+            "/alerts",
+            host,
+            service,
+            since,
+            until,
+            None,
+            limit,
+            offset,
+            sort,
+            columns,
+            backends,
+            extra=extra,
+        )
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -357,8 +381,20 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         extra: dict[str, Any] = {}
         if contact:
             extra["contact_name"] = contact
-        data = await _fetch_logs("/notifications", host, service, since, until,
-                                 None, limit, offset, sort, columns, backends, extra=extra)
+        data = await _fetch_logs(
+            "/notifications",
+            host,
+            service,
+            since,
+            until,
+            None,
+            limit,
+            offset,
+            sort,
+            columns,
+            backends,
+            extra=extra,
+        )
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -376,25 +412,28 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         (default 1h). Defaults to all log classes; set `only_alerts=True` to
         restrict to HOST/SERVICE ALERT entries."""
         path = "/alerts" if only_alerts else "/logs"
-        data = await _fetch_logs(path, host, service, f"-{hours}h", None,
-                                 None, limit, offset, "-time", columns, backends)
+        data = await _fetch_logs(
+            path, host, service, f"-{hours}h", None, None, limit, offset, "-time", columns, backends
+        )
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
     async def thruk_query(
         path: str,
         method: str = "GET",
-        params_json: str | None = None,
-        data_json: str | None = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         backends: str | None = None,
     ) -> str:
         """Escape hatch: call any Thruk REST endpoint. `path` is everything after `/thruk/r`
-        (e.g. `/hosts/srv01/services`). Use `params_json` for query string, `data_json` for body.
+        (e.g. `/hosts/srv01/services`). `params` is the query string, `data` the form body.
         See https://www.thruk.org/documentation/rest.html for the full catalogue."""
-        params = json.loads(params_json) if params_json else None
-        data = json.loads(data_json) if data_json else None
         result = await client.request(
-            method.upper(), path, params=params, data=data, backends=_backends(backends),
+            method.upper(),
+            path,
+            params=params,
+            data=data,
+            backends=_backends(backends),
         )
         return json.dumps(result, indent=2, default=str)
 
@@ -402,8 +441,8 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
     async def thruk_run_background_query(
         path: str,
         method: str = "POST",
-        params_json: str | None = None,
-        data_json: str | None = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
         backends: str | None = None,
         poll_timeout: float = 300.0,
     ) -> str:
@@ -414,11 +453,13 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         Use this for expensive queries: full config dumps, large availability
         reports, recursive config checks. Same `path` semantics as
         `thruk_query`."""
-        params = json.loads(params_json) if params_json else None
-        data = json.loads(data_json) if data_json else None
         result = await client.run_background(
-            path, method=method.upper(), params=params, data=data,
-            backends=_backends(backends), poll_timeout=poll_timeout,
+            path,
+            method=method.upper(),
+            params=params,
+            data=data,
+            backends=_backends(backends),
+            poll_timeout=poll_timeout,
         )
         return json.dumps(result, indent=2, default=str)
 
@@ -446,10 +487,20 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
     @mcp.resource("thruk://problems")
     async def problems_resource() -> str:
         """Current unhandled host/service problems as a JSON document."""
-        host_params = {"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
-                       "columns": DEFAULT_HOST_COLUMNS, "limit": 500}
-        svc_params = {"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
-                      "columns": DEFAULT_SERVICE_COLUMNS, "limit": 500}
+        host_params = {
+            "state": 1,
+            "acknowledged": 0,
+            "scheduled_downtime_depth": 0,
+            "columns": DEFAULT_HOST_COLUMNS,
+            "limit": 500,
+        }
+        svc_params = {
+            "state[gte]": 1,
+            "acknowledged": 0,
+            "scheduled_downtime_depth": 0,
+            "columns": DEFAULT_SERVICE_COLUMNS,
+            "limit": 500,
+        }
         hosts = await client.get("/hosts", params=host_params)
         services = await client.get("/services", params=svc_params)
         return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
@@ -468,21 +519,23 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
     @mcp.prompt(
         title="Investigate alert",
         description="Walk through a host/service alert: state, recent logs, "
-                    "notifications, and suggested next steps.",
+        "notifications, and suggested next steps.",
     )
     def investigate_alert(host: str, service: str | None = None) -> str:
         target = f"host '{host}'" if not service else f"service '{service}' on host '{host}'"
-        steps = "\n".join([
-            f"1. Fetch the current state of {target} using `thruk_get_host`"
-            + ("/`thruk_get_service`" if service else ""),
-            "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
-            "3. Check notifications sent via `thruk_list_notifications`",
-            "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
-            "5. Verify there is no active downtime via `thruk_list_downtimes`",
-            "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
-            "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
-            "and/or trigger a forced recheck with `thruk_recheck`.",
-        ])
+        steps = "\n".join(
+            [
+                f"1. Fetch the current state of {target} using `thruk_get_host`"
+                + ("/`thruk_get_service`" if service else ""),
+                "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
+                "3. Check notifications sent via `thruk_list_notifications`",
+                "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
+                "5. Verify there is no active downtime via `thruk_list_downtimes`",
+                "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
+                "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
+                "and/or trigger a forced recheck with `thruk_recheck`.",
+            ]
+        )
         return (
             f"You are the on-call SRE assistant. The user wants to investigate the "
             f"current alert on {target}. Proceed methodically:\n\n{steps}\n\n"
@@ -523,7 +576,7 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
     @mcp.prompt(
         title="Why is service flapping?",
         description="Diagnose a flapping service: state-change history, recent logs, "
-                    "perf-data trends, and recommendations.",
+        "perf-data trends, and recommendations.",
     )
     def diagnose_flapping(host: str, service: str) -> str:
         return (
@@ -575,7 +628,8 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         }
         return json.dumps(
             await client.post(endpoint, data=payload, backends=_backends(backends)),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
@@ -604,12 +658,14 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         }
         return json.dumps(
             await client.post(endpoint, data=payload, backends=_backends(backends)),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
-    async def thruk_remove_acknowledgement(host: str, service: str | None = None,
-                                            backends: str | None = None) -> str:
+    async def thruk_remove_acknowledgement(
+        host: str, service: str | None = None, backends: str | None = None
+    ) -> str:
         """Remove an acknowledgement."""
         endpoint = (
             f"/services/{host}/{service}/cmd/remove_svc_acknowledgement"
@@ -618,12 +674,14 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         )
         return json.dumps(
             await client.post(endpoint, backends=_backends(backends)),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
-    async def thruk_recheck(host: str, service: str | None = None,
-                             forced: bool = True, backends: str | None = None) -> str:
+    async def thruk_recheck(
+        host: str, service: str | None = None, forced: bool = True, backends: str | None = None
+    ) -> str:
         """Schedule an immediate (re)check for a host or service."""
         if service:
             cmd = "schedule_forced_svc_check" if forced else "schedule_svc_check"
@@ -633,13 +691,14 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             endpoint = f"/hosts/{host}/cmd/{cmd}"
         return json.dumps(
             await client.post(endpoint, data={"start_time": "now"}, backends=_backends(backends)),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
-    async def thruk_delete_downtime(downtime_id: int, host: str,
-                                     service: str | None = None,
-                                     backends: str | None = None) -> str:
+    async def thruk_delete_downtime(
+        downtime_id: int, host: str, service: str | None = None, backends: str | None = None
+    ) -> str:
         """Delete a host or service downtime by its id."""
         endpoint = (
             f"/services/{host}/{service}/cmd/del_downtime"
@@ -647,15 +706,22 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             else f"/hosts/{host}/cmd/del_downtime"
         )
         return json.dumps(
-            await client.post(endpoint, data={"downtime_id": str(downtime_id)},
-                              backends=_backends(backends)),
-            indent=2, default=str,
+            await client.post(
+                endpoint, data={"downtime_id": str(downtime_id)}, backends=_backends(backends)
+            ),
+            indent=2,
+            default=str,
         )
 
     # ----------------------------------------------------- Downtime mgmt
     def _downtime_payload(
-        comment: str, author: str, start_time: str, end_time: str,
-        duration_minutes: int | None, fixed: bool, triggered_by: int,
+        comment: str,
+        author: str,
+        start_time: str,
+        end_time: str,
+        duration_minutes: int | None,
+        fixed: bool,
+        triggered_by: int,
     ) -> dict[str, str]:
         if duration_minutes:
             end_time = f"+{duration_minutes}m"
@@ -688,14 +754,17 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         """Schedule a downtime on ALL services of the given host
         (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host
         itself or for one specific service."""
-        payload = _downtime_payload(comment, author, start_time, end_time,
-                                    duration_minutes, fixed, 0)
+        payload = _downtime_payload(
+            comment, author, start_time, end_time, duration_minutes, fixed, 0
+        )
         return json.dumps(
             await client.post(
                 f"/hosts/{host}/cmd/schedule_host_svc_downtime",
-                data=payload, backends=_backends(backends),
+                data=payload,
+                backends=_backends(backends),
             ),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
@@ -719,13 +788,17 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             if triggered
             else "schedule_and_propagate_host_downtime"
         )
-        payload = _downtime_payload(comment, author, start_time, end_time,
-                                    duration_minutes, fixed, 0)
+        payload = _downtime_payload(
+            comment, author, start_time, end_time, duration_minutes, fixed, 0
+        )
         return json.dumps(
             await client.post(
-                f"/hosts/{host}/cmd/{cmd}", data=payload, backends=_backends(backends),
+                f"/hosts/{host}/cmd/{cmd}",
+                data=payload,
+                backends=_backends(backends),
             ),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
@@ -747,14 +820,17 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             if target == "services"
             else "schedule_hostgroup_host_downtime"
         )
-        payload = _downtime_payload(comment, author, start_time, end_time,
-                                    duration_minutes, fixed, 0)
+        payload = _downtime_payload(
+            comment, author, start_time, end_time, duration_minutes, fixed, 0
+        )
         return json.dumps(
             await client.post(
                 f"/hostgroups/{hostgroup}/cmd/{cmd}",
-                data=payload, backends=_backends(backends),
+                data=payload,
+                backends=_backends(backends),
             ),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
@@ -777,19 +853,24 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             if target == "hosts"
             else "schedule_servicegroup_svc_downtime"
         )
-        payload = _downtime_payload(comment, author, start_time, end_time,
-                                    duration_minutes, fixed, 0)
+        payload = _downtime_payload(
+            comment, author, start_time, end_time, duration_minutes, fixed, 0
+        )
         return json.dumps(
             await client.post(
                 f"/servicegroups/{servicegroup}/cmd/{cmd}",
-                data=payload, backends=_backends(backends),
+                data=payload,
+                backends=_backends(backends),
             ),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
     async def thruk_delete_active_downtimes(
-        host: str, service: str | None = None, backends: str | None = None,
+        host: str,
+        service: str | None = None,
+        backends: str | None = None,
     ) -> str:
         """Remove ALL currently active downtimes for a host (or one specific
         service when `service` is given). No need to know individual ids."""
@@ -800,7 +881,8 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         )
         return json.dumps(
             await client.post(endpoint, backends=_backends(backends)),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     @mcp.tool()
@@ -839,9 +921,12 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             cmd = "del_downtime_by_start_time_comment"
         return json.dumps(
             await client.post(
-                f"/system/cmd/{cmd}", data=payload, backends=_backends(backends),
+                f"/system/cmd/{cmd}",
+                data=payload,
+                backends=_backends(backends),
             ),
-            indent=2, default=str,
+            indent=2,
+            default=str,
         )
 
     # store for graceful shutdown if caller wants it

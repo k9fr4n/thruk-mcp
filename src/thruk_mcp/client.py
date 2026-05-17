@@ -1,4 +1,5 @@
 """Async HTTP client for the Thruk REST API."""
+
 from __future__ import annotations
 
 import asyncio
@@ -108,10 +109,7 @@ class ThrukClient:
     ) -> Any:
         url = self._url(path, backends=backends)
         cache_key: tuple[Any, ...] | None = None
-        cacheable = (
-            method.upper() == "GET"
-            and (cache_ttl is not None or path in CACHEABLE_PATHS)
-        )
+        cacheable = method.upper() == "GET" and (cache_ttl is not None or path in CACHEABLE_PATHS)
         if cacheable:
             cache_key = (url, tuple(sorted((params or {}).items())))
             cached = await self.cache.get(cache_key)
@@ -233,15 +231,12 @@ class ThrukClient:
             resp = await self._client.get(full_url, follow_redirects=False)
             if resp.status_code in (301, 302, 303, 307, 308):
                 if asyncio.get_event_loop().time() >= deadline:
-                    raise ThrukError(
-                        f"Thruk job {job_id} did not complete in {poll_timeout}s"
-                    )
+                    raise ThrukError(f"Thruk job {job_id} did not complete in {poll_timeout}s")
                 await asyncio.sleep(poll_interval)
                 continue
             if resp.status_code >= 400:
                 raise ThrukError(
-                    f"Thruk job {job_id} failed: HTTP {resp.status_code}: "
-                    f"{resp.text[:500]}"
+                    f"Thruk job {job_id} failed: HTTP {resp.status_code}: {resp.text[:500]}"
                 )
             if not resp.content:
                 return None

@@ -184,9 +184,22 @@ client UI:
 
 ```bash
 pip install -e ".[dev]"
-ruff check src tests
-pytest -v
+pre-commit install                              # one-time setup of git hooks
+
+ruff check src tests && ruff format src tests   # lint + format
+mypy src                                        # type-check
+pytest -v --cov=thruk_mcp --cov-fail-under=80   # tests with coverage gate
 ```
+
+Conventions:
+
+- Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
+  `test:`).
+- No direct push to `main`: branch \u2192 PR \u2192 squash merge.
+- Any new tool must come with a `respx`-mocked unit test in `tests/test_tools.py`
+  and an entry in `catalog/tools.json` (Docker MCP Registry contract).
+- CI gate: `ruff`, `ruff format --check`, `mypy`, `pytest` with **80 %
+  coverage minimum**.
 
 ## References
 

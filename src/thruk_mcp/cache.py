@@ -5,6 +5,7 @@ identical calls an LLM agent typically issues (e.g. /sites, /hosts/stats called
 from 5 different tools in one turn). Not a replacement for a real cache like
 Redis — process-local, no eviction beyond TTL, no size cap.
 """
+
 from __future__ import annotations
 
 import asyncio
