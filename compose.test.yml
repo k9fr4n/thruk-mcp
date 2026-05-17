@@ -1,0 +1,23 @@
+# Spins up a real Thruk-on-Naemon demo instance for end-to-end testing.
+# Used by the nightly integration workflow and by maintainers locally:
+#
+#   docker compose -f compose.test.yml up -d
+#   # wait ~30s for OMD to bootstrap
+#   THRUK_BASE_URL=http://localhost:8080/demo \
+#       THRUK_API_KEY=$(./scripts/get-test-api-key.sh) \
+#       pytest -m integration
+services:
+  omd:
+    image: consol/omd-labs-debian:edge
+    container_name: thruk-mcp-omd
+    hostname: omd
+    ports:
+      - "8080:80"
+    environment:
+      - OMD_SITE=demo
+      - OMD_ROOT_PASSWORD=omd
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/demo/thruk/r/processinfo", "-H", "X-Thruk-Auth-Key: $OMD_API_KEY"]
+      interval: 10s
+      timeout: 5s
+      retries: 30

@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-17
+
+First stable release. The API surface (29 tools, 5 resources, 3 prompts,
+14 env vars) is now committed to semantic versioning: future MAJOR bumps
+will be announced and documented ahead of time.
+
+### Added
+
+- `SUPPORT.md`: explicit Python / Thruk / MCP-client support matrix,
+  security reporting channel, release cadence.
+- `CONTRIBUTING.md`: development setup, PR conventions, tool/env-var
+  contribution checklists, release process for maintainers.
+- `UPGRADING.md`: per-MINOR migration notes covering 0.2.0 \u2192 1.0.0.
+- `.github/workflows/pypi.yml`: PyPI publish via trusted OIDC publisher
+  on every published GitHub release (no token required once the pending
+  publisher is configured on pypi.org).
+- `.github/workflows/integration.yml`: nightly live-Thruk integration
+  workflow that boots an OMD demo container, generates an API key, and
+  runs `pytest -m integration` against it. `continue-on-error: true`
+  for now so the badge stays green while the upstream demo image is in
+  flux.
+- `compose.test.yml`: docker-compose definition for the OMD demo
+  Thruk used by the integration workflow and by local maintainers.
+- `scripts/get-test-api-key.sh`: helper to mint a superuser API key
+  inside the running OMD container.
+- `tests/integration/test_live.py`: three smoke tests
+  (`/processinfo`, `/hosts`, `/hosts/stats`) gated on
+  `pytest.mark.integration` and skipped by default unless
+  `THRUK_API_KEY` is set.
+
+### Changed
+
+- `pytest` default invocation now passes `-m 'not integration'` so the
+  standard `pytest` command stays fast and offline; the integration
+  workflow overrides with `-m integration`.
+
 ## [0.5.0] - 2026-05-17
 
 ### Added
@@ -163,7 +199,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GitHub Actions CI (ruff + pytest matrix on 3.10/3.11/3.12 + Docker
   build) and release workflow (multi-arch image with provenance + SBOM).
 
-[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.2.0...v0.3.0

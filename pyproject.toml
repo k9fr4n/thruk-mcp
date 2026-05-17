@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "thruk-mcp"
-version = "0.5.0"
+version = "1.0.0"
 description = "Model Context Protocol (MCP) server exposing the Thruk monitoring REST API (Naemon / Nagios / Icinga / Shinken)."
 readme = "README.md"
 license = { text = "MIT" }
@@ -55,9 +55,12 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Skip the live-Thruk integration suite by default. The integration workflow
+# overrides this with `-m integration`.
+addopts = "-m 'not integration'"
 asyncio_mode = "auto"
 markers = [
-  "integration: live integration tests requiring a running Thruk (deselect with '-m \"not integration\"')",
+  "integration: live integration tests requiring a running Thruk (run with '-m integration')",
 ]
 
 [tool.coverage.run]
