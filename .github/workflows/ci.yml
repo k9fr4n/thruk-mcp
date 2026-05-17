@@ -30,8 +30,11 @@ jobs:
         if: matrix.python == '3.12'
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
-          fail_ci_if_error: false
+          flags: unittests
+          name: thruk-mcp-py3.12
+          fail_ci_if_error: true
 
   docker:
     needs: lint-test
