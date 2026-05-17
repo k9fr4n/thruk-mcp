@@ -49,6 +49,18 @@ config:
     - name: THRUK_DEFAULT_BACKENDS
       example: "prod,dr"
       value: '{{thruk-mcp.default_backends}}'
+    - name: THRUK_READ_ONLY
+      example: "false"
+      value: '{{thruk-mcp.read_only}}'
+    - name: THRUK_ENABLED_TOOLS
+      example: "thruk_list_*,thruk_problems,thruk_stats"
+      value: '{{thruk-mcp.enabled_tools}}'
+    - name: THRUK_AUDIT_LOG
+      example: "true"
+      value: '{{thruk-mcp.audit_log}}'
+    - name: THRUK_MAX_CONCURRENT
+      example: "8"
+      value: '{{thruk-mcp.max_concurrent}}'
   parameters:
     type: object
     properties:
@@ -65,6 +77,21 @@ config:
       default_backends:
         type: string
         description: Comma-separated default Thruk backend names (federated sites). Empty = all.
+      read_only:
+        type: string
+        description: "Set 'true' to disable every write tool (ack, downtime, recheck, ...)."
+        default: "false"
+      enabled_tools:
+        type: string
+        description: Comma-separated allowlist of tool names (fnmatch wildcards accepted). Empty = all.
+      audit_log:
+        type: string
+        description: Emit one JSON audit line per write tool invocation on stderr.
+        default: "true"
+      max_concurrent:
+        type: string
+        description: Cap of concurrent in-flight HTTP requests to Thruk. 0 = unlimited.
+        default: "0"
     required:
       - base_url
 run:

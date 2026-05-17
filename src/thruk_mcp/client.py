@@ -66,6 +66,9 @@ class ThrukClient:
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.backoff_cap = backoff_cap
+        self._sem: asyncio.Semaphore | None = (
+            asyncio.Semaphore(config.max_concurrent) if config.max_concurrent > 0 else None
+        )
         self._client = client or httpx.AsyncClient(
             transport=httpx.AsyncHTTPTransport(retries=max_retries),
             verify=config.verify_ssl,
@@ -121,7 +124,11 @@ class ThrukClient:
         for attempt in range(self.max_retries + 1):
             try:
                 log.info("Thruk %s %s (try %d)", method, url, attempt + 1)
-                resp = await self._client.request(method, url, params=params, data=data)
+                if self._sem is not None:
+                    async with self._sem:
+                        resp = await self._client.request(method, url, params=params, data=data)
+                else:
+                    resp = await self._client.request(method, url, params=params, data=data)
             except httpx.RequestError as exc:
                 last_exc = exc
                 if attempt < self.max_retries:
