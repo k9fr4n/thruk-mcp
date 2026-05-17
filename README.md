@@ -1,7 +1,10 @@
 # thruk-mcp
 
 [![CI](https://github.com/k9fr4n/thruk-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/k9fr4n/thruk-mcp/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/k9fr4n/thruk-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/k9fr4n/thruk-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/k9fr4n/thruk-mcp)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-k9fr4n%2Fthruk--mcp-blue)](https://github.com/k9fr4n/thruk-mcp/pkgs/container/thruk-mcp)
 
 **Model Context Protocol (MCP) server for [Thruk](https://www.thruk.org/)** — the unified web frontend for [Naemon](https://naemon.io), Nagios, [Icinga](https://icinga.com/) and [Shinken](http://www.shinken-monitoring.org/).
 
@@ -153,23 +156,25 @@ client UI:
 
 ## Robustness
 
-- **Connection retries** \u2014 `httpx.AsyncHTTPTransport(retries=3)` handles DNS
+- **Connection retries** — `httpx.AsyncHTTPTransport(retries=3)` handles DNS
   failures, connection refusals, TLS handshakes.
-- **HTTP retries with backoff** \u2014 5xx and 429 responses are retried up to
+- **HTTP retries with backoff** — 5xx and 429 responses are retried up to
   3 times with exponential backoff + jitter (cap 5 s).
-- **Opt-in TTL cache** \u2014 slow-moving endpoints (`/sites`, `/processinfo`,
+- **Opt-in TTL cache** — slow-moving endpoints (`/sites`, `/processinfo`,
   `/hosts/stats`, `/services/stats`, `/contacts`, `/timeperiods`, ...) are
   cached in-process for 15 s. Any tool can request caching via
   `cache_ttl=` on the underlying client. This absorbs the burst of identical
   calls an LLM agent typically issues across a multi-tool turn.
-- **Pagination helper** \u2014 `ThrukClient.get_all()` is an async generator that
+- **Pagination helper** — `ThrukClient.get_all()` is an async generator that
   iterates pages of 500 rows up to a configurable hard limit (default 50 000),
   so internal callers can scan entire backends without manual offset math.
-- **Long-running queries** \u2014 the `thruk_run_background_query` tool wraps
+- **Long-running queries** — the `thruk_run_background_query` tool wraps
   Thruk's `?background=1` flow and polls `/thruk/jobs/<id>/output` until the
   job completes (5 min default timeout).
 
 ## Environment variables
+
+### Connection
 
 | Variable                  | Default                  | Description                                              |
 | ------------------------- | ------------------------ | -------------------------------------------------------- |
@@ -179,6 +184,40 @@ client UI:
 | `THRUK_VERIFY_SSL`        | `true`                   | Set `false` for self-signed certs                        |
 | `THRUK_TIMEOUT`           | `30`                     | HTTP timeout in seconds                                  |
 | `THRUK_DEFAULT_BACKENDS`  |                          | CSV of default backend names (federated Thruk)           |
+
+### Security / multi-tenant (v0.6)
+
+| Variable                  | Default | Description                                                           |
+| ------------------------- | ------- | --------------------------------------------------------------------- |
+| `THRUK_READ_ONLY`         | `false` | Strip every write tool (ack, downtime, recheck, ...)                  |
+| `THRUK_ENABLED_TOOLS`     |         | Allowlist of tool names. CSV with fnmatch wildcards. Empty = all      |
+| `THRUK_AUDIT_LOG`         | `true`  | Emit one JSON audit line on stderr per write tool invocation          |
+| `THRUK_MAX_CONCURRENT`    | `0`     | Cap of concurrent in-flight HTTP requests. 0 = unlimited              |
+
+## Security
+
+- **Read-only mode** — set `THRUK_READ_ONLY=true` to remove every write tool
+  (`thruk_acknowledge`, `thruk_schedule_*_downtime`, `thruk_recheck`,
+  `thruk_delete_*`, `thruk_run_background_query`) from the MCP server. The
+  LLM literally cannot mutate monitoring state. Use this for general-purpose
+  agents that should only observe.
+- **Tool allowlist** — `THRUK_ENABLED_TOOLS=thruk_list_*,thruk_problems,thruk_stats`
+  restricts the exposed surface to the listed tools (fnmatch wildcards
+  supported). Useful when fronting multiple LLM clients with the same gateway
+  but different scopes.
+- **Audit log** — every write tool invocation emits one JSON line on
+  `thruk_mcp.audit` (stderr by default):
+
+  ```json
+  {"ts":"2026-05-17T22:00:00+00:00","tool":"thruk_acknowledge","user":"alice",
+   "args":{"host":"srv01","comment":"investigating"},"target":"srv01","status":"ok"}
+  ```
+
+  Disable with `THRUK_AUDIT_LOG=false`. Sensitive keys (`api_key`, `password`,
+  `token`) are redacted as `***` before logging.
+- **Rate limit** — `THRUK_MAX_CONCURRENT=8` caps in-flight HTTP requests with
+  an `asyncio.Semaphore`. Combined with the v0.3 TTL cache, this protects the
+  Thruk core from an LLM that loops on tools or chains them aggressively.
 
 ## Development
 
@@ -195,7 +234,7 @@ Conventions:
 
 - Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `test:`).
-- No direct push to `main`: branch \u2192 PR \u2192 squash merge.
+- No direct push to `main`: branch → PR → squash merge.
 - Any new tool must come with a `respx`-mocked unit test in `tests/test_tools.py`
   and an entry in `catalog/tools.json` (Docker MCP Registry contract).
 - CI gate: `ruff`, `ruff format --check`, `mypy`, `pytest` with **80 %

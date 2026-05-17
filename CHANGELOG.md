@@ -18,7 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - `tests/test_resources.py` covers the 5 MCP resources.
   - `tests/test_prompts.py` covers the 3 MCP prompts.
   - `tests/test_config.py` covers `ThrukConfig.from_env()`.
-  - `tests/test_run_background.py` covers the 302 \u2192 200 polling cycle
+  - `tests/test_run_background.py` covers the 302 → 200 polling cycle
     and the pass-through fallback.
 - `mypy` type-checking baseline (`warn_redundant_casts`,
   `warn_unused_ignores`, `warn_unreachable`, `no_implicit_optional`,
@@ -54,16 +54,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wired to slow-moving endpoints: `/sites`, `/processinfo`,
   `/*/stats`, `/*/totals`, `/contacts`, `/contactgroups`,
   `/timeperiods`, `/commands`. Per-call override via `cache_ttl=`.
-- **`ThrukClient.get_all()`** \u2014 async paginator over a list endpoint
+- **`ThrukClient.get_all()`** — async paginator over a list endpoint
   using `limit`/`offset`, with `hard_limit` safety net (default 50k).
 - **`ThrukClient.run_background()`** + new tool
-  `thruk_run_background_query` \u2014 wrap Thruk's `?background=1` flow
+  `thruk_run_background_query` — wrap Thruk's `?background=1` flow
   and poll `/thruk/jobs/<id>/output` (302 vs. 200) until completion.
-- **5 MCP Resources** \u2014 `thruk://hosts/{name}`,
+- **5 MCP Resources** — `thruk://hosts/{name}`,
   `thruk://services/{host}/{service}`, `thruk://hostgroups/{name}`,
   `thruk://problems`, `thruk://stats`. Clients with a resource browser
   (Claude Desktop, VS Code, ...) can open Thruk objects like files.
-- **3 MCP Prompts** \u2014 `investigate_alert(host, service?)`,
+- **3 MCP Prompts** — `investigate_alert(host, service?)`,
   `schedule_maintenance(target, duration_minutes, kind)`,
   `diagnose_flapping(host, service)`. Pre-canned slash-commands for
   the most common ops workflows.

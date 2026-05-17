@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 from datetime import datetime
@@ -9,10 +10,31 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from . import audit
 from .client import ThrukClient
 from .config import ThrukConfig
 
 log = logging.getLogger("thruk_mcp.server")
+
+# Tools that mutate the monitoring state. Used by:
+# - read_only mode: removed entirely from the registry
+# - audit log: wrapped to emit a JSON line per invocation
+WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "thruk_schedule_downtime",
+        "thruk_schedule_host_services_downtime",
+        "thruk_schedule_propagated_host_downtime",
+        "thruk_schedule_hostgroup_downtime",
+        "thruk_schedule_servicegroup_downtime",
+        "thruk_delete_downtime",
+        "thruk_delete_active_downtimes",
+        "thruk_delete_downtimes_by_filter",
+        "thruk_acknowledge",
+        "thruk_remove_acknowledgement",
+        "thruk_recheck",
+        "thruk_run_background_query",
+    }
+)
 
 HOST_STATES = {0: "UP", 1: "DOWN", 2: "UNREACHABLE"}
 SERVICE_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
@@ -929,6 +951,40 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             default=str,
         )
 
+    # ===================== Security: filter & wrap registered tools =====
+    audit.configure(enabled=cfg.audit_log)
+    _apply_security_filters(mcp, cfg)
+
     # store for graceful shutdown if caller wants it
     mcp._thruk_client = client  # type: ignore[attr-defined]
     return mcp
+
+
+def _apply_security_filters(mcp: FastMCP, cfg: ThrukConfig) -> None:
+    """Remove disallowed tools and wrap write tools with audit logging.
+
+    Three orthogonal knobs:
+    - `cfg.read_only`: drop every tool in WRITE_TOOLS.
+    - `cfg.enabled_tools`: if non-empty, drop every tool not matched by any
+      of its fnmatch patterns. Always evaluated AFTER read_only.
+    - `cfg.audit_log`: wrap remaining write tools to emit JSON audit lines.
+    """
+    tool_mgr = mcp._tool_manager
+    registry: dict[str, Any] = tool_mgr._tools
+    for name in list(registry):
+        # 1) read_only mode strips writes outright
+        if cfg.read_only and name in WRITE_TOOLS:
+            mcp.remove_tool(name)
+            log.info("read_only: removed tool %s", name)
+            continue
+        # 2) allowlist (if provided) takes precedence over everything else
+        if cfg.enabled_tools and not any(
+            fnmatch.fnmatchcase(name, pat) for pat in cfg.enabled_tools
+        ):
+            mcp.remove_tool(name)
+            log.info("allowlist: removed tool %s", name)
+            continue
+        # 3) wrap remaining writes for audit
+        if cfg.audit_log and name in WRITE_TOOLS:
+            tool = registry[name]
+            tool.fn = audit.audited(name, user=cfg.auth_user)(tool.fn)
