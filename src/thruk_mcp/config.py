@@ -5,13 +5,51 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+# Sentinel values injected by orchestrators (e.g. Docker MCP Gateway) when an
+# optional secret is declared in the catalog but left unbound by the operator.
+# We treat them as "not set" so that defaults are applied instead of crashing.
+_PLACEHOLDERS: frozenset[str] = frozenset({"<UNKNOWN>"})
+
+
+def _raw_env(name: str) -> str | None:
+    """Return the raw env value, or None when absent / a known placeholder."""
+    raw = os.getenv(name)
+    if raw is None or raw in _PLACEHOLDERS:
+        return None
+    return raw
+
 
 def _split_csv(raw: str) -> tuple[str, ...]:
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
+def _str_env(name: str, default: str = "") -> str:
+    raw = _raw_env(name)
+    return raw if raw is not None else default
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = _raw_env(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = _raw_env(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _envbool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
+    raw = _raw_env(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
@@ -46,23 +84,24 @@ class ThrukConfig:
 
     @classmethod
     def from_env(cls) -> ThrukConfig:
-        api_key = os.getenv("THRUK_API_KEY", "").strip()
+        # THRUK_API_KEY is mandatory — also reject the placeholder.
+        api_key = _str_env("THRUK_API_KEY").strip()
         if not api_key:
             raise RuntimeError(
                 "THRUK_API_KEY is required. Generate one from the Thruk user profile page "
                 "(see https://www.thruk.org/documentation/rest.html#api-key)."
             )
         return cls(
-            base_url=os.getenv("THRUK_BASE_URL", "http://localhost/thruk").rstrip("/"),
+            base_url=_str_env("THRUK_BASE_URL", "http://localhost/thruk").rstrip("/"),
             api_key=api_key,
-            auth_user=os.getenv("THRUK_AUTH_USER", "").strip(),
+            auth_user=_str_env("THRUK_AUTH_USER").strip(),
             verify_ssl=_envbool("THRUK_VERIFY_SSL", True),
-            timeout=float(os.getenv("THRUK_TIMEOUT", "30")),
-            default_backends=_split_csv(os.getenv("THRUK_DEFAULT_BACKENDS", "")),
+            timeout=_float_env("THRUK_TIMEOUT", 30.0),
+            default_backends=_split_csv(_str_env("THRUK_DEFAULT_BACKENDS")),
             read_only=_envbool("THRUK_READ_ONLY", False),
-            enabled_tools=_split_csv(os.getenv("THRUK_ENABLED_TOOLS", "")),
+            enabled_tools=_split_csv(_str_env("THRUK_ENABLED_TOOLS")),
             audit_log=_envbool("THRUK_AUDIT_LOG", True),
-            max_concurrent=int(os.getenv("THRUK_MAX_CONCURRENT", "0")),
+            max_concurrent=_int_env("THRUK_MAX_CONCURRENT", 0),
         )
 
     def headers(self) -> dict[str, str]:
