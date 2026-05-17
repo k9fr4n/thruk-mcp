@@ -1,0 +1,19 @@
+[
+  { "name": "thruk_list_hosts",            "description": "List monitored hosts with optional filters (hostgroup, state, name_regex, columns)." },
+  { "name": "thruk_get_host",              "description": "Get a single host by name." },
+  { "name": "thruk_list_services",         "description": "List monitored services with optional filters (host, servicegroup, state, description_regex)." },
+  { "name": "thruk_get_service",           "description": "Get a single service by host and description." },
+  { "name": "thruk_list_hostgroups",       "description": "List host groups." },
+  { "name": "thruk_list_servicegroups",    "description": "List service groups." },
+  { "name": "thruk_problems",              "description": "List all current unhandled host and service problems." },
+  { "name": "thruk_stats",                 "description": "Aggregated host and service statistics." },
+  { "name": "thruk_list_downtimes",        "description": "List scheduled downtimes (active by default)." },
+  { "name": "thruk_list_comments",         "description": "List comments (acknowledgements included)." },
+  { "name": "thruk_sites",                 "description": "List configured Thruk backends (federated sites)." },
+  { "name": "thruk_query",                 "description": "Escape hatch: call any Thruk REST endpoint with method, params, body." },
+  { "name": "thruk_schedule_downtime",     "description": "Schedule a downtime on a host or service." },
+  { "name": "thruk_delete_downtime",       "description": "Delete a host or service downtime by id." },
+  { "name": "thruk_acknowledge",           "description": "Acknowledge a host or service problem." },
+  { "name": "thruk_remove_acknowledgement","description": "Remove an acknowledgement from a host or service." },
+  { "name": "thruk_recheck",               "description": "Schedule an immediate (forced) check for a host or service." }
+]

@@ -66,6 +66,34 @@ thruk-mcp --listen 8001
 }
 ```
 
+### 4. Use with the [Docker MCP Gateway](https://github.com/docker/mcp-gateway)
+
+The image at `ghcr.io/k9fr4n/thruk-mcp:latest` defaults to **stdio** transport, so it can be spawned natively by the gateway.
+
+#### Option A — Private local catalog
+
+```bash
+# 1. Create your private catalog
+docker mcp catalog create thruk-private
+
+# 2. Register this server (catalog/server.yaml ships with the repo)
+docker mcp catalog add thruk-private thruk-mcp ./catalog/server.yaml
+
+# 3. Configure credentials & enable
+docker mcp secret set thruk-mcp.api_key=YOUR_KEY
+docker mcp config write thruk-mcp.base_url=https://monitor.example.com/thruk
+docker mcp server enable thruk-mcp
+
+# 4. Run the gateway with your catalog
+docker mcp gateway run --catalog thruk-private
+```
+
+Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway as documented [here](https://www.docker.com/blog/build-custom-mcp-catalog/).
+
+#### Option B — Submit upstream
+
+`catalog/server.yaml`, `catalog/tools.json` and `catalog/readme.md` follow the [docker/mcp-registry](https://github.com/docker/mcp-registry) schema and can be submitted to the official Docker MCP Catalog via PR.
+
 ## Tools
 
 | Tool                          | Purpose                                            |
