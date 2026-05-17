@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # needed to create GitHub Releases
   packages: write
 
 jobs:
@@ -44,3 +44,17 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
+
+      # Create a GitHub Release only when a vX.Y.Z tag is pushed.
+      # --generate-notes auto-builds the changelog from commits since the previous tag.
+      # The `gh release create` call is idempotent: it exits 0 if the release already exists.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --latest \
+          || echo "Release already exists, skipping."
