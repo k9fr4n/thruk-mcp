@@ -94,7 +94,11 @@ config:
         default: "0"
     required:
       - base_url
-run:
-  # Restrict outbound network. Replace with your monitor.example.com:443
-  # when running under the gateway, or leave commented to allow any host.
-  allowHosts: []
+# allowHosts restricts outbound network access when running under the Docker MCP Gateway.
+# List every host:port your Thruk instance is reachable on, e.g.:
+#   allowHosts:
+#     - monitor.example.com:443
+# Leave the key absent (as below) to allow any outbound host — required if
+# THRUK_BASE_URL varies per user or is set at runtime.
+#
+# allowHosts: []   ← DO NOT use an empty list; it blocks ALL network traffic.
