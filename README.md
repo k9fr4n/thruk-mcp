@@ -2,8 +2,10 @@
 
 [![CI](https://github.com/k9fr4n/thruk-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/k9fr4n/thruk-mcp/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/k9fr4n/thruk-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/k9fr4n/thruk-mcp)
+[![PyPI](https://img.shields.io/pypi/v/thruk-mcp)](https://pypi.org/project/thruk-mcp/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/thruk-mcp)](https://pypi.org/project/thruk-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/k9fr4n/thruk-mcp)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://pypi.org/project/thruk-mcp/)
 [![ghcr.io](https://img.shields.io/badge/ghcr.io-k9fr4n%2Fthruk--mcp-blue)](https://github.com/k9fr4n/thruk-mcp/pkgs/container/thruk-mcp)
 [![GitHub release](https://img.shields.io/github/v/release/k9fr4n/thruk-mcp)](https://github.com/k9fr4n/thruk-mcp/releases)
 
@@ -42,8 +44,7 @@ docker compose up -d
 ### 2b. Run locally
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
+pip install thruk-mcp        # or: pipx install thruk-mcp
 
 # stdio mode (for Claude Desktop, LibreChat, etc.)
 thruk-mcp
@@ -51,6 +52,8 @@ thruk-mcp
 # HTTP mode
 thruk-mcp --listen 8001
 ```
+
+> For local development of the project itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### 3. Wire it to an MCP client
 
