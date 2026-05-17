@@ -173,6 +173,117 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         """List configured Thruk backends (sites)."""
         return json.dumps(await client.get("/sites"), indent=2, default=str)
 
+    # ------------------------------------------------------ Logs / history
+    async def _fetch_logs(
+        path: str,
+        host: str | None,
+        service: str | None,
+        since: str | None,
+        until: str | None,
+        message_regex: str | None,
+        limit: int,
+        sort: str,
+        backends: str | None,
+        extra: dict[str, Any] | None = None,
+    ) -> Any:
+        params: dict[str, Any] = {"limit": max(1, min(limit, 1000)), "sort": sort}
+        if host:
+            params["host_name"] = host
+        if service:
+            params["service_description"] = service
+        if since:
+            params["time[gte]"] = since
+        if until:
+            params["time[lte]"] = until
+        if message_regex:
+            params["message[regex]"] = message_regex
+        if extra:
+            params.update(extra)
+        return await client.get(path, params=params, backends=_backends(backends))
+
+    @mcp.tool()
+    async def thruk_list_logs(
+        host: str | None = None,
+        service: str | None = None,
+        since: str | None = "-24h",
+        until: str | None = None,
+        message_regex: str | None = None,
+        limit: int = 100,
+        sort: str = "-time",
+        backends: str | None = None,
+    ) -> str:
+        """Query raw Livestatus log entries (/logs).
+
+        Time arguments accept Thruk relative timestamps (e.g. '-24h', '-7d', '-30m')
+        or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first."""
+        data = await _fetch_logs("/logs", host, service, since, until,
+                                 message_regex, limit, sort, backends)
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.tool()
+    async def thruk_list_alerts(
+        host: str | None = None,
+        service: str | None = None,
+        state: str | None = None,
+        since: str | None = "-24h",
+        until: str | None = None,
+        limit: int = 100,
+        sort: str = "-time",
+        backends: str | None = None,
+    ) -> str:
+        """List HOST/SERVICE ALERT entries from the log (/alerts).
+
+        Optional `state` filters alert state: up/down/unreachable for hosts,
+        ok/warning/critical/unknown for services."""
+        extra: dict[str, Any] = {}
+        if state:
+            s = state.lower()
+            if s in HOST_STATE_MAP:
+                extra["state"] = HOST_STATE_MAP[s]
+            elif s in SVC_STATE_MAP:
+                extra["state"] = SVC_STATE_MAP[s]
+        data = await _fetch_logs("/alerts", host, service, since, until,
+                                 None, limit, sort, backends, extra=extra)
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.tool()
+    async def thruk_list_notifications(
+        host: str | None = None,
+        service: str | None = None,
+        contact: str | None = None,
+        since: str | None = "-24h",
+        until: str | None = None,
+        limit: int = 100,
+        sort: str = "-time",
+        backends: str | None = None,
+    ) -> str:
+        """List notification entries from the log (/notifications, class=3).
+
+        Optional `contact` filters notifications sent to a specific contact name."""
+        extra: dict[str, Any] = {}
+        if contact:
+            extra["contact_name"] = contact
+        data = await _fetch_logs("/notifications", host, service, since, until,
+                                 None, limit, sort, backends, extra=extra)
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.tool()
+    async def thruk_recent_events(
+        hours: int = 1,
+        host: str | None = None,
+        service: str | None = None,
+        only_alerts: bool = False,
+        limit: int = 100,
+        backends: str | None = None,
+    ) -> str:
+        """Return the most recent monitoring events from the last N hours
+        (default 1h). Defaults to all log classes; set `only_alerts=True` to
+        restrict to HOST/SERVICE ALERT entries."""
+        path = "/alerts" if only_alerts else "/logs"
+        data = await _fetch_logs(path, host, service, f"-{hours}h", None,
+                                 None, limit, "-time", backends)
+        return json.dumps(data, indent=2, default=str)
+
     @mcp.tool()
     async def thruk_query(
         path: str,
@@ -245,9 +356,9 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         payload = {
             "comment_data": comment,
             "comment_author": author,
-            "sticky": "1" if sticky else "0",
-            "notify": "1" if notify else "0",
-            "persistent": "1" if persistent else "0",
+            "sticky_ack": "1" if sticky else "0",
+            "send_notification": "1" if notify else "0",
+            "persistent_comment": "1" if persistent else "0",
         }
         return json.dumps(
             await client.post(endpoint, data=payload, backends=_backends(backends)),
@@ -296,6 +407,198 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         return json.dumps(
             await client.post(endpoint, data={"downtime_id": str(downtime_id)},
                               backends=_backends(backends)),
+            indent=2, default=str,
+        )
+
+    # ----------------------------------------------------- Downtime mgmt
+    def _downtime_payload(
+        comment: str, author: str, start_time: str, end_time: str,
+        duration_minutes: int | None, fixed: bool, triggered_by: int,
+    ) -> dict[str, str]:
+        if duration_minutes:
+            end_time = f"+{duration_minutes}m"
+        return {
+            "start_time": start_time,
+            "end_time": end_time,
+            "comment_data": comment,
+            "comment_author": author,
+            "fixed": "1" if fixed else "0",
+            "triggered_by": str(triggered_by),
+        }
+
+    @mcp.tool()
+    async def thruk_get_downtime(downtime_id: int, backends: str | None = None) -> str:
+        """Get a single downtime by id."""
+        data = await client.get(f"/downtimes/{downtime_id}", backends=_backends(backends))
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.tool()
+    async def thruk_schedule_host_services_downtime(
+        host: str,
+        comment: str = "requested via MCP",
+        author: str = "thruk-mcp",
+        start_time: str = "now",
+        end_time: str = "+2h",
+        duration_minutes: int | None = None,
+        fixed: bool = True,
+        backends: str | None = None,
+    ) -> str:
+        """Schedule a downtime on ALL services of the given host
+        (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host
+        itself or for one specific service."""
+        payload = _downtime_payload(comment, author, start_time, end_time,
+                                    duration_minutes, fixed, 0)
+        return json.dumps(
+            await client.post(
+                f"/hosts/{host}/cmd/schedule_host_svc_downtime",
+                data=payload, backends=_backends(backends),
+            ),
+            indent=2, default=str,
+        )
+
+    @mcp.tool()
+    async def thruk_schedule_propagated_host_downtime(
+        host: str,
+        triggered: bool = False,
+        comment: str = "requested via MCP",
+        author: str = "thruk-mcp",
+        start_time: str = "now",
+        end_time: str = "+2h",
+        duration_minutes: int | None = None,
+        fixed: bool = True,
+        backends: str | None = None,
+    ) -> str:
+        """Schedule a downtime on a host and propagate to all child hosts.
+        If `triggered=True`, child downtimes are triggered by the parent (start
+        when the parent enters its downtime). Useful for a parent network
+        device whose children should automatically follow."""
+        cmd = (
+            "schedule_and_propagate_triggered_host_downtime"
+            if triggered
+            else "schedule_and_propagate_host_downtime"
+        )
+        payload = _downtime_payload(comment, author, start_time, end_time,
+                                    duration_minutes, fixed, 0)
+        return json.dumps(
+            await client.post(
+                f"/hosts/{host}/cmd/{cmd}", data=payload, backends=_backends(backends),
+            ),
+            indent=2, default=str,
+        )
+
+    @mcp.tool()
+    async def thruk_schedule_hostgroup_downtime(
+        hostgroup: str,
+        target: str = "hosts",
+        comment: str = "requested via MCP",
+        author: str = "thruk-mcp",
+        start_time: str = "now",
+        end_time: str = "+2h",
+        duration_minutes: int | None = None,
+        fixed: bool = True,
+        backends: str | None = None,
+    ) -> str:
+        """Schedule a downtime for every host (`target='hosts'`, default) or
+        every service (`target='services'`) of a hostgroup."""
+        cmd = (
+            "schedule_hostgroup_svc_downtime"
+            if target == "services"
+            else "schedule_hostgroup_host_downtime"
+        )
+        payload = _downtime_payload(comment, author, start_time, end_time,
+                                    duration_minutes, fixed, 0)
+        return json.dumps(
+            await client.post(
+                f"/hostgroups/{hostgroup}/cmd/{cmd}",
+                data=payload, backends=_backends(backends),
+            ),
+            indent=2, default=str,
+        )
+
+    @mcp.tool()
+    async def thruk_schedule_servicegroup_downtime(
+        servicegroup: str,
+        target: str = "services",
+        comment: str = "requested via MCP",
+        author: str = "thruk-mcp",
+        start_time: str = "now",
+        end_time: str = "+2h",
+        duration_minutes: int | None = None,
+        fixed: bool = True,
+        backends: str | None = None,
+    ) -> str:
+        """Schedule a downtime on a servicegroup. `target='services'` (default)
+        targets all services in the group; `target='hosts'` targets the hosts
+        owning those services."""
+        cmd = (
+            "schedule_servicegroup_host_downtime"
+            if target == "hosts"
+            else "schedule_servicegroup_svc_downtime"
+        )
+        payload = _downtime_payload(comment, author, start_time, end_time,
+                                    duration_minutes, fixed, 0)
+        return json.dumps(
+            await client.post(
+                f"/servicegroups/{servicegroup}/cmd/{cmd}",
+                data=payload, backends=_backends(backends),
+            ),
+            indent=2, default=str,
+        )
+
+    @mcp.tool()
+    async def thruk_delete_active_downtimes(
+        host: str, service: str | None = None, backends: str | None = None,
+    ) -> str:
+        """Remove ALL currently active downtimes for a host (or one specific
+        service when `service` is given). No need to know individual ids."""
+        endpoint = (
+            f"/services/{host}/{service}/cmd/del_active_service_downtimes"
+            if service
+            else f"/hosts/{host}/cmd/del_active_host_downtimes"
+        )
+        return json.dumps(
+            await client.post(endpoint, backends=_backends(backends)),
+            indent=2, default=str,
+        )
+
+    @mcp.tool()
+    async def thruk_delete_downtimes_by_filter(
+        host: str | None = None,
+        hostgroup: str | None = None,
+        service: str | None = None,
+        start_time: str | None = None,
+        comment: str | None = None,
+        backends: str | None = None,
+    ) -> str:
+        """Bulk-delete downtimes matching arbitrary filters via the system
+        commands `del_downtime_by_host_name`, `del_downtime_by_hostgroup_name`
+        or `del_downtime_by_start_time_comment`. At least one filter must be
+        provided; the most specific endpoint is selected automatically."""
+        payload: dict[str, str] = {}
+        if host:
+            payload["hostname"] = host
+        if hostgroup:
+            payload["hostgroup_name"] = hostgroup
+        if service:
+            payload["service_desc"] = service
+        if start_time:
+            payload["start_time"] = start_time
+        if comment:
+            payload["comment"] = comment
+        if not payload:
+            raise ValueError(
+                "Provide at least one of host, hostgroup, service, start_time, comment."
+            )
+        if hostgroup:
+            cmd = "del_downtime_by_hostgroup_name"
+        elif host:
+            cmd = "del_downtime_by_host_name"
+        else:
+            cmd = "del_downtime_by_start_time_comment"
+        return json.dumps(
+            await client.post(
+                f"/system/cmd/{cmd}", data=payload, backends=_backends(backends),
+            ),
             indent=2, default=str,
         )
 
