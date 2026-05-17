@@ -1,0 +1,73 @@
+# Docker MCP catalog entry for thruk-mcp.
+#
+# Usage with a custom local catalog:
+#   docker mcp catalog create thruk-private
+#   docker mcp catalog add  thruk-private thruk-mcp ./catalog/server.yaml
+#   docker mcp server  enable thruk-mcp
+#   docker mcp gateway run    --catalog thruk-private
+#
+# Or submit upstream to https://github.com/docker/mcp-registry
+name: thruk-mcp
+image: ghcr.io/k9fr4n/thruk-mcp:latest
+type: server
+meta:
+  category: monitoring
+  tags:
+    - monitoring
+    - thruk
+    - naemon
+    - nagios
+    - icinga
+    - shinken
+about:
+  title: Thruk Monitoring
+  description: >-
+    Query Thruk (Naemon / Nagios / Icinga / Shinken monitoring frontend) via
+    its REST API: list and inspect hosts and services, current problems and
+    stats, schedule or remove downtimes, acknowledge issues, and trigger
+    forced rechecks. Includes a raw `thruk_query` escape hatch for any other
+    Thruk REST endpoint.
+  icon: https://www.thruk.org/images/thruk_logo.png
+source:
+  project: https://github.com/k9fr4n/thruk-mcp
+config:
+  description: Configure access to your Thruk REST API.
+  secrets:
+    - name: thruk-mcp.api_key
+      env: THRUK_API_KEY
+      example: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  env:
+    - name: THRUK_BASE_URL
+      example: https://monitor.example.com/thruk
+      value: '{{thruk-mcp.base_url}}'
+    - name: THRUK_AUTH_USER
+      example: thrukadmin
+      value: '{{thruk-mcp.auth_user}}'
+    - name: THRUK_VERIFY_SSL
+      example: "true"
+      value: '{{thruk-mcp.verify_ssl}}'
+    - name: THRUK_DEFAULT_BACKENDS
+      example: "prod,dr"
+      value: '{{thruk-mcp.default_backends}}'
+  parameters:
+    type: object
+    properties:
+      base_url:
+        type: string
+        description: Thruk base URL (no trailing slash).
+      auth_user:
+        type: string
+        description: Optional user to impersonate (only with superuser API key).
+      verify_ssl:
+        type: string
+        description: "Set 'false' to skip TLS verification (dev / self-signed only)."
+        default: "true"
+      default_backends:
+        type: string
+        description: Comma-separated default Thruk backend names (federated sites). Empty = all.
+    required:
+      - base_url
+run:
+  # Restrict outbound network. Replace with your monitor.example.com:443
+  # when running under the gateway, or leave commented to allow any host.
+  allowHosts: []

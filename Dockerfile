@@ -13,6 +13,8 @@ COPY --from=build /dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
 USER thruk
 ENV PYTHONUNBUFFERED=1
+# Default = stdio transport (Docker MCP Gateway / Claude Desktop / LibreChat).
+# For HTTP/Streamable-HTTP, override CMD: ["--listen", "8001"]
 EXPOSE 8001
 ENTRYPOINT ["thruk-mcp"]
-CMD ["--listen", "8001"]
+CMD []

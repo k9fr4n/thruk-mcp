@@ -5,5 +5,8 @@ services:
     container_name: thruk-mcp
     restart: unless-stopped
     env_file: .env
+    # HTTP mode (override default stdio entrypoint). Remove this section when
+    # using stdio (e.g. when spawned by the Docker MCP Gateway).
+    command: ["--listen", "8001"]
     ports:
       - "8001:8001"
