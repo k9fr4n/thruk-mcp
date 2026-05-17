@@ -398,6 +398,152 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         )
         return json.dumps(result, indent=2, default=str)
 
+    @mcp.tool()
+    async def thruk_run_background_query(
+        path: str,
+        method: str = "POST",
+        params_json: str | None = None,
+        data_json: str | None = None,
+        backends: str | None = None,
+        poll_timeout: float = 300.0,
+    ) -> str:
+        """Run a potentially long Thruk REST request via the `background=1`
+        mechanism. The server returns a job id immediately, then we poll
+        `/thruk/jobs/<id>/output` until completion (default 5 min timeout).
+
+        Use this for expensive queries: full config dumps, large availability
+        reports, recursive config checks. Same `path` semantics as
+        `thruk_query`."""
+        params = json.loads(params_json) if params_json else None
+        data = json.loads(data_json) if data_json else None
+        result = await client.run_background(
+            path, method=method.upper(), params=params, data=data,
+            backends=_backends(backends), poll_timeout=poll_timeout,
+        )
+        return json.dumps(result, indent=2, default=str)
+
+    # =================================================== MCP Resources
+    # Resources let an MCP client "open" a Thruk object as if it were a file.
+    # Useful for clients that have a resource browser (Claude Desktop, VS Code).
+    @mcp.resource("thruk://hosts/{name}")
+    async def host_resource(name: str) -> str:
+        """Single host as a JSON document, addressable as thruk://hosts/<name>."""
+        data = await client.get(f"/hosts/{name}")
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.resource("thruk://services/{host}/{service}")
+    async def service_resource(host: str, service: str) -> str:
+        """Single service as a JSON document (thruk://services/<host>/<service>)."""
+        data = await client.get(f"/services/{host}/{service}")
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.resource("thruk://hostgroups/{name}")
+    async def hostgroup_resource(name: str) -> str:
+        """Host group config + members as JSON (thruk://hostgroups/<name>)."""
+        data = await client.get(f"/hostgroups/{name}")
+        return json.dumps(data, indent=2, default=str)
+
+    @mcp.resource("thruk://problems")
+    async def problems_resource() -> str:
+        """Current unhandled host/service problems as a JSON document."""
+        host_params = {"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
+                       "columns": DEFAULT_HOST_COLUMNS, "limit": 500}
+        svc_params = {"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
+                      "columns": DEFAULT_SERVICE_COLUMNS, "limit": 500}
+        hosts = await client.get("/hosts", params=host_params)
+        services = await client.get("/services", params=svc_params)
+        return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+
+    @mcp.resource("thruk://stats")
+    async def stats_resource() -> str:
+        """Aggregated host/service stats (cached ~15s)."""
+        hosts = await client.get("/hosts/stats")
+        services = await client.get("/services/stats")
+        return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+
+    # ===================================================== MCP Prompts
+    # Prompts are pre-canned workflows the LLM client can offer to the user
+    # (slash-commands in Claude Desktop, etc.). They return a structured
+    # conversation the model is expected to start with.
+    @mcp.prompt(
+        title="Investigate alert",
+        description="Walk through a host/service alert: state, recent logs, "
+                    "notifications, and suggested next steps.",
+    )
+    def investigate_alert(host: str, service: str | None = None) -> str:
+        target = f"host '{host}'" if not service else f"service '{service}' on host '{host}'"
+        steps = "\n".join([
+            f"1. Fetch the current state of {target} using `thruk_get_host`"
+            + ("/`thruk_get_service`" if service else ""),
+            "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
+            "3. Check notifications sent via `thruk_list_notifications`",
+            "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
+            "5. Verify there is no active downtime via `thruk_list_downtimes`",
+            "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
+            "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
+            "and/or trigger a forced recheck with `thruk_recheck`.",
+        ])
+        return (
+            f"You are the on-call SRE assistant. The user wants to investigate the "
+            f"current alert on {target}. Proceed methodically:\n\n{steps}\n\n"
+            "Do not modify the monitoring state without explicit user confirmation."
+        )
+
+    @mcp.prompt(
+        title="Schedule maintenance",
+        description="Schedule downtime for a hostgroup, host or service for a given duration.",
+    )
+    def schedule_maintenance(
+        target: str,
+        duration_minutes: int = 120,
+        kind: str = "hostgroup",
+    ) -> str:
+        kind = kind.lower()
+        if kind not in {"host", "service", "hostgroup", "servicegroup"}:
+            kind = "hostgroup"
+        tool_map = {
+            "host": "thruk_schedule_downtime",
+            "service": "thruk_schedule_downtime",
+            "hostgroup": "thruk_schedule_hostgroup_downtime",
+            "servicegroup": "thruk_schedule_servicegroup_downtime",
+        }
+        return (
+            f"The user wants to schedule {duration_minutes} minutes of maintenance "
+            f"on the {kind} '{target}'.\n\n"
+            f"1. Confirm the {kind} exists by listing it (e.g. `thruk_list_{kind}s` "
+            "or `thruk_get_host`).\n"
+            "2. Show the user the list of impacted hosts/services.\n"
+            "3. Ask explicit confirmation before applying.\n"
+            f"4. On 'yes', call `{tool_map[kind]}` with "
+            f"duration_minutes={duration_minutes} and a clear comment "
+            "explaining the reason.\n"
+            "5. Verify the downtime is active via `thruk_list_downtimes`.\n"
+        )
+
+    @mcp.prompt(
+        title="Why is service flapping?",
+        description="Diagnose a flapping service: state-change history, recent logs, "
+                    "perf-data trends, and recommendations.",
+    )
+    def diagnose_flapping(host: str, service: str) -> str:
+        return (
+            f"The user reports that service '{service}' on host '{host}' is flapping. "
+            "Carry out a focused investigation:\n\n"
+            "1. `thruk_get_service` to confirm state and current `is_flapping` flag.\n"
+            "2. `thruk_list_alerts` for the same host/service over the last 24h, "
+            "sorted -time, to count state transitions.\n"
+            "3. `thruk_list_logs` filtered on `message_regex='flapp'` to confirm "
+            "flap-detection events.\n"
+            "4. If perf-data is available in the service row, inspect the metric "
+            "that is oscillating (rta, latency, queue depth, ...).\n"
+            "5. Summarise likely causes (network jitter, threshold too tight, "
+            "passive check freshness, ...).\n"
+            "6. Propose remediation: widen warning/critical thresholds, increase "
+            "max_check_attempts, disable flap detection if intentional, or add a "
+            "downtime while a fix is rolled out.\n"
+            "7. Do not change Thruk state without confirmation."
+        )
+
     # ----------------------------------------------------------------- Write
     @mcp.tool()
     async def thruk_schedule_downtime(
