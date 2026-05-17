@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://github.com/k9fr4n/thruk-mcp)
 [![ghcr.io](https://img.shields.io/badge/ghcr.io-k9fr4n%2Fthruk--mcp-blue)](https://github.com/k9fr4n/thruk-mcp/pkgs/container/thruk-mcp)
+[![GitHub release](https://img.shields.io/github/v/release/k9fr4n/thruk-mcp)](https://github.com/k9fr4n/thruk-mcp/releases)
 
 **Model Context Protocol (MCP) server for [Thruk](https://www.thruk.org/)** — the unified web frontend for [Naemon](https://naemon.io), Nagios, [Icinga](https://icinga.com/) and [Shinken](http://www.shinken-monitoring.org/).
 
@@ -246,6 +247,15 @@ Conventions:
 - Thruk REST commands: <https://www.thruk.org/documentation/rest_commands.html>
 - MCP spec: <https://spec.modelcontextprotocol.io/>
 - Inspired by: <https://github.com/lausser/omd-mcp> (initial proof-of-concept)
+
+## Project docs
+
+- [CHANGELOG.md](CHANGELOG.md) — what changed in each release.
+- [UPGRADING.md](UPGRADING.md) — per-version migration notes.
+- [SUPPORT.md](SUPPORT.md) — supported Python / Thruk / MCP-client versions,
+  security policy, release cadence.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, PR conventions, tool /
+  env-var contribution checklists.
 
 ## License
 
