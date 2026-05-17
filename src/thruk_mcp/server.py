@@ -18,6 +18,55 @@ SERVICE_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
 HOST_STATE_MAP = {"up": 0, "down": 1, "unreachable": 2}
 SVC_STATE_MAP = {"ok": 0, "warning": 1, "critical": 2, "unknown": 3}
 
+# Default columns: tight by design to minimize LLM token usage. A typical
+# Thruk host row has ~80 attributes (custom vars, perf_data expansions, ...);
+# returning them all blows the context for no reason. Callers can always
+# override via the `columns` argument or use `thruk_query` for the raw row.
+DEFAULT_HOST_COLUMNS = (
+    "name,state,plugin_output,last_check,last_state_change,"
+    "acknowledged,scheduled_downtime_depth,notifications_enabled,"
+    "current_attempt,max_check_attempts,peer_name"
+)
+DEFAULT_SERVICE_COLUMNS = (
+    "host_name,description,state,plugin_output,last_check,last_state_change,"
+    "acknowledged,scheduled_downtime_depth,notifications_enabled,"
+    "current_attempt,max_check_attempts,peer_name"
+)
+DEFAULT_GROUP_COLUMNS = "name,alias,num_hosts,num_services,worst_host_state,worst_service_state"
+DEFAULT_LOG_COLUMNS = "time,type,class,host_name,service_description,state,state_type,message"
+DEFAULT_DOWNTIME_COLUMNS = (
+    "id,host_name,service_description,author,comment,"
+    "start_time,end_time,fixed,duration,triggered_by,peer_name"
+)
+DEFAULT_COMMENT_COLUMNS = (
+    "id,host_name,service_description,author,comment,entry_time,entry_type,persistent,peer_name"
+)
+
+
+def _list_params(
+    limit: int,
+    offset: int,
+    sort: str | None,
+    columns: str | None,
+    default_columns: str | None,
+    *,
+    max_limit: int = 1000,
+) -> dict[str, Any]:
+    """Build the common limit/offset/sort/columns query params for list endpoints.
+
+    `columns=''` (empty string) means "return all columns" — explicit opt-out
+    from the token-saving default. `columns=None` falls back to default_columns.
+    """
+    p: dict[str, Any] = {"limit": max(1, min(limit, max_limit))}
+    if offset > 0:
+        p["offset"] = offset
+    if sort:
+        p["sort"] = sort
+    effective = default_columns if columns is None else columns
+    if effective:  # non-empty string
+        p["columns"] = effective
+    return p
+
 
 def _ts(value: Any) -> str:
     if not value:
@@ -48,14 +97,19 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         state: str | None = None,
         name_regex: str | None = None,
         limit: int = 50,
+        offset: int = 0,
+        sort: str = "name",
         columns: str | None = None,
         backends: str | None = None,
     ) -> str:
-        """List monitored hosts. Optional filters: hostgroup, state (up/down/unreachable),
-        name_regex (case-insensitive regex on host name), columns (comma list)."""
-        params: dict[str, Any] = {"limit": max(1, min(limit, 500))}
-        if columns:
-            params["columns"] = columns
+        """List monitored hosts.
+
+        Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex).
+        Pagination: `limit` (max 1000), `offset`. Sort: `sort` (e.g. 'name', '-state').
+        Columns: by default a tight subset is returned to save tokens. Pass an empty
+        string `columns=''` to return ALL columns, or a custom comma list.
+        """
+        params = _list_params(limit, offset, sort, columns, DEFAULT_HOST_COLUMNS)
         if hostgroup:
             params["groups[gte]"] = hostgroup
         if state and state.lower() in HOST_STATE_MAP:
@@ -78,14 +132,19 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         state: str | None = None,
         description_regex: str | None = None,
         limit: int = 50,
+        offset: int = 0,
+        sort: str = "host_name,description",
         columns: str | None = None,
         backends: str | None = None,
     ) -> str:
-        """List monitored services. Filters: host, servicegroup, state
-        (ok/warning/critical/unknown), description_regex."""
-        params: dict[str, Any] = {"limit": max(1, min(limit, 500))}
-        if columns:
-            params["columns"] = columns
+        """List monitored services.
+
+        Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown),
+        `description_regex`. Pagination via `limit`/`offset`, sort via `sort`
+        (e.g. '-last_state_change'). Default columns are a tight subset to save
+        tokens; pass `columns=''` for all columns or a custom comma list.
+        """
+        params = _list_params(limit, offset, sort, columns, DEFAULT_SERVICE_COLUMNS)
         if host:
             params["host_name"] = host
         if servicegroup:
@@ -104,31 +163,47 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
-    async def thruk_list_hostgroups(limit: int = 100, backends: str | None = None) -> str:
-        """List host groups."""
-        data = await client.get(
-            "/hostgroups", params={"limit": limit}, backends=_backends(backends)
-        )
+    async def thruk_list_hostgroups(
+        limit: int = 100,
+        offset: int = 0,
+        sort: str = "name",
+        columns: str | None = None,
+        backends: str | None = None,
+    ) -> str:
+        """List host groups. Default columns return name/alias and host/service counts only."""
+        params = _list_params(limit, offset, sort, columns, DEFAULT_GROUP_COLUMNS)
+        data = await client.get("/hostgroups", params=params, backends=_backends(backends))
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
-    async def thruk_list_servicegroups(limit: int = 100, backends: str | None = None) -> str:
-        """List service groups."""
-        data = await client.get(
-            "/servicegroups", params={"limit": limit}, backends=_backends(backends)
-        )
+    async def thruk_list_servicegroups(
+        limit: int = 100,
+        offset: int = 0,
+        sort: str = "name",
+        columns: str | None = None,
+        backends: str | None = None,
+    ) -> str:
+        """List service groups. Default columns return name/alias and counts only."""
+        params = _list_params(limit, offset, sort, columns, DEFAULT_GROUP_COLUMNS)
+        data = await client.get("/servicegroups", params=params, backends=_backends(backends))
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
-    async def thruk_problems(limit: int = 100, backends: str | None = None) -> str:
-        """List all current unhandled host/service problems (not acknowledged, not in downtime)."""
-        host_params = {"limit": limit, "state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0}
-        svc_params = {
-            "limit": limit,
-            "state[gte]": 1,
-            "acknowledged": 0,
-            "scheduled_downtime_depth": 0,
-        }
+    async def thruk_problems(
+        limit: int = 100,
+        offset: int = 0,
+        columns: str | None = None,
+        backends: str | None = None,
+    ) -> str:
+        """List all current unhandled host/service problems (not acknowledged, not in downtime).
+
+        Sorted by worst state first. Default columns are tight; pass `columns=''` for all."""
+        host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
+        host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+        svc_params = _list_params(
+            limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
+        )
+        svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
         hosts = await client.get("/hosts", params=host_params, backends=_backends(backends))
         services = await client.get("/services", params=svc_params, backends=_backends(backends))
         return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
@@ -145,10 +220,13 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         host: str | None = None,
         active_only: bool = True,
         limit: int = 100,
+        offset: int = 0,
+        sort: str = "-start_time",
+        columns: str | None = None,
         backends: str | None = None,
     ) -> str:
         """List scheduled downtimes."""
-        params: dict[str, Any] = {"limit": limit}
+        params = _list_params(limit, offset, sort, columns, DEFAULT_DOWNTIME_COLUMNS)
         if host:
             params["host_name"] = host
         if active_only:
@@ -159,10 +237,16 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
-    async def thruk_list_comments(host: str | None = None, limit: int = 100,
-                                   backends: str | None = None) -> str:
+    async def thruk_list_comments(
+        host: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        sort: str = "-entry_time",
+        columns: str | None = None,
+        backends: str | None = None,
+    ) -> str:
         """List comments (acknowledgements appear here too)."""
-        params: dict[str, Any] = {"limit": limit}
+        params = _list_params(limit, offset, sort, columns, DEFAULT_COMMENT_COLUMNS)
         if host:
             params["host_name"] = host
         data = await client.get("/comments", params=params, backends=_backends(backends))
@@ -182,11 +266,13 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         until: str | None,
         message_regex: str | None,
         limit: int,
+        offset: int,
         sort: str,
+        columns: str | None,
         backends: str | None,
         extra: dict[str, Any] | None = None,
     ) -> Any:
-        params: dict[str, Any] = {"limit": max(1, min(limit, 1000)), "sort": sort}
+        params = _list_params(limit, offset, sort, columns, DEFAULT_LOG_COLUMNS)
         if host:
             params["host_name"] = host
         if service:
@@ -209,15 +295,19 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         until: str | None = None,
         message_regex: str | None = None,
         limit: int = 100,
+        offset: int = 0,
         sort: str = "-time",
+        columns: str | None = None,
         backends: str | None = None,
     ) -> str:
         """Query raw Livestatus log entries (/logs).
 
         Time arguments accept Thruk relative timestamps (e.g. '-24h', '-7d', '-30m')
-        or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first."""
+        or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first.
+        Pagination via `limit`/`offset`. Default columns are a tight subset;
+        pass `columns=''` for all columns."""
         data = await _fetch_logs("/logs", host, service, since, until,
-                                 message_regex, limit, sort, backends)
+                                 message_regex, limit, offset, sort, columns, backends)
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -228,7 +318,9 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         since: str | None = "-24h",
         until: str | None = None,
         limit: int = 100,
+        offset: int = 0,
         sort: str = "-time",
+        columns: str | None = None,
         backends: str | None = None,
     ) -> str:
         """List HOST/SERVICE ALERT entries from the log (/alerts).
@@ -243,7 +335,7 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
             elif s in SVC_STATE_MAP:
                 extra["state"] = SVC_STATE_MAP[s]
         data = await _fetch_logs("/alerts", host, service, since, until,
-                                 None, limit, sort, backends, extra=extra)
+                                 None, limit, offset, sort, columns, backends, extra=extra)
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -254,7 +346,9 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         since: str | None = "-24h",
         until: str | None = None,
         limit: int = 100,
+        offset: int = 0,
         sort: str = "-time",
+        columns: str | None = None,
         backends: str | None = None,
     ) -> str:
         """List notification entries from the log (/notifications, class=3).
@@ -264,7 +358,7 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         if contact:
             extra["contact_name"] = contact
         data = await _fetch_logs("/notifications", host, service, since, until,
-                                 None, limit, sort, backends, extra=extra)
+                                 None, limit, offset, sort, columns, backends, extra=extra)
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
@@ -274,6 +368,8 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         service: str | None = None,
         only_alerts: bool = False,
         limit: int = 100,
+        offset: int = 0,
+        columns: str | None = None,
         backends: str | None = None,
     ) -> str:
         """Return the most recent monitoring events from the last N hours
@@ -281,7 +377,7 @@ def build_server(config: ThrukConfig | None = None) -> FastMCP:
         restrict to HOST/SERVICE ALERT entries."""
         path = "/alerts" if only_alerts else "/logs"
         data = await _fetch_logs(path, host, service, f"-{hours}h", None,
-                                 None, limit, "-time", backends)
+                                 None, limit, offset, "-time", columns, backends)
         return json.dumps(data, indent=2, default=str)
 
     @mcp.tool()
