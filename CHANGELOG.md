@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-17
+
+### Added
+
+- **Connection retries** via `httpx.AsyncHTTPTransport(retries=3)` for
+  DNS / TCP / TLS handshake failures.
+- **HTTP retries with exponential backoff + jitter** for 429 and 5xx
+  responses (cap 5 s, configurable). 4xx are not retried.
+- **Async-safe TTL cache** (`thruk_mcp.cache.TTLCache`, default 15 s)
+  wired to slow-moving endpoints: `/sites`, `/processinfo`,
+  `/*/stats`, `/*/totals`, `/contacts`, `/contactgroups`,
+  `/timeperiods`, `/commands`. Per-call override via `cache_ttl=`.
+- **`ThrukClient.get_all()`** \u2014 async paginator over a list endpoint
+  using `limit`/`offset`, with `hard_limit` safety net (default 50k).
+- **`ThrukClient.run_background()`** + new tool
+  `thruk_run_background_query` \u2014 wrap Thruk's `?background=1` flow
+  and poll `/thruk/jobs/<id>/output` (302 vs. 200) until completion.
+- **5 MCP Resources** \u2014 `thruk://hosts/{name}`,
+  `thruk://services/{host}/{service}`, `thruk://hostgroups/{name}`,
+  `thruk://problems`, `thruk://stats`. Clients with a resource browser
+  (Claude Desktop, VS Code, ...) can open Thruk objects like files.
+- **3 MCP Prompts** \u2014 `investigate_alert(host, service?)`,
+  `schedule_maintenance(target, duration_minutes, kind)`,
+  `diagnose_flapping(host, service)`. Pre-canned slash-commands for
+  the most common ops workflows.
+- 12 new tests (cache TTL semantics, get_all pagination, retry on
+  503/4xx, cache hit). Suite now 15 passing.
+
+### Changed
+
+- README rewritten: \"What is exposed\" section (29 tools / 5 resources /
+  3 prompts) and \"Robustness\" section. The stale v0.1 tools table was
+  removed.
+
 ## [0.2.0] - 2026-05-17
 
 ### Added
@@ -62,6 +96,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GitHub Actions CI (ruff + pytest matrix on 3.10/3.11/3.12 + Docker
   build) and release workflow (multi-arch image with provenance + SBOM).
 
-[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/k9fr4n/thruk-mcp/releases/tag/v0.1.0
