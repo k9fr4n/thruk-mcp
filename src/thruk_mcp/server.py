@@ -800,14 +800,57 @@ async def thruk_delete_active_downtimes(
     backends: str | None = None,
 ) -> str:
     """Remove ALL currently active downtimes for a host (or one specific
-    service when `service` is given). No need to know individual ids."""
-    endpoint = (
-        f"/services/{host}/{service}/cmd/del_active_service_downtimes"
-        if service
-        else f"/hosts/{host}/cmd/del_active_host_downtimes"
-    )
+    service when `service` is given). Fetches all active downtime IDs first,
+    then submits one DEL_*_DOWNTIME per ID. Partial failures are reported
+    individually in `errors` instead of aborting the whole batch."""
+    client = _get_client()
+    be = _backends(backends)
+
+    # Query active downtimes: started and not yet ended (same logic as thruk_list_downtimes).
+    now = int(datetime.now().timestamp())
+    params: dict[str, Any] = {
+        "host_name": host,
+        "start_time[lte]": now,
+        "end_time[gte]": now,
+        "columns": "id,service_description,author,comment",
+    }
+    if service:
+        params["service_description"] = service
+
+    raw = await client.get("/downtimes", params=params, backends=be)
+    all_dts: list[dict[str, Any]] = raw if isinstance(raw, list) else ([raw] if raw else [])
+
+    # Keep only the right type: host-level (empty service_desc) or the requested service.
+    if service:
+        downtimes = [d for d in all_dts if d.get("service_description") == service]
+    else:
+        downtimes = [d for d in all_dts if not d.get("service_description")]
+
+    if not downtimes:
+        return json.dumps(
+            {"deleted": [], "errors": [], "count": 0, "message": "No active downtimes found."},
+            indent=2,
+        )
+
+    deleted: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    for dt in downtimes:
+        dt_id = dt.get("id")
+        if dt_id is None:
+            continue
+        ep = (
+            f"/services/{host}/{service}/cmd/del_svc_downtime"
+            if service
+            else f"/hosts/{host}/cmd/del_host_downtime"
+        )
+        try:
+            resp = await client.post(ep, data={"downtime_id": dt_id}, backends=be)
+            deleted.append({"downtime_id": dt_id, "result": resp})
+        except ThrukError as exc:
+            errors.append({"downtime_id": dt_id, "error": str(exc)})
+
     return json.dumps(
-        await _get_client().post(endpoint, backends=_backends(backends)),
+        {"deleted": deleted, "errors": errors, "count": len(deleted)},
         indent=2,
         default=str,
     )
@@ -821,10 +864,22 @@ async def thruk_delete_downtimes_by_filter(
     comment: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """Bulk-delete downtimes matching arbitrary filters via the system
-    commands `del_downtime_by_host_name`, `del_downtime_by_hostgroup_name`
-    or `del_downtime_by_start_time_comment`. At least one filter must be
-    provided; the most specific endpoint is selected automatically."""
+    """Bulk-delete downtimes matching arbitrary filters via system commands.
+
+    Uses `del_downtime_by_hostgroup_name`, `del_downtime_by_host_name`, or
+    `del_downtime_by_start_time_comment` depending on the most specific filter.
+
+    **Known Naemon limitation**: `DEL_DOWNTIME_BY_HOST_NAME` only covers
+    service-level downtimes. When filtering by `host` (without `hostgroup`),
+    this tool additionally enumerates and deletes matching host-level downtimes
+    via explicit `DEL_HOST_DOWNTIME` commands. Those results appear in the
+    `host_downtimes_deleted` / `host_downtimes_errors` keys of the response.
+
+    At least one of `host`, `hostgroup`, `service`, `start_time` or `comment`
+    must be provided."""
+    client = _get_client()
+    be = _backends(backends)
+
     payload: dict[str, str] = {}
     if host:
         payload["hostname"] = host
@@ -844,15 +899,47 @@ async def thruk_delete_downtimes_by_filter(
         cmd = "del_downtime_by_host_name"
     else:
         cmd = "del_downtime_by_start_time_comment"
-    return json.dumps(
-        await _get_client().post(
-            f"/system/cmd/{cmd}",
-            data=payload,
-            backends=_backends(backends),
-        ),
-        indent=2,
-        default=str,
-    )
+
+    cmd_result = await client.post(f"/system/cmd/{cmd}", data=payload, backends=be)
+    result: dict[str, Any] = {"system_command": cmd_result}
+
+    # DEL_DOWNTIME_BY_HOST_NAME (Naemon) only targets service downtimes.
+    # Enumerate + delete host-level downtimes explicitly when filtering by host.
+    if host and not hostgroup:
+        dt_params: dict[str, Any] = {
+            "host_name": host,
+            "columns": "id,service_description,comment,start_time",
+        }
+        if comment:
+            dt_params["comment"] = comment
+        if start_time:
+            dt_params["start_time"] = start_time
+
+        raw = await client.get("/downtimes", params=dt_params, backends=be)
+        all_dts: list[dict[str, Any]] = raw if isinstance(raw, list) else ([raw] if raw else [])
+        # Host-level downtimes have an empty service_description.
+        host_dts = [d for d in all_dts if not d.get("service_description")]
+
+        host_deleted: list[dict[str, Any]] = []
+        host_errors: list[dict[str, Any]] = []
+        for dt in host_dts:
+            dt_id = dt.get("id")
+            if dt_id is None:
+                continue
+            try:
+                resp = await client.post(
+                    f"/hosts/{host}/cmd/del_host_downtime",
+                    data={"downtime_id": dt_id},
+                    backends=be,
+                )
+                host_deleted.append({"downtime_id": dt_id, "result": resp})
+            except ThrukError as exc:
+                host_errors.append({"downtime_id": dt_id, "error": str(exc)})
+
+        result["host_downtimes_deleted"] = host_deleted
+        result["host_downtimes_errors"] = host_errors
+
+    return json.dumps(result, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
