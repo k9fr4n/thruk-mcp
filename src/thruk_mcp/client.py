@@ -165,6 +165,73 @@ class ThrukClient:
     async def post(self, path: str, **kw: Any) -> Any:
         return await self.request("POST", path, **kw)
 
+    async def get_with_fallback(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        backends: tuple[str, ...] | None = None,
+    ) -> tuple[Any, list[str]]:
+        """GET with automatic per-backend fallback on federation failure.
+
+        Returns ``(data, warnings)`` where *warnings* is a list of
+        ``"<backend_id>: <error>"`` strings for any backend that failed
+        during the per-backend fallback pass.
+
+        The fallback is activated only when *backends* is ``None`` (no
+        explicit selection) **and** the all-backends request raises
+        :class:`ThrukError`.  When *backends* is set explicitly, errors
+        propagate normally so the caller gets a clear signal.
+
+        Note: when the fallback runs, each connected backend receives the
+        full ``limit`` from *params*, so the aggregated result may contain
+        up to ``N * limit`` rows across N backends.
+        """
+        try:
+            result = await self.get(path, params=params, backends=backends)
+            return result, []
+        except ThrukError as initial_exc:
+            if backends is not None:
+                raise
+            log.warning(
+                "All-backends GET %s failed, falling back to per-backend queries: %s",
+                path,
+                initial_exc,
+            )
+
+        # Discover connected backends via /sites (result is cached by default).
+        try:
+            sites_raw = await self.get("/sites")
+        except ThrukError as exc:
+            raise ThrukError(
+                f"Cannot determine connected backends (GET /sites failed): {exc}"
+            ) from exc
+
+        if not isinstance(sites_raw, list):
+            raise ThrukError(
+                f"Unexpected /sites response (expected list, got {type(sites_raw).__name__})"
+            )
+
+        connected_ids = [s["id"] for s in sites_raw if s.get("connected") == 1]
+        if not connected_ids:
+            n = len(sites_raw)
+            raise ThrukError(f"All {n} backend(s) are disconnected — no fallback possible")
+
+        tasks = [self.get(path, params=params, backends=(bid,)) for bid in connected_ids]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        aggregated: list[Any] = []
+        warnings: list[str] = []
+        for bid, res in zip(connected_ids, raw_results, strict=False):
+            if isinstance(res, Exception):
+                warnings.append(f"{bid}: {res}")
+            elif isinstance(res, list):
+                aggregated.extend(res)
+            elif res is not None:
+                aggregated.append(res)
+
+        return aggregated, warnings
+
     # ----------------------------------------------------------- pagination
     async def get_all(
         self,
