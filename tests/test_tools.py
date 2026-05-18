@@ -283,7 +283,8 @@ async def test_delete_downtime_service_autodetect(mocked_server) -> None:
         "https://thruk.test/r/services/srv01/SERVICE_ACTIVE-DIRECTORY_HEALTH/cmd/del_downtime"
     ).mock(return_value=ok({"rc": 0}))
     await mcp.call_tool(
-        "thruk_delete_downtime", {"downtime_id": 446436, "host": "srv01"}  # no service arg
+        "thruk_delete_downtime",
+        {"downtime_id": 446436, "host": "srv01"},  # no service arg
     )
     assert del_route.call_count == 1
     body = del_route.calls.last.request.content.decode()
@@ -294,9 +295,9 @@ async def test_delete_downtime_service_autodetect(mocked_server) -> None:
 async def test_delete_downtime_service_explicit(mocked_server) -> None:
     """When service is provided explicitly, skip the GET round-trip."""
     mcp, router = mocked_server
-    del_route = router.post(
-        "https://thruk.test/r/services/srv01/CPU/cmd/del_downtime"
-    ).mock(return_value=ok({"rc": 0}))
+    del_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
     await mcp.call_tool(
         "thruk_delete_downtime", {"downtime_id": 42, "host": "srv01", "service": "CPU"}
     )
