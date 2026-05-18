@@ -377,7 +377,17 @@ async def thruk_list_alerts(
         elif s in SVC_STATE_MAP:
             extra["state"] = SVC_STATE_MAP[s]
     data = await _fetch_logs(
-        "/alerts", host, service, since, until, None, limit, offset, sort, columns, backends,
+        "/alerts",
+        host,
+        service,
+        since,
+        until,
+        None,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
         extra=extra,
     )
     return json.dumps(data, indent=2, default=str)
@@ -402,7 +412,17 @@ async def thruk_list_notifications(
     if contact:
         extra["contact_name"] = contact
     data = await _fetch_logs(
-        "/notifications", host, service, since, until, None, limit, offset, sort, columns, backends,
+        "/notifications",
+        host,
+        service,
+        since,
+        until,
+        None,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
         extra=extra,
     )
     return json.dumps(data, indent=2, default=str)
@@ -439,7 +459,11 @@ async def thruk_query(
     (e.g. `/hosts/srv01/services`). `params` is the query string, `data` the form body.
     See https://www.thruk.org/documentation/rest.html for the full catalogue."""
     result = await _get_client().request(
-        method.upper(), path, params=params, data=data, backends=_backends(backends),
+        method.upper(),
+        path,
+        params=params,
+        data=data,
+        backends=_backends(backends),
     )
     return json.dumps(result, indent=2, default=str)
 
@@ -460,10 +484,15 @@ async def thruk_run_background_query(
     reports, recursive config checks. Same `path` semantics as
     `thruk_query`."""
     result = await _get_client().run_background(
-        path, method=method.upper(), params=params, data=data,
-        backends=_backends(backends), poll_timeout=poll_timeout,
+        path,
+        method=method.upper(),
+        params=params,
+        data=data,
+        backends=_backends(backends),
+        poll_timeout=poll_timeout,
     )
     return json.dumps(result, indent=2, default=str)
+
 
 # ---------------------------------------------------------------------------
 # Downtime helper (module-level)
@@ -525,7 +554,8 @@ async def thruk_schedule_downtime(
     }
     return json.dumps(
         await _get_client().post(endpoint, data=payload, backends=_backends(backends)),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -554,7 +584,8 @@ async def thruk_acknowledge(
     }
     return json.dumps(
         await _get_client().post(endpoint, data=payload, backends=_backends(backends)),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -569,7 +600,8 @@ async def thruk_remove_acknowledgement(
     )
     return json.dumps(
         await _get_client().post(endpoint, backends=_backends(backends)),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -587,7 +619,8 @@ async def thruk_recheck(
         await _get_client().post(
             endpoint, data={"start_time": "now"}, backends=_backends(backends)
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -604,7 +637,8 @@ async def thruk_delete_downtime(
         await _get_client().post(
             endpoint, data={"downtime_id": str(downtime_id)}, backends=_backends(backends)
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -631,9 +665,11 @@ async def thruk_schedule_host_services_downtime(
     return json.dumps(
         await _get_client().post(
             f"/hosts/{host}/cmd/schedule_host_svc_downtime",
-            data=payload, backends=_backends(backends),
+            data=payload,
+            backends=_backends(backends),
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -660,9 +696,12 @@ async def thruk_schedule_propagated_host_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/hosts/{host}/cmd/{cmd}", data=payload, backends=_backends(backends),
+            f"/hosts/{host}/cmd/{cmd}",
+            data=payload,
+            backends=_backends(backends),
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -687,9 +726,12 @@ async def thruk_schedule_hostgroup_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/hostgroups/{hostgroup}/cmd/{cmd}", data=payload, backends=_backends(backends),
+            f"/hostgroups/{hostgroup}/cmd/{cmd}",
+            data=payload,
+            backends=_backends(backends),
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -715,9 +757,12 @@ async def thruk_schedule_servicegroup_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/servicegroups/{servicegroup}/cmd/{cmd}", data=payload, backends=_backends(backends),
+            f"/servicegroups/{servicegroup}/cmd/{cmd}",
+            data=payload,
+            backends=_backends(backends),
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -735,7 +780,8 @@ async def thruk_delete_active_downtimes(
     )
     return json.dumps(
         await _get_client().post(endpoint, backends=_backends(backends)),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -763,9 +809,7 @@ async def thruk_delete_downtimes_by_filter(
     if comment:
         payload["comment"] = comment
     if not payload:
-        raise ValueError(
-            "Provide at least one of host, hostgroup, service, start_time, comment."
-        )
+        raise ValueError("Provide at least one of host, hostgroup, service, start_time, comment.")
     if hostgroup:
         cmd = "del_downtime_by_hostgroup_name"
     elif host:
@@ -774,9 +818,12 @@ async def thruk_delete_downtimes_by_filter(
         cmd = "del_downtime_by_start_time_comment"
     return json.dumps(
         await _get_client().post(
-            f"/system/cmd/{cmd}", data=payload, backends=_backends(backends),
+            f"/system/cmd/{cmd}",
+            data=payload,
+            backends=_backends(backends),
         ),
-        indent=2, default=str,
+        indent=2,
+        default=str,
     )
 
 
@@ -806,12 +853,18 @@ async def _hostgroup_resource(name: str) -> str:
 async def _problems_resource() -> str:
     """Current unhandled host/service problems as a JSON document."""
     host_params = {
-        "state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
-        "columns": DEFAULT_HOST_COLUMNS, "limit": 500,
+        "state": 1,
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "columns": DEFAULT_HOST_COLUMNS,
+        "limit": 500,
     }
     svc_params = {
-        "state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0,
-        "columns": DEFAULT_SERVICE_COLUMNS, "limit": 500,
+        "state[gte]": 1,
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "columns": DEFAULT_SERVICE_COLUMNS,
+        "limit": 500,
     }
     hosts = await _get_client().get("/hosts", params=host_params)
     services = await _get_client().get("/services", params=svc_params)
@@ -832,17 +885,19 @@ async def _stats_resource() -> str:
 
 def investigate_alert(host: str, service: str | None = None) -> str:
     target = f"host '{host}'" if not service else f"service '{service}' on host '{host}'"
-    steps = "\n".join([
-        f"1. Fetch the current state of {target} using `thruk_get_host`"
-        + ("/`thruk_get_service`" if service else ""),
-        "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
-        "3. Check notifications sent via `thruk_list_notifications`",
-        "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
-        "5. Verify there is no active downtime via `thruk_list_downtimes`",
-        "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
-        "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
-        "and/or trigger a forced recheck with `thruk_recheck`.",
-    ])
+    steps = "\n".join(
+        [
+            f"1. Fetch the current state of {target} using `thruk_get_host`"
+            + ("/`thruk_get_service`" if service else ""),
+            "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
+            "3. Check notifications sent via `thruk_list_notifications`",
+            "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
+            "5. Verify there is no active downtime via `thruk_list_downtimes`",
+            "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
+            "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
+            "and/or trigger a forced recheck with `thruk_recheck`.",
+        ]
+    )
     return (
         f"You are the on-call SRE assistant. The user wants to investigate the "
         f"current alert on {target}. Proceed methodically:\n\n{steps}\n\n"
@@ -855,7 +910,8 @@ def schedule_maintenance(target: str, duration_minutes: int = 120, kind: str = "
     if kind not in {"host", "service", "hostgroup", "servicegroup"}:
         kind = "hostgroup"
     tool_map = {
-        "host": "thruk_schedule_downtime", "service": "thruk_schedule_downtime",
+        "host": "thruk_schedule_downtime",
+        "service": "thruk_schedule_downtime",
         "hostgroup": "thruk_schedule_hostgroup_downtime",
         "servicegroup": "thruk_schedule_servicegroup_downtime",
     }
@@ -898,17 +954,36 @@ def diagnose_flapping(host: str, service: str) -> str:
 
 # Ordered list of all tool functions. build_server() registers them in order.
 _ALL_TOOLS = [
-    thruk_list_hosts, thruk_get_host, thruk_list_services, thruk_get_service,
-    thruk_list_hostgroups, thruk_list_servicegroups, thruk_problems, thruk_stats,
-    thruk_list_downtimes, thruk_get_downtime, thruk_list_comments, thruk_sites,
-    thruk_list_logs, thruk_list_alerts, thruk_list_notifications, thruk_recent_events,
-    thruk_query, thruk_run_background_query,
+    thruk_list_hosts,
+    thruk_get_host,
+    thruk_list_services,
+    thruk_get_service,
+    thruk_list_hostgroups,
+    thruk_list_servicegroups,
+    thruk_problems,
+    thruk_stats,
+    thruk_list_downtimes,
+    thruk_get_downtime,
+    thruk_list_comments,
+    thruk_sites,
+    thruk_list_logs,
+    thruk_list_alerts,
+    thruk_list_notifications,
+    thruk_recent_events,
+    thruk_query,
+    thruk_run_background_query,
     # write tools
-    thruk_schedule_downtime, thruk_schedule_host_services_downtime,
-    thruk_schedule_propagated_host_downtime, thruk_schedule_hostgroup_downtime,
-    thruk_schedule_servicegroup_downtime, thruk_delete_downtime,
-    thruk_delete_active_downtimes, thruk_delete_downtimes_by_filter,
-    thruk_acknowledge, thruk_remove_acknowledgement, thruk_recheck,
+    thruk_schedule_downtime,
+    thruk_schedule_host_services_downtime,
+    thruk_schedule_propagated_host_downtime,
+    thruk_schedule_hostgroup_downtime,
+    thruk_schedule_servicegroup_downtime,
+    thruk_delete_downtime,
+    thruk_delete_active_downtimes,
+    thruk_delete_downtimes_by_filter,
+    thruk_acknowledge,
+    thruk_remove_acknowledgement,
+    thruk_recheck,
 ]
 
 
