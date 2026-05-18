@@ -1,13 +1,18 @@
 """MCP server definition: tools mapped to Thruk REST endpoints.
 
-All tool functions are defined at **module level** (not nested inside build_server).
-This guarantees that every MCP/FastMCP version can correctly introspect the type
-annotations at registration time — nested closures break get_type_hints() in some
-SDK versions, resulting in empty ``properties: {}`` schemas that cause the gateway
-to strip every argument before forwarding.
+Uses the **low-level MCP SDK** (mcp.server.Server) instead of FastMCP.
 
-build_server() registers the module-level functions into a fresh FastMCP instance
-and sets the module-level _client so the tool implementations can reach Thruk.
+Rationale: the Docker MCP Gateway strips arguments from tool calls when the
+schemas it receives are empty.  FastMCP generates schemas via
+``typing.get_type_hints()``; on some SDK/Python versions this fails for
+functions defined as closures inside ``build_server()``, yielding
+``properties: {}``.  By using the low-level SDK we:
+
+  1. Define ``inputSchema`` explicitly (no annotation introspection at all).
+  2. Receive ``arguments`` as a raw ``dict`` in ``call_tool`` — no Pydantic
+     model is created, so the gateway cannot silently drop params.
+  3. Stay compatible with the Docker MCP Gateway's stdio transport without
+     any catalog label gymnastics.
 """
 
 import fnmatch
@@ -16,10 +21,11 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import Server
+from mcp.types import TextContent, Tool
 
 from . import audit
-from .client import ThrukClient
+from .client import ThrukClient, ThrukError
 from .config import ThrukConfig
 
 log = logging.getLogger("thruk_mcp.server")
@@ -952,115 +958,437 @@ def diagnose_flapping(host: str, service: str) -> str:
 # build_server: registers module-level functions into a fresh FastMCP instance
 # ---------------------------------------------------------------------------
 
-# Ordered list of all tool functions. build_server() registers them in order.
-_ALL_TOOLS = [
-    thruk_list_hosts,
-    thruk_get_host,
-    thruk_list_services,
-    thruk_get_service,
-    thruk_list_hostgroups,
-    thruk_list_servicegroups,
-    thruk_problems,
-    thruk_stats,
-    thruk_list_downtimes,
-    thruk_get_downtime,
-    thruk_list_comments,
-    thruk_sites,
-    thruk_list_logs,
-    thruk_list_alerts,
-    thruk_list_notifications,
-    thruk_recent_events,
-    thruk_query,
-    thruk_run_background_query,
+# ---------------------------------------------------------------------------
+# Explicit JSON Schemas — no annotation introspection, no Pydantic
+# ---------------------------------------------------------------------------
+
+
+def _s(*required: str, **props: Any) -> dict:
+    """Shorthand to build a JSON-Schema object."""
+    properties = {k: (v if isinstance(v, dict) else {"type": v}) for k, v in props.items()}
+    schema: dict = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = list(required)
+    return schema
+
+
+def _str(desc: str = "") -> dict:
+    return {"type": "string", "description": desc} if desc else {"type": "string"}
+
+
+def _int(desc: str = "", default: int | None = None) -> dict:
+    d: dict = {"type": "integer"}
+    if desc:
+        d["description"] = desc
+    if default is not None:
+        d["default"] = default
+    return d
+
+
+def _bool(desc: str = "", default: bool | None = None) -> dict:
+    d: dict = {"type": "boolean"}
+    if desc:
+        d["description"] = desc
+    if default is not None:
+        d["default"] = default
+    return d
+
+
+_OPT_STR = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
+_OPT_INT = {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
+_OPT_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}], "default": None}
+_OPT_OBJ = {"anyOf": [{"type": "object"}, {"type": "null"}], "default": None}
+_BACKENDS = {
+    "anyOf": [{"type": "string"}, {"type": "null"}],
+    "default": None,
+    "description": "Comma-separated backend names (sites). Omit for all backends.",
+}
+
+
+_TOOL_SCHEMAS: dict[str, dict] = {
+    "thruk_list_hosts": _s(
+        hostgroup=_OPT_STR,
+        state=_OPT_STR,
+        name_regex=_OPT_STR,
+        limit=_int(default=50),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_get_host": _s("host", host=_str("Host name"), backends=_BACKENDS),
+    "thruk_list_services": _s(
+        host=_OPT_STR,
+        servicegroup=_OPT_STR,
+        state=_OPT_STR,
+        description_regex=_OPT_STR,
+        limit=_int(default=50),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_get_service": _s(
+        "host",
+        "service",
+        host=_str("Host name"),
+        service=_str("Service description"),
+        backends=_BACKENDS,
+    ),
+    "thruk_list_hostgroups": _s(
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_list_servicegroups": _s(
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_problems": _s(
+        limit=_int(default=100),
+        offset=_int(default=0),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_stats": _s(backends=_BACKENDS),
+    "thruk_list_downtimes": _s(
+        host=_OPT_STR,
+        active_only=_bool(default=True),
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_get_downtime": _s("downtime_id", downtime_id=_int(), backends=_BACKENDS),
+    "thruk_list_comments": _s(
+        host=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_sites": _s(),
+    "thruk_list_logs": _s(
+        host=_OPT_STR,
+        service=_OPT_STR,
+        since=_OPT_STR,
+        until=_OPT_STR,
+        message_regex=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_list_alerts": _s(
+        host=_OPT_STR,
+        service=_OPT_STR,
+        state=_OPT_STR,
+        since=_OPT_STR,
+        until=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_list_notifications": _s(
+        host=_OPT_STR,
+        service=_OPT_STR,
+        contact=_OPT_STR,
+        since=_OPT_STR,
+        until=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_recent_events": _s(
+        hours=_int(default=1),
+        host=_OPT_STR,
+        service=_OPT_STR,
+        only_alerts=_bool(default=False),
+        limit=_int(default=100),
+        offset=_int(default=0),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_query": _s(
+        "path",
+        path=_str("Path after /thruk/r, e.g. /hosts/srv01/services"),
+        method=_str(),
+        params=_OPT_OBJ,
+        data=_OPT_OBJ,
+        backends=_BACKENDS,
+    ),
+    "thruk_run_background_query": _s(
+        "path",
+        path=_str("Path after /thruk/r"),
+        method=_str(),
+        params=_OPT_OBJ,
+        data=_OPT_OBJ,
+        backends=_BACKENDS,
+        poll_timeout={"type": "number", "default": 300.0},
+    ),
     # write tools
-    thruk_schedule_downtime,
-    thruk_schedule_host_services_downtime,
-    thruk_schedule_propagated_host_downtime,
-    thruk_schedule_hostgroup_downtime,
-    thruk_schedule_servicegroup_downtime,
-    thruk_delete_downtime,
-    thruk_delete_active_downtimes,
-    thruk_delete_downtimes_by_filter,
-    thruk_acknowledge,
-    thruk_remove_acknowledgement,
-    thruk_recheck,
-]
+    "thruk_schedule_downtime": _s(
+        "host",
+        host=_str("Host name"),
+        service=_OPT_STR,
+        comment=_str(),
+        author=_str(),
+        start_time=_str(),
+        end_time=_str(),
+        duration_minutes=_OPT_INT,
+        fixed=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+    "thruk_schedule_host_services_downtime": _s(
+        "host",
+        host=_str("Host name"),
+        comment=_str(),
+        author=_str(),
+        start_time=_str(),
+        end_time=_str(),
+        duration_minutes=_OPT_INT,
+        fixed=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+    "thruk_schedule_propagated_host_downtime": _s(
+        "host",
+        host=_str("Host name"),
+        triggered=_bool(default=False),
+        comment=_str(),
+        author=_str(),
+        start_time=_str(),
+        end_time=_str(),
+        duration_minutes=_OPT_INT,
+        fixed=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+    "thruk_schedule_hostgroup_downtime": _s(
+        "hostgroup",
+        hostgroup=_str("Hostgroup name"),
+        target=_str(),
+        comment=_str(),
+        author=_str(),
+        start_time=_str(),
+        end_time=_str(),
+        duration_minutes=_OPT_INT,
+        fixed=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+    "thruk_schedule_servicegroup_downtime": _s(
+        "servicegroup",
+        servicegroup=_str("Servicegroup name"),
+        target=_str(),
+        comment=_str(),
+        author=_str(),
+        start_time=_str(),
+        end_time=_str(),
+        duration_minutes=_OPT_INT,
+        fixed=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+    "thruk_delete_downtime": _s(
+        "downtime_id",
+        "host",
+        downtime_id=_int(),
+        host=_str(),
+        service=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_delete_active_downtimes": _s(
+        "host",
+        host=_str(),
+        service=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_delete_downtimes_by_filter": _s(
+        host=_OPT_STR,
+        hostgroup=_OPT_STR,
+        service=_OPT_STR,
+        start_time=_OPT_STR,
+        comment=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_acknowledge": _s(
+        "host",
+        host=_str("Host name"),
+        service=_OPT_STR,
+        comment=_str(),
+        author=_str(),
+        sticky=_bool(default=True),
+        notify=_bool(default=True),
+        persistent=_bool(default=False),
+        backends=_BACKENDS,
+    ),
+    "thruk_remove_acknowledgement": _s(
+        "host",
+        host=_str(),
+        service=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_recheck": _s(
+        "host",
+        host=_str("Host name"),
+        service=_OPT_STR,
+        forced=_bool(default=True),
+        backends=_BACKENDS,
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch table: tool name → implementation coroutine
+# ---------------------------------------------------------------------------
+
+_TOOL_DISPATCH: dict[str, Any] = {
+    "thruk_list_hosts": thruk_list_hosts,
+    "thruk_get_host": thruk_get_host,
+    "thruk_list_services": thruk_list_services,
+    "thruk_get_service": thruk_get_service,
+    "thruk_list_hostgroups": thruk_list_hostgroups,
+    "thruk_list_servicegroups": thruk_list_servicegroups,
+    "thruk_problems": thruk_problems,
+    "thruk_stats": thruk_stats,
+    "thruk_list_downtimes": thruk_list_downtimes,
+    "thruk_get_downtime": thruk_get_downtime,
+    "thruk_list_comments": thruk_list_comments,
+    "thruk_sites": thruk_sites,
+    "thruk_list_logs": thruk_list_logs,
+    "thruk_list_alerts": thruk_list_alerts,
+    "thruk_list_notifications": thruk_list_notifications,
+    "thruk_recent_events": thruk_recent_events,
+    "thruk_query": thruk_query,
+    "thruk_run_background_query": thruk_run_background_query,
+    "thruk_schedule_downtime": thruk_schedule_downtime,
+    "thruk_schedule_host_services_downtime": thruk_schedule_host_services_downtime,
+    "thruk_schedule_propagated_host_downtime": thruk_schedule_propagated_host_downtime,
+    "thruk_schedule_hostgroup_downtime": thruk_schedule_hostgroup_downtime,
+    "thruk_schedule_servicegroup_downtime": thruk_schedule_servicegroup_downtime,
+    "thruk_delete_downtime": thruk_delete_downtime,
+    "thruk_delete_active_downtimes": thruk_delete_active_downtimes,
+    "thruk_delete_downtimes_by_filter": thruk_delete_downtimes_by_filter,
+    "thruk_acknowledge": thruk_acknowledge,
+    "thruk_remove_acknowledgement": thruk_remove_acknowledgement,
+    "thruk_recheck": thruk_recheck,
+}
 
 
-def build_server(config: ThrukConfig | None = None) -> FastMCP:
-    """Build the FastMCP server with all Thruk tools registered.
+# ---------------------------------------------------------------------------
+# build_server: returns a low-level mcp.server.Server
+# ---------------------------------------------------------------------------
 
-    Each call creates a fresh FastMCP instance and sets the module-level
-    _client accessor so tool implementations can reach Thruk.
+
+class ThrukMCPServer:
+    """Thin wrapper around mcp.server.Server that adds convenience methods
+    (list_tools, call_tool) used in tests and the __main__ entry point.
+    """
+
+    def __init__(
+        self,
+        server: Server,
+        enabled: dict[str, Any],
+        client: ThrukClient,
+        cfg: ThrukConfig,
+    ) -> None:
+        self._server = server
+        self._enabled = enabled
+        self._thruk_client = client
+        self._cfg = cfg
+
+    # --- Delegate MCP protocol methods to the wrapped Server ----------------
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._server, name)
+
+    # --- Convenience methods (used by tests + __main__) ---------------------
+
+    async def list_tools(self) -> list[Tool]:
+        tools = []
+        for name, fn in self._enabled.items():
+            schema = _TOOL_SCHEMAS.get(name, {"type": "object", "properties": {}})
+            tools.append(
+                Tool(
+                    name=name,
+                    description=(fn.__doc__ or "").strip().split("\n")[0],
+                    inputSchema=schema,
+                )
+            )
+        return tools
+
+    async def call_tool(self, name: str, arguments: dict) -> list[TextContent]:
+        fn = self._enabled.get(name)
+        if fn is None:
+            raise ValueError(f"Unknown or disabled tool: {name!r}")
+        try:
+            result = await fn(**arguments)
+        except TypeError as exc:
+            if self._cfg.audit_log and name in WRITE_TOOLS:
+                audit.log_call(
+                    name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
+                )
+            raise ValueError(f"Invalid arguments for {name!r}: {exc}") from exc
+        except ThrukError as exc:
+            if self._cfg.audit_log and name in WRITE_TOOLS:
+                audit.log_call(
+                    name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
+                )
+            raise ValueError(str(exc)) from exc
+        if self._cfg.audit_log and name in WRITE_TOOLS:
+            audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
+        return [TextContent(type="text", text=result)]
+
+    async def run(self, read_stream, write_stream, init_options=None):  # type: ignore[override]
+        await self._server.run(read_stream, write_stream, init_options)
+
+    def create_initialization_options(self):  # type: ignore[override]
+        return self._server.create_initialization_options()
+
+
+def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
+    """Build the MCP server with all Thruk tools registered.
+
+    Uses mcp.server.Server directly (not FastMCP) so that:
+    - inputSchema is defined explicitly — no annotation introspection
+    - arguments arrive as a raw dict in call_tool — no Pydantic model
+    - the Docker MCP Gateway cannot silently strip arguments
     """
     global _client
     cfg = config or ThrukConfig.from_env()
     _client = ThrukClient(cfg)
 
-    mcp = FastMCP("thruk-mcp")
-
-    # Register tools — functions are at module level so FastMCP can always
-    # introspect their type annotations correctly.
-    for fn in _ALL_TOOLS:
-        mcp.tool()(fn)
-
-    # Resources
-    mcp.resource("thruk://hosts/{name}")(_host_resource)
-    mcp.resource("thruk://services/{host}/{service}")(_service_resource)
-    mcp.resource("thruk://hostgroups/{name}")(_hostgroup_resource)
-    mcp.resource("thruk://problems")(_problems_resource)
-    mcp.resource("thruk://stats")(_stats_resource)
-
-    # Prompts
-    mcp.prompt(
-        title="Investigate alert",
-        description="Walk through a host/service alert: state, recent logs, "
-        "notifications, and suggested next steps.",
-    )(investigate_alert)
-    mcp.prompt(
-        title="Schedule maintenance",
-        description="Schedule downtime for a hostgroup, host or service for a given duration.",
-    )(schedule_maintenance)
-    mcp.prompt(
-        title="Why is service flapping?",
-        description="Diagnose a flapping service: state-change history, recent logs, "
-        "perf-data trends, and recommendations.",
-    )(diagnose_flapping)
-
-    # Security: filter & wrap
     audit.configure(enabled=cfg.audit_log)
-    _apply_security_filters(mcp, cfg)
 
-    # store for graceful shutdown
-    mcp._thruk_client = _client  # type: ignore[attr-defined]
-    return mcp
-
-
-def _apply_security_filters(mcp: FastMCP, cfg: ThrukConfig) -> None:
-    """Remove disallowed tools and wrap write tools with audit logging.
-
-    Three orthogonal knobs:
-    - `cfg.read_only`: drop every tool in WRITE_TOOLS.
-    - `cfg.enabled_tools`: if non-empty, drop every tool not matched by any
-      of its fnmatch patterns. Always evaluated AFTER read_only.
-    - `cfg.audit_log`: wrap remaining write tools to emit JSON audit lines.
-    """
-    tool_mgr = mcp._tool_manager
-    registry: dict[str, Any] = tool_mgr._tools
-    for name in list(registry):
-        # 1) read_only mode strips writes outright
+    # Build enabled tool set (read_only / allowlist filtering)
+    enabled: dict[str, Any] = {}
+    for name, fn in _TOOL_DISPATCH.items():
         if cfg.read_only and name in WRITE_TOOLS:
-            mcp.remove_tool(name)
-            log.info("read_only: removed tool %s", name)
             continue
-        # 2) allowlist (if provided) takes precedence over everything else
-        if cfg.enabled_tools and not any(
-            fnmatch.fnmatchcase(name, pat) for pat in cfg.enabled_tools
-        ):
-            mcp.remove_tool(name)
-            log.info("allowlist: removed tool %s", name)
+        if cfg.enabled_tools and not any(fnmatch.fnmatch(name, pat) for pat in cfg.enabled_tools):
             continue
-        # 3) wrap remaining writes for audit
-        if cfg.audit_log and name in WRITE_TOOLS:
-            tool = registry[name]
-            tool.fn = audit.audited(name, user=cfg.auth_user)(tool.fn)
+        enabled[name] = fn
+
+    wrapper = ThrukMCPServer(Server("thruk-mcp"), enabled, _client, cfg)
+
+    @wrapper._server.list_tools()
+    async def list_tools() -> list[Tool]:
+        return await wrapper.list_tools()
+
+    @wrapper._server.call_tool()
+    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+        return await wrapper.call_tool(name, arguments)
+
+    return wrapper
+
+
+# _apply_security_filters was removed: its logic is now inlined in build_server()
+# (enabled dict filtering + audit logging in call_tool handler).

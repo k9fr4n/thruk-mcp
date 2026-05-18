@@ -54,6 +54,27 @@ def _target(args: dict[str, Any]) -> str | None:
     return None
 
 
+def log_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    user: str = "",
+    status: str = "ok",
+    error: str | None = None,
+) -> None:
+    """Emit one audit JSON line. Called directly from the call_tool handler."""
+    record: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "tool": tool_name,
+        "user": user,
+        "args": _redact(arguments),
+        "target": _target(arguments),
+        "status": status,
+    }
+    if error:
+        record["error"] = error
+    log.info(json.dumps(record, default=str))
+
+
 def configure(enabled: bool = True) -> None:
     """Idempotently configure the audit logger to emit one JSON line per record
     on stderr. Calling with enabled=False silences it."""

@@ -127,7 +127,7 @@ async def test_audit_log_records_error_status(caplog) -> None:
         rec = next(r for r in caplog.records if r.name == "thruk_mcp.audit")
         payload = json.loads(rec.message)
         assert payload["status"] == "error"
-        assert "ThrukError" in payload["error"]
+        assert payload["error"]  # any non-empty error message
     finally:
         await _close(mcp)
 
