@@ -75,9 +75,7 @@ async def test_get_with_fallback_triggers_per_backend_on_500() -> None:
             return_value=httpx.Response(500, text="federation error")
         )
         # /sites → list with 2 connected + 1 disconnected
-        router.get("https://thruk.test/r/sites").mock(
-            return_value=httpx.Response(200, json=sites)
-        )
+        router.get("https://thruk.test/r/sites").mock(return_value=httpx.Response(200, json=sites))
         # Per-backend queries (only connected ones)
         router.get("https://thruk.test/r/sites/prod/logs").mock(
             return_value=httpx.Response(200, json=[{"time": 2, "peer_name": "prod"}])
@@ -102,12 +100,8 @@ async def test_get_with_fallback_partial_backend_failure_produces_warning() -> N
         {"id": "flaky", "name": "flaky", "connected": 1},
     ]
     async with respx.mock() as router:
-        router.get("https://thruk.test/r/logs").mock(
-            return_value=httpx.Response(500, text="boom")
-        )
-        router.get("https://thruk.test/r/sites").mock(
-            return_value=httpx.Response(200, json=sites)
-        )
+        router.get("https://thruk.test/r/logs").mock(return_value=httpx.Response(500, text="boom"))
+        router.get("https://thruk.test/r/sites").mock(return_value=httpx.Response(200, json=sites))
         router.get("https://thruk.test/r/sites/ok-site/logs").mock(
             return_value=httpx.Response(200, json=[{"time": 99}])
         )

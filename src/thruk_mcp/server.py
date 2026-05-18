@@ -346,9 +346,7 @@ async def _fetch_logs(
         params["message[regex]"] = message_regex
     if extra:
         params.update(extra)
-    return await _get_client().get_with_fallback(
-        path, params=params, backends=_backends(backends)
-    )
+    return await _get_client().get_with_fallback(path, params=params, backends=_backends(backends))
 
 
 async def thruk_list_logs(
