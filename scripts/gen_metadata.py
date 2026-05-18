@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate catalog/metadata.json for the Docker MCP Gateway io.docker.server.metadata label."""
+"""Generate catalog/metadata.json for the Docker MCP Gateway io.docker.server.metadata label.
+
+Compatible with the low-level mcp.server.Server backend introduced in v1.0.6.
+Uses ThrukMCPServer.list_tools() (async) instead of the FastMCP _tool_manager attribute.
+"""
+import asyncio
 import json
 import os
 import sys
@@ -20,8 +25,13 @@ def schema_to_arguments(input_schema: dict) -> list:
         if "anyOf" in prop:
             non_null = [x.get("type") for x in prop["anyOf"] if x.get("type") != "null"]
             ptype = non_null[0] if non_null else "string"
-        type_map = {"integer": "integer", "number": "number",
-                    "boolean": "boolean", "array": "array", "object": "object"}
+        type_map = {
+            "integer": "integer",
+            "number": "number",
+            "boolean": "boolean",
+            "array": "array",
+            "object": "object",
+        }
         arg = {
             "name": name,
             "type": type_map.get(ptype, "string"),
@@ -33,16 +43,23 @@ def schema_to_arguments(input_schema: dict) -> list:
     return args
 
 
-def main():
+async def _collect_tools() -> list:
+    """Async helper: builds the server and collects tool metadata."""
     server = build_server()
-    tools_raw = server._tool_manager.list_tools()
+    tools_list = await server.list_tools()
     tools = []
-    for t in tools_raw:
-        args = schema_to_arguments(t.parameters)
-        tool = {"name": t.name, "description": " ".join(t.description.split())}
+    for t in tools_list:
+        # t is mcp.types.Tool: .name, .description, .inputSchema
+        args = schema_to_arguments(t.inputSchema)
+        tool = {"name": t.name, "description": " ".join((t.description or "").split())}
         if args:
             tool["arguments"] = args
         tools.append(tool)
+    return tools
+
+
+def main():
+    tools = asyncio.run(_collect_tools())
 
     metadata = {
         "name": "thruk-mcp",
