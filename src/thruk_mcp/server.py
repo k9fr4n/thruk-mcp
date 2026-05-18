@@ -1347,10 +1347,10 @@ class ThrukMCPServer:
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
 
-    async def run(self, read_stream, write_stream, init_options=None):  # type: ignore[override]
+    async def run(self, read_stream, write_stream, init_options=None):
         await self._server.run(read_stream, write_stream, init_options)
 
-    def create_initialization_options(self):  # type: ignore[override]
+    def create_initialization_options(self):
         return self._server.create_initialization_options()
 
 
