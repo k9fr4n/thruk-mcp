@@ -246,13 +246,62 @@ async def test_schedule_servicegroup_downtime(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_downtime(mocked_server) -> None:
+async def test_delete_downtime_host_explicit_service_none(mocked_server) -> None:
+    """When service=None, tool auto-detects downtime type via GET /downtimes/{id}.
+    A host downtime (empty service_description) routes to the host endpoint."""
+
     mcp, router = mocked_server
-    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
+    # Auto-detection GET
+    router.get("https://thruk.test/r/downtimes/42").mock(
+        return_value=ok({"id": 42, "service_description": "", "host_name": "srv01"})
+    )
+    del_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
         return_value=ok({"rc": 0})
     )
     await mcp.call_tool("thruk_delete_downtime", {"downtime_id": 42, "host": "srv01"})
-    body = route.calls.last.request.content.decode()
+    body = del_route.calls.last.request.content.decode()
+    assert "downtime_id=42" in body
+
+
+@pytest.mark.asyncio
+async def test_delete_downtime_service_autodetect(mocked_server) -> None:
+    """When service=None, tool auto-detects a service downtime and routes
+    to the service endpoint — avoids the silent no-op of issue #35."""
+
+    mcp, router = mocked_server
+    # Auto-detection GET reveals a service downtime
+    router.get("https://thruk.test/r/downtimes/446436").mock(
+        return_value=ok(
+            {
+                "id": 446436,
+                "service_description": "SERVICE_ACTIVE-DIRECTORY_HEALTH",
+                "host_name": "srv01",
+            }
+        )
+    )
+    del_route = router.post(
+        "https://thruk.test/r/services/srv01/SERVICE_ACTIVE-DIRECTORY_HEALTH/cmd/del_downtime"
+    ).mock(return_value=ok({"rc": 0}))
+    await mcp.call_tool(
+        "thruk_delete_downtime", {"downtime_id": 446436, "host": "srv01"}  # no service arg
+    )
+    assert del_route.call_count == 1
+    body = del_route.calls.last.request.content.decode()
+    assert "downtime_id=446436" in body
+
+
+@pytest.mark.asyncio
+async def test_delete_downtime_service_explicit(mocked_server) -> None:
+    """When service is provided explicitly, skip the GET round-trip."""
+    mcp, router = mocked_server
+    del_route = router.post(
+        "https://thruk.test/r/services/srv01/CPU/cmd/del_downtime"
+    ).mock(return_value=ok({"rc": 0}))
+    await mcp.call_tool(
+        "thruk_delete_downtime", {"downtime_id": 42, "host": "srv01", "service": "CPU"}
+    )
+    assert del_route.call_count == 1
+    body = del_route.calls.last.request.content.decode()
     assert "downtime_id=42" in body
 
 
@@ -270,7 +319,7 @@ async def test_delete_active_downtimes_host_deletes_all(mocked_server) -> None:
             ]
         )
     )
-    del_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+    del_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
         return_value=ok({"rc": 0})
     )
     result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
@@ -299,7 +348,7 @@ async def test_delete_active_downtimes_service_filters_correctly(mocked_server) 
             ]
         )
     )
-    del_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_svc_downtime").mock(
+    del_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_downtime").mock(
         return_value=ok({"rc": 0})
     )
     result_raw = await mcp.call_tool(
@@ -339,7 +388,7 @@ async def test_delete_active_downtimes_partial_failure(mocked_server) -> None:
         )
     )
     # First call succeeds, second raises ThrukError via a 403.
-    router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+    router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
         side_effect=[
             ok({"rc": 0}),
             httpx.Response(403, text="Permission denied"),
@@ -381,7 +430,7 @@ async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_se
             ]
         )
     )
-    del_host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+    del_host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
         return_value=ok({"rc": 0})
     )
     result_raw = await mcp.call_tool(
