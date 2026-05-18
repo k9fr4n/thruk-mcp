@@ -282,12 +282,11 @@ class ThrukClient:
         """Run a Thruk request with `background=1` and poll the resulting job.
 
         Thruk returns `{job_id, result_url}` immediately. The result URL is
-        served from the server root (`/thruk/jobs/<id>/output`) and emits HTTP
-        302 every 30s while the job is still computing. We poll with
-        follow_redirects=False so we can distinguish 'still running' (302)
-        from 'done' (200 + JSON)."""
-        from urllib.parse import urlparse
-
+        a path relative to the Thruk REST prefix (e.g. `/thruk/jobs/<id>/output`).
+        We route the poll through the REST router (`/r/thruk/jobs/<id>/output`) so
+        that the `X-Thruk-Auth-Key` header is honoured by Thruk.  Polls with
+        follow_redirects=False to distinguish 'still running' (302) from
+        'done' (200 + JSON)."""
         params = dict(params or {})
         params["background"] = 1
         kicked = await self.request(method, path, params=params, data=data, backends=backends)
@@ -295,9 +294,12 @@ class ThrukClient:
             # Not a background-capable endpoint, return as-is.
             return kicked
         job_id = kicked["job_id"]
-        result_url = kicked.get("result_url") or f"/thruk/jobs/{job_id}/output"
-        parsed = urlparse(self.config.base_url)
-        full_url = f"{parsed.scheme}://{parsed.netloc}{result_url}"
+        # result_url from Thruk is a path like "/thruk/jobs/<id>/output".
+        # Route it through the REST prefix (/r/) so the API-key auth applies.
+        # Pass backends=() to force the bare "/r" prefix (jobs are Thruk-local,
+        # not distributed across backends).
+        result_path = kicked.get("result_url") or f"/thruk/jobs/{job_id}/output"
+        full_url = self._url(result_path, backends=())
         log.info("Thruk job %s submitted, polling %s", job_id, full_url)
 
         deadline = asyncio.get_event_loop().time() + poll_timeout
