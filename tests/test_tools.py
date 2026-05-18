@@ -7,6 +7,7 @@ This is the primary regression guard against URL / param mistakes.
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from tests.conftest import ok
@@ -256,13 +257,99 @@ async def test_delete_downtime(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_active_downtimes(mocked_server) -> None:
+async def test_delete_active_downtimes_host_deletes_all(mocked_server) -> None:
+    """Enumerates active host-level downtimes and deletes each by ID."""
+    import json
+
     mcp, router = mocked_server
-    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_active_host_downtimes").mock(
+    dt_route = router.get("https://thruk.test/r/downtimes").mock(
+        return_value=ok(
+            [
+                {"id": 1087, "service_description": "", "author": "fjarry", "comment": "maint"},
+                {"id": 1093, "service_description": "", "author": "fsallet", "comment": "test"},
+            ]
+        )
+    )
+    del_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
         return_value=ok({"rc": 0})
     )
-    await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
-    assert route.called
+    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result = json.loads(result_raw[0].text)
+    assert dt_route.called
+    assert del_route.call_count == 2
+    assert result["count"] == 2
+    assert result["errors"] == []
+    deleted_ids = [d["downtime_id"] for d in result["deleted"]]
+    assert 1087 in deleted_ids
+    assert 1093 in deleted_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_service_filters_correctly(mocked_server) -> None:
+    """Service downtimes are filtered by service_description; others are skipped."""
+    import json
+
+    mcp, router = mocked_server
+    # Thruk returns one matching service downtime + one host downtime (should be ignored).
+    router.get("https://thruk.test/r/downtimes").mock(
+        return_value=ok(
+            [
+                {"id": 200, "service_description": "CPU", "author": "a", "comment": "c"},
+                {"id": 201, "service_description": "", "author": "b", "comment": "x"},
+            ]
+        )
+    )
+    del_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_svc_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool(
+        "thruk_delete_active_downtimes", {"host": "srv01", "service": "CPU"}
+    )
+    result = json.loads(result_raw[0].text)
+    assert del_route.call_count == 1
+    assert result["count"] == 1
+    assert result["deleted"][0]["downtime_id"] == 200
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_none_found(mocked_server) -> None:
+    """Returns count=0 and a message when no active downtimes exist."""
+    import json
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result = json.loads(result_raw[0].text)
+    assert result["count"] == 0
+    assert "No active downtimes found" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_partial_failure(mocked_server) -> None:
+    """Errors on individual IDs are collected in `errors`, not raised."""
+    import json
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes").mock(
+        return_value=ok(
+            [
+                {"id": 1087, "service_description": "", "author": "fjarry", "comment": "m"},
+                {"id": 1093, "service_description": "", "author": "fsallet", "comment": "t"},
+            ]
+        )
+    )
+    # First call succeeds, second raises ThrukError via a 403.
+    router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+        side_effect=[
+            ok({"rc": 0}),
+            httpx.Response(403, text="Permission denied"),
+        ]
+    )
+    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result = json.loads(result_raw[0].text)
+    assert result["count"] == 1
+    assert len(result["errors"]) == 1
+    assert result["errors"][0]["downtime_id"] == 1093
 
 
 @pytest.mark.asyncio
@@ -273,6 +360,38 @@ async def test_delete_downtimes_by_filter_picks_hostgroup_cmd(mocked_server) -> 
     )
     await mcp.call_tool("thruk_delete_downtimes_by_filter", {"hostgroup": "db"})
     assert route.called
+
+
+@pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_server) -> None:
+    """When filtering by host, host-level downtimes are deleted explicitly
+    in addition to the DEL_DOWNTIME_BY_HOST_NAME system command."""
+    import json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
+        return_value=ok({"rc": 0})
+    )
+    # Two downtimes: one host-level, one service-level.
+    router.get("https://thruk.test/r/downtimes").mock(
+        return_value=ok(
+            [
+                {"id": 1050, "service_description": "", "comment": "maint"},
+                {"id": 1051, "service_description": "CPU", "comment": "maint"},
+            ]
+        )
+    )
+    del_host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool(
+        "thruk_delete_downtimes_by_filter", {"host": "srv01", "comment": "maint"}
+    )
+    result = json.loads(result_raw[0].text)
+    # Only host-level downtime (1050) should be deleted explicitly.
+    assert del_host_route.call_count == 1
+    assert result["host_downtimes_deleted"][0]["downtime_id"] == 1050
+    assert result["host_downtimes_errors"] == []
 
 
 # ---------------------------------------------------------------- Ack / recheck
