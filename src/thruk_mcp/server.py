@@ -250,9 +250,18 @@ async def thruk_problems(
         limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
     )
     svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
-    hosts = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
-    services = await _get_client().get("/services", params=svc_params, backends=_backends(backends))
-    return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+    hosts, host_warnings = await _get_client().get_with_fallback(
+        "/hosts", params=host_params, backends=_backends(backends)
+    )
+    services, svc_warnings = await _get_client().get_with_fallback(
+        "/services", params=svc_params, backends=_backends(backends)
+    )
+    result: dict[str, Any] = {"hosts": hosts, "services": services}
+    # Deduplicate warnings that appear for both the hosts and services queries.
+    all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
+    if all_warnings:
+        result["_warnings"] = all_warnings
+    return json.dumps(result, indent=2, default=str)
 
 
 async def thruk_stats(backends: str | None = None) -> str:
@@ -318,7 +327,12 @@ async def _fetch_logs(
     columns: str | None,
     backends: str | None,
     extra: dict[str, Any] | None = None,
-) -> Any:
+) -> tuple[Any, list[str]]:
+    """Fetch log-family data with graceful per-backend fallback.
+
+    Returns ``(data, warnings)``.  *warnings* is non-empty only when the
+    all-backends query failed and some backends also failed individually.
+    """
     params = _list_params(limit, offset, sort, columns, DEFAULT_LOG_COLUMNS)
     if host:
         params["host_name"] = host
@@ -332,7 +346,9 @@ async def _fetch_logs(
         params["message[regex]"] = message_regex
     if extra:
         params.update(extra)
-    return await _get_client().get(path, params=params, backends=_backends(backends))
+    return await _get_client().get_with_fallback(
+        path, params=params, backends=_backends(backends)
+    )
 
 
 async def thruk_list_logs(
@@ -353,9 +369,11 @@ async def thruk_list_logs(
     or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first.
     Pagination via `limit`/`offset`. Default columns are a tight subset;
     pass `columns=''` for all columns."""
-    data = await _fetch_logs(
+    data, warnings = await _fetch_logs(
         "/logs", host, service, since, until, message_regex, limit, offset, sort, columns, backends
     )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
 
 
@@ -382,7 +400,7 @@ async def thruk_list_alerts(
             extra["state"] = HOST_STATE_MAP[s]
         elif s in SVC_STATE_MAP:
             extra["state"] = SVC_STATE_MAP[s]
-    data = await _fetch_logs(
+    data, warnings = await _fetch_logs(
         "/alerts",
         host,
         service,
@@ -396,6 +414,8 @@ async def thruk_list_alerts(
         backends,
         extra=extra,
     )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
 
 
@@ -417,7 +437,7 @@ async def thruk_list_notifications(
     extra: dict[str, Any] = {}
     if contact:
         extra["contact_name"] = contact
-    data = await _fetch_logs(
+    data, warnings = await _fetch_logs(
         "/notifications",
         host,
         service,
@@ -431,6 +451,8 @@ async def thruk_list_notifications(
         backends,
         extra=extra,
     )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
 
 
@@ -448,9 +470,11 @@ async def thruk_recent_events(
     (default 1h). Defaults to all log classes; set `only_alerts=True` to
     restrict to HOST/SERVICE ALERT entries."""
     path = "/alerts" if only_alerts else "/logs"
-    data = await _fetch_logs(
+    data, warnings = await _fetch_logs(
         path, host, service, f"-{hours}h", None, None, limit, offset, "-time", columns, backends
     )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
 
 
