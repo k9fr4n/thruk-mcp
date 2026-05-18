@@ -475,6 +475,35 @@
     }
   },
   {
+    "name": "thruk_get_downtime",
+    "description": "Get a single downtime by id.",
+    "inputSchema": {
+      "properties": {
+        "downtime_id": {
+          "title": "Downtime Id",
+          "type": "integer"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "downtime_id"
+      ],
+      "title": "thruk_get_downtimeArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_list_comments",
     "description": "List comments (acknowledgements appear here too).",
     "inputSchema": {
@@ -1153,234 +1182,6 @@
     }
   },
   {
-    "name": "thruk_acknowledge",
-    "description": "Acknowledge a host or service problem.",
-    "inputSchema": {
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string"
-        },
-        "service": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Service"
-        },
-        "comment": {
-          "default": "acknowledged via MCP",
-          "title": "Comment",
-          "type": "string"
-        },
-        "author": {
-          "default": "thruk-mcp",
-          "title": "Author",
-          "type": "string"
-        },
-        "sticky": {
-          "default": true,
-          "title": "Sticky",
-          "type": "boolean"
-        },
-        "notify": {
-          "default": true,
-          "title": "Notify",
-          "type": "boolean"
-        },
-        "persistent": {
-          "default": false,
-          "title": "Persistent",
-          "type": "boolean"
-        },
-        "backends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Backends"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "thruk_acknowledgeArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "thruk_remove_acknowledgement",
-    "description": "Remove an acknowledgement.",
-    "inputSchema": {
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string"
-        },
-        "service": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Service"
-        },
-        "backends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Backends"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "thruk_remove_acknowledgementArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "thruk_recheck",
-    "description": "Schedule an immediate (re)check for a host or service.",
-    "inputSchema": {
-      "properties": {
-        "host": {
-          "title": "Host",
-          "type": "string"
-        },
-        "service": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Service"
-        },
-        "forced": {
-          "default": true,
-          "title": "Forced",
-          "type": "boolean"
-        },
-        "backends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Backends"
-        }
-      },
-      "required": [
-        "host"
-      ],
-      "title": "thruk_recheckArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "thruk_delete_downtime",
-    "description": "Delete a host or service downtime by its id.",
-    "inputSchema": {
-      "properties": {
-        "downtime_id": {
-          "title": "Downtime Id",
-          "type": "integer"
-        },
-        "host": {
-          "title": "Host",
-          "type": "string"
-        },
-        "service": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Service"
-        },
-        "backends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Backends"
-        }
-      },
-      "required": [
-        "downtime_id",
-        "host"
-      ],
-      "title": "thruk_delete_downtimeArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "thruk_get_downtime",
-    "description": "Get a single downtime by id.",
-    "inputSchema": {
-      "properties": {
-        "downtime_id": {
-          "title": "Downtime Id",
-          "type": "integer"
-        },
-        "backends": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Backends"
-        }
-      },
-      "required": [
-        "downtime_id"
-      ],
-      "title": "thruk_get_downtimeArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "thruk_schedule_host_services_downtime",
     "description": "Schedule a downtime on ALL services of the given host (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host itself or for one specific service.",
     "inputSchema": {
@@ -1660,6 +1461,52 @@
     }
   },
   {
+    "name": "thruk_delete_downtime",
+    "description": "Delete a host or service downtime by its id.",
+    "inputSchema": {
+      "properties": {
+        "downtime_id": {
+          "title": "Downtime Id",
+          "type": "integer"
+        },
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "downtime_id",
+        "host"
+      ],
+      "title": "thruk_delete_downtimeArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_delete_active_downtimes",
     "description": "Remove ALL currently active downtimes for a host (or one specific service when `service` is given). No need to know individual ids.",
     "inputSchema": {
@@ -1779,6 +1626,159 @@
         }
       },
       "title": "thruk_delete_downtimes_by_filterArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "thruk_acknowledge",
+    "description": "Acknowledge a host or service problem.",
+    "inputSchema": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "comment": {
+          "default": "acknowledged via MCP",
+          "title": "Comment",
+          "type": "string"
+        },
+        "author": {
+          "default": "thruk-mcp",
+          "title": "Author",
+          "type": "string"
+        },
+        "sticky": {
+          "default": true,
+          "title": "Sticky",
+          "type": "boolean"
+        },
+        "notify": {
+          "default": true,
+          "title": "Notify",
+          "type": "boolean"
+        },
+        "persistent": {
+          "default": false,
+          "title": "Persistent",
+          "type": "boolean"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "thruk_acknowledgeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "thruk_remove_acknowledgement",
+    "description": "Remove an acknowledgement.",
+    "inputSchema": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "thruk_remove_acknowledgementArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "thruk_recheck",
+    "description": "Schedule an immediate (re)check for a host or service.",
+    "inputSchema": {
+      "properties": {
+        "host": {
+          "title": "Host",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "forced": {
+          "default": true,
+          "title": "Forced",
+          "type": "boolean"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "host"
+      ],
+      "title": "thruk_recheckArguments",
       "type": "object"
     }
   }
