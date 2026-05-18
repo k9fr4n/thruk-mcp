@@ -655,16 +655,32 @@ async def thruk_recheck(
 async def thruk_delete_downtime(
     downtime_id: int, host: str, service: str | None = None, backends: str | None = None
 ) -> str:
-    """Delete a host or service downtime by its id."""
+    """Delete a host or service downtime by its id.
+
+    If `service` is omitted, the tool fetches the downtime object first
+    (`GET /downtimes/{id}`) to determine whether it belongs to a host or a
+    service, then routes to the correct Thruk REST endpoint
+    (`/hosts/.../cmd/del_downtime` vs `/services/.../cmd/del_downtime`).
+    Providing `service` explicitly skips that extra round-trip.
+    """
+    client = _get_client()
+    be = _backends(backends)
+
+    # Auto-detect downtime type when service is not provided to avoid silently
+    # hitting the host endpoint on a service downtime (no-op with misleading
+    # "Command successfully submitted" response — see issue #35).
+    if service is None:
+        dt = await client.get(f"/downtimes/{downtime_id}", backends=be)
+        svc_desc = dt.get("service_description") if isinstance(dt, dict) else None
+        service = svc_desc or None
+
     endpoint = (
         f"/services/{host}/{service}/cmd/del_downtime"
         if service
         else f"/hosts/{host}/cmd/del_downtime"
     )
     return json.dumps(
-        await _get_client().post(
-            endpoint, data={"downtime_id": str(downtime_id)}, backends=_backends(backends)
-        ),
+        await client.post(endpoint, data={"downtime_id": str(downtime_id)}, backends=be),
         indent=2,
         default=str,
     )
@@ -838,10 +854,13 @@ async def thruk_delete_active_downtimes(
         dt_id = dt.get("id")
         if dt_id is None:
             continue
+        # Thruk REST exposes only `del_downtime` (not `del_svc_downtime` /
+        # `del_host_downtime`) — the correct Nagios external command is inferred
+        # from the resource path (issue #36).
         ep = (
-            f"/services/{host}/{service}/cmd/del_svc_downtime"
+            f"/services/{host}/{service}/cmd/del_downtime"
             if service
-            else f"/hosts/{host}/cmd/del_host_downtime"
+            else f"/hosts/{host}/cmd/del_downtime"
         )
         try:
             resp = await client.post(ep, data={"downtime_id": dt_id}, backends=be)
@@ -928,7 +947,7 @@ async def thruk_delete_downtimes_by_filter(
                 continue
             try:
                 resp = await client.post(
-                    f"/hosts/{host}/cmd/del_host_downtime",
+                    f"/hosts/{host}/cmd/del_downtime",
                     data={"downtime_id": dt_id},
                     backends=be,
                 )
