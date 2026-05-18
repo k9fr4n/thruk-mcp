@@ -299,9 +299,9 @@ async def test_delete_active_downtimes_service_filters_correctly(mocked_server) 
             ]
         )
     )
-    del_route = router.post(
-        "https://thruk.test/r/services/srv01/CPU/cmd/del_svc_downtime"
-    ).mock(return_value=ok({"rc": 0}))
+    del_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_svc_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
     result_raw = await mcp.call_tool(
         "thruk_delete_active_downtimes", {"host": "srv01", "service": "CPU"}
     )
@@ -328,7 +328,6 @@ async def test_delete_active_downtimes_none_found(mocked_server) -> None:
 async def test_delete_active_downtimes_partial_failure(mocked_server) -> None:
     """Errors on individual IDs are collected in `errors`, not raised."""
     import json
-
 
     mcp, router = mocked_server
     router.get("https://thruk.test/r/downtimes").mock(
@@ -382,9 +381,9 @@ async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_se
             ]
         )
     )
-    del_host_route = router.post(
-        "https://thruk.test/r/hosts/srv01/cmd/del_host_downtime"
-    ).mock(return_value=ok({"rc": 0}))
+    del_host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
     result_raw = await mcp.call_tool(
         "thruk_delete_downtimes_by_filter", {"host": "srv01", "comment": "maint"}
     )
