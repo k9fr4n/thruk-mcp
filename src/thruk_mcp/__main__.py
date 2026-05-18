@@ -33,7 +33,7 @@ async def _run_http(port: int, host: str, log_level: str) -> None:
     server = build_server()
     sse = SseServerTransport("/messages/")
 
-    async def handle_sse(request):  # type: ignore[no-untyped-def]
+    async def handle_sse(request):  # starlette Request type not imported in local scope
         async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
         return Response()
