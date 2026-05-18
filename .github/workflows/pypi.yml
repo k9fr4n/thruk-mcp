@@ -1,8 +1,12 @@
-name: Publish to PyPI
+name: Publish to PyPI (manual fallback)
 
+# Automatic PyPI publishing on vX.Y.Z tags is handled by release.yml
+# (publish-pypi job). This workflow exists only as a manual fallback via
+# workflow_dispatch in case that job needs to be re-run independently.
+# The `release: [published]` trigger is intentionally removed: GitHub
+# blocks cross-workflow events fired by GITHUB_TOKEN, so it would never
+# trigger automatically anyway.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
