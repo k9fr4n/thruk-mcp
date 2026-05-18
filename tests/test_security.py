@@ -122,8 +122,12 @@ async def test_audit_log_records_error_status(caplog) -> None:
             router.post("https://thruk.test/r/hosts/srv01/cmd/acknowledge_host_problem").mock(
                 return_value=httpx.Response(500, text="boom")
             )
-            with pytest.raises(Exception):  # noqa: B017
-                await mcp.call_tool("thruk_acknowledge", {"host": "srv01"})
+            result = await mcp.call_tool("thruk_acknowledge", {"host": "srv01"})
+        # ThrukError is now returned as tool-level error content (not raised),
+        # so the MCP client sees the actual Thruk message instead of a generic
+        # "tool execution failed" protocol error.
+        assert len(result) == 1
+        assert result[0].text.startswith("Error:")
         rec = next(r for r in caplog.records if r.name == "thruk_mcp.audit")
         payload = json.loads(rec.message)
         assert payload["status"] == "error"
