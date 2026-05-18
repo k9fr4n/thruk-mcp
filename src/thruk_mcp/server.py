@@ -1342,7 +1342,11 @@ class ThrukMCPServer:
                 audit.log_call(
                     name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
                 )
-            raise ValueError(str(exc)) from exc
+            # Return as tool-level error content instead of raising.
+            # Raising here causes the low-level MCP SDK to emit a protocol-level
+            # McpError(-32603) which the client shows as the generic
+            # "tool execution failed" message, discarding the actual Thruk error.
+            return [TextContent(type="text", text=f"Error: {exc}")]
         if self._cfg.audit_log and name in WRITE_TOOLS:
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
