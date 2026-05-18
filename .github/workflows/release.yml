@@ -35,6 +35,12 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=raw,value=latest,enable={{is_default_branch}}
 
+      - name: Generate Docker MCP Gateway metadata label
+        run: |
+          pip install -e . -q
+          SERVER_METADATA=$(python scripts/gen_metadata.py)
+          echo "SERVER_METADATA=${SERVER_METADATA}" >> "$GITHUB_ENV"
+
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -42,6 +48,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            SERVER_METADATA=${{ env.SERVER_METADATA }}
           provenance: true
           sbom: true
 
