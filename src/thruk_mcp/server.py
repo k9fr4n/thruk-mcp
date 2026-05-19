@@ -288,6 +288,7 @@ async def thruk_problems(
     limit: int = 100,
     offset: int = 0,
     columns: str | None = None,
+    hostgroup: str | None = None,
     custom_vars: dict | None = None,
     host_custom_vars: dict | None = None,
     backends: str | None = None,
@@ -295,6 +296,10 @@ async def thruk_problems(
     """List all current unhandled host/service problems (not acknowledged, not in downtime).
 
     Sorted by worst state first. Default columns are tight; pass `columns=''` for all.
+
+    Optional ``hostgroup`` restricts both the hosts and services sub-queries to hosts that
+    belong to the given hostgroup name (exact match via Thruk's ``groups[gte]`` /
+    ``host_groups[gte]`` list-contains operator).
 
     Optional ``custom_vars`` restricts results to objects whose *own* Nagios custom
     variable matches (host var for the hosts query, service var for the services query).
@@ -304,12 +309,16 @@ async def thruk_problems(
     """
     host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
     host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+    if hostgroup:
+        host_params["groups[gte]"] = hostgroup
     if custom_vars:
         host_params.update(_build_cv_params(custom_vars))
     svc_params = _list_params(
         limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
     )
     svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+    if hostgroup:
+        svc_params["host_groups[gte]"] = hostgroup
     if custom_vars:
         svc_params.update(_build_cv_params(custom_vars))
     if host_custom_vars:
@@ -391,11 +400,18 @@ async def _fetch_logs(
     columns: str | None,
     backends: str | None,
     extra: dict[str, Any] | None = None,
+    hostgroup: str | None = None,
 ) -> tuple[Any, list[str]]:
     """Fetch log-family data with graceful per-backend fallback.
 
     Returns ``(data, warnings)``.  *warnings* is non-empty only when the
     all-backends query failed and some backends also failed individually.
+
+    ``hostgroup`` maps to ``current_host_groups[gte]`` — a list-contains filter on
+    the live-joined host column available in the Naemon Livestatus ``log`` table.
+    Note: when Thruk uses a **logcache** backend (MySQL/SQLite), this JOIN column may
+    not be filterable and the filter could be silently ignored; in that case all log
+    rows are returned unfiltered.
     """
     params = _list_params(limit, offset, sort, columns, DEFAULT_LOG_COLUMNS)
     if host:
@@ -408,6 +424,8 @@ async def _fetch_logs(
         params["time[lte]"] = until
     if message_regex:
         params["message[regex]"] = message_regex
+    if hostgroup:
+        params["current_host_groups[gte]"] = hostgroup
     if extra:
         params.update(extra)
     return await _get_client().get_with_fallback(path, params=params, backends=_backends(backends))
@@ -489,6 +507,7 @@ async def thruk_list_notifications(
     host: str | None = None,
     service: str | None = None,
     contact: str | None = None,
+    hostgroup: str | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -503,7 +522,10 @@ async def thruk_list_notifications(
     the /notifications server-side alias is subject to the same broken-alias
     regression as /alerts on some Thruk versions.
 
-    Optional `contact` filters notifications sent to a specific contact name."""
+    Optional `contact` filters notifications sent to a specific contact name.
+    Optional `hostgroup` restricts results to hosts belonging to that group
+    (uses ``current_host_groups[gte]`` on the log table — requires a live
+    Livestatus backend; may be silently ignored on logcache backends)."""
     extra: dict[str, Any] = {"class": "3"}
     if contact:
         extra["contact_name"] = contact
@@ -520,6 +542,7 @@ async def thruk_list_notifications(
         columns,
         backends,
         extra=extra,
+        hostgroup=hostgroup,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -530,6 +553,7 @@ async def thruk_recent_events(
     hours: int = 1,
     host: str | None = None,
     service: str | None = None,
+    hostgroup: str | None = None,
     only_alerts: bool = False,
     limit: int = 100,
     offset: int = 0,
@@ -542,7 +566,11 @@ async def thruk_recent_events(
 
     Uses /logs with an explicit type filter when only_alerts=True (client-side
     alias expansion — the /alerts server-side alias is broken on some Thruk
-    versions)."""
+    versions).
+
+    Optional `hostgroup` restricts results to hosts belonging to that group
+    (uses ``current_host_groups[gte]`` on the log table — requires a live
+    Livestatus backend; may be silently ignored on logcache backends)."""
     extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"} if only_alerts else {}
     data, warnings = await _fetch_logs(
         "/logs",
@@ -557,6 +585,7 @@ async def thruk_recent_events(
         columns,
         backends,
         extra=extra,
+        hostgroup=hostgroup,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -1313,6 +1342,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         limit=_int(default=100),
         offset=_int(default=0),
         columns=_OPT_STR,
+        hostgroup={
+            **_OPT_STR,
+            "description": (
+                "Restrict both hosts and services sub-queries to hosts belonging to this "
+                "hostgroup name (exact match via groups[gte] / host_groups[gte]). "
+                'Example: "linux-servers".'
+            ),
+        },
         custom_vars={
             **_OPT_OBJ,
             "description": (
@@ -1378,6 +1415,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         host=_OPT_STR,
         service=_OPT_STR,
         contact=_OPT_STR,
+        hostgroup={
+            **_OPT_STR,
+            "description": (
+                "Filter notifications to hosts belonging to this hostgroup "
+                "(current_host_groups[gte] on /logs). Requires live Livestatus backend; "
+                "may be silently ignored on logcache backends."
+            ),
+        },
         since=_OPT_STR,
         until=_OPT_STR,
         limit=_int(default=100),
@@ -1390,6 +1435,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         hours=_int(default=1),
         host=_OPT_STR,
         service=_OPT_STR,
+        hostgroup={
+            **_OPT_STR,
+            "description": (
+                "Filter events to hosts belonging to this hostgroup "
+                "(current_host_groups[gte] on /logs). Requires live Livestatus backend; "
+                "may be silently ignored on logcache backends."
+            ),
+        },
         only_alerts=_bool(default=False),
         limit=_int(default=100),
         offset=_int(default=0),

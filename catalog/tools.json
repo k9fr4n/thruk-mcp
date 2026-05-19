@@ -445,6 +445,19 @@
           ],
           "default": null,
           "title": "Backends"
+        },
+        "hostgroup": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostgroup",
+          "description": "Restrict both hosts and services sub-queries to hosts belonging to this hostgroup name (exact match via groups[gte] / host_groups[gte]). Example: linux-servers."
         }
       },
       "title": "thruk_problemsArguments",
@@ -959,6 +972,19 @@
           ],
           "default": null,
           "title": "Backends"
+        },
+        "hostgroup": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostgroup",
+          "description": "Filter notifications to hosts belonging to this hostgroup (current_host_groups[gte] on /logs). Requires live Livestatus backend; may be silently ignored on logcache backends."
         }
       },
       "title": "thruk_list_notificationsArguments",
@@ -1037,6 +1063,19 @@
           ],
           "default": null,
           "title": "Backends"
+        },
+        "hostgroup": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostgroup",
+          "description": "Filter events to hosts belonging to this hostgroup (current_host_groups[gte] on /logs). Requires live Livestatus backend; may be silently ignored on logcache backends."
         }
       },
       "title": "thruk_recent_eventsArguments",
