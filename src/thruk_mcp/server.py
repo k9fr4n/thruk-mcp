@@ -545,7 +545,17 @@ async def thruk_recent_events(
     versions)."""
     extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"} if only_alerts else {}
     data, warnings = await _fetch_logs(
-        "/logs", host, service, f"-{hours}h", None, None, limit, offset, "-time", columns, backends,
+        "/logs",
+        host,
+        service,
+        f"-{hours}h",
+        None,
+        None,
+        limit,
+        offset,
+        "-time",
+        columns,
+        backends,
         extra=extra,
     )
     if warnings:
