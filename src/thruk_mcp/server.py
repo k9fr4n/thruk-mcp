@@ -121,6 +121,28 @@ def _backends(backends: str | None) -> tuple[str, ...] | None:
     return parts or None
 
 
+def _build_cv_params(
+    custom_vars: dict | None,
+    *,
+    host_prefix: bool = False,
+) -> dict[str, str]:
+    """Translate {VARNAME: value} → Thruk REST ``_[HOST]VARNAME=value`` params.
+
+    Thruk's ``_fixup_livestatus_filter`` (rest_v1.pm ~L1699) rewrites any
+    query param starting with ``_`` to the Livestatus filter
+    ``custom_variables = 'VARNAME value'``.  Varnames are upper-cased to
+    match the Nagios convention (custom-var names are stored in uppercase).
+
+    ``host_prefix=True`` generates ``_HOST<X>=<v>`` which Thruk routes to
+    ``host_custom_variables`` — used to filter *services* by a *host*-level
+    custom variable (the ``HOST`` prefix is stripped server-side).
+    """
+    if not custom_vars:
+        return {}
+    prefix = "_HOST" if host_prefix else "_"
+    return {f"{prefix}{k.upper()}": str(v) for k, v in custom_vars.items()}
+
+
 # ---------------------------------------------------------------------------
 # Module-level client accessor
 # ---------------------------------------------------------------------------
@@ -142,6 +164,7 @@ async def thruk_list_hosts(
     hostgroup: str | None = None,
     state: str | None = None,
     name_regex: str | None = None,
+    custom_vars: dict | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "name",
@@ -150,7 +173,16 @@ async def thruk_list_hosts(
 ) -> str:
     """List monitored hosts.
 
-    Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex).
+    Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex),
+    `custom_vars` (Nagios custom variables, e.g. ``{"KERNEL": "windows"}``).
+
+    Custom-variable filtering uses Thruk's native ``_VARNAME=value`` REST param
+    convention (the only correct server-side path — the ``q=custom_variables``
+    Livestatus syntax is silently broken in Thruk's REST q= parser).
+    Note: the ``custom_variables`` column may come back empty if Thruk's
+    ``expose_custom_vars`` setting (``thruk_local.conf``) does not whitelist the
+    variable — filtering by ``_VARNAME`` still works even when the column is hidden.
+
     Pagination: `limit` (max 1000), `offset`. Sort: `sort` (e.g. 'name', '-state').
     Columns: by default a tight subset is returned to save tokens. Pass an empty
     string `columns=''` to return ALL columns, or a custom comma list.
@@ -162,6 +194,8 @@ async def thruk_list_hosts(
         params["state"] = HOST_STATE_MAP[state.lower()]
     if name_regex:
         params["name[regex]"] = name_regex
+    if custom_vars:
+        params.update(_build_cv_params(custom_vars))
     data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
     return json.dumps(data, indent=2, default=str)
 
@@ -177,6 +211,8 @@ async def thruk_list_services(
     servicegroup: str | None = None,
     state: str | None = None,
     description_regex: str | None = None,
+    custom_vars: dict | None = None,
+    host_custom_vars: dict | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "host_name,description",
@@ -186,7 +222,16 @@ async def thruk_list_services(
     """List monitored services.
 
     Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown),
-    `description_regex`. Pagination via `limit`/`offset`, sort via `sort`
+    `description_regex`, `custom_vars` (service-level Nagios custom variables,
+    e.g. ``{"CRITICALITY": "prod"}``), `host_custom_vars` (host-level custom
+    variables applied to the parent host, e.g. ``{"KERNEL": "windows"}``).
+
+    Custom-variable filtering uses Thruk's native ``_VARNAME=value`` /
+    ``_HOSTVARNAME=value`` REST param convention.  The ``q=custom_variables``
+    Livestatus syntax is silently broken in Thruk's REST q= parser — always
+    use these dedicated parameters instead.
+
+    Pagination via `limit`/`offset`, sort via `sort`
     (e.g. '-last_state_change'). Default columns are a tight subset to save
     tokens; pass `columns=''` for all columns or a custom comma list.
     """
@@ -199,6 +244,10 @@ async def thruk_list_services(
         params["state"] = SVC_STATE_MAP[state.lower()]
     if description_regex:
         params["description[regex]"] = description_regex
+    if custom_vars:
+        params.update(_build_cv_params(custom_vars))
+    if host_custom_vars:
+        params.update(_build_cv_params(host_custom_vars, host_prefix=True))
     data = await _get_client().get("/services", params=params, backends=_backends(backends))
     return json.dumps(data, indent=2, default=str)
 
@@ -239,17 +288,32 @@ async def thruk_problems(
     limit: int = 100,
     offset: int = 0,
     columns: str | None = None,
+    custom_vars: dict | None = None,
+    host_custom_vars: dict | None = None,
     backends: str | None = None,
 ) -> str:
     """List all current unhandled host/service problems (not acknowledged, not in downtime).
 
-    Sorted by worst state first. Default columns are tight; pass `columns=''` for all."""
+    Sorted by worst state first. Default columns are tight; pass `columns=''` for all.
+
+    Optional ``custom_vars`` restricts results to objects whose *own* Nagios custom
+    variable matches (host var for the hosts query, service var for the services query).
+    ``host_custom_vars`` further restricts the services query by the *host*'s custom
+    variables (e.g. ``host_custom_vars={"KERNEL": "windows"}`` to see only problems on
+    Windows hosts).
+    """
     host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
     host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+    if custom_vars:
+        host_params.update(_build_cv_params(custom_vars))
     svc_params = _list_params(
         limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
     )
     svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+    if custom_vars:
+        svc_params.update(_build_cv_params(custom_vars))
+    if host_custom_vars:
+        svc_params.update(_build_cv_params(host_custom_vars, host_prefix=True))
     hosts, host_warnings = await _get_client().get_with_fallback(
         "/hosts", params=host_params, backends=_backends(backends)
     )
@@ -485,7 +549,26 @@ async def thruk_query(
 ) -> str:
     """Escape hatch: call any Thruk REST endpoint. `path` is everything after `/thruk/r`
     (e.g. `/hosts/srv01/services`). `params` is the query string, `data` the form body.
-    See https://www.thruk.org/documentation/rest.html for the full catalogue."""
+    See https://www.thruk.org/documentation/rest.html for the full catalogue.
+
+    WARNING — custom-variable filtering: do NOT use ``q="custom_variables >= 'NAME val'"``
+    or ``q="custom_variables = 'NAME val'"`` — Thruk's REST q= parser silently drops these
+    filters and returns ALL objects (no error, just wrong results).  Instead, pass the
+    variable as a top-level param: ``params={"_VARNAME": "value"}`` for host/service own
+    vars, or ``params={"_HOSTVARNAME": "value"}`` for host vars on a service endpoint.
+    Prefer ``thruk_list_hosts``/``thruk_list_services`` with ``custom_vars={}`` which
+    handle this automatically.
+    """
+    _CV_Q_WARNING = (
+        "q= filter contains 'custom_variables' which is silently ignored by Thruk's REST "
+        "q= parser — results likely include ALL objects (filter not applied). "
+        "Pass the variable as a top-level param instead: "
+        "_VARNAME=value (own var) or _HOSTVARNAME=value (host var on service endpoint). "
+        "Or use thruk_list_hosts / thruk_list_services with custom_vars={'VARNAME': 'value'}."
+    )
+    q_val = str((params or {}).get("q", ""))
+    if "custom_variables" in q_val:
+        log.warning("thruk_query: %s", _CV_Q_WARNING)
     result = await _get_client().request(
         method.upper(),
         path,
@@ -493,6 +576,8 @@ async def thruk_query(
         data=data,
         backends=_backends(backends),
     )
+    if "custom_variables" in q_val:
+        return json.dumps({"_warning": _CV_Q_WARNING, "data": result}, indent=2, default=str)
     return json.dumps(result, indent=2, default=str)
 
 
@@ -1138,6 +1223,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         hostgroup=_OPT_STR,
         state=_OPT_STR,
         name_regex=_OPT_STR,
+        custom_vars={
+            **_OPT_OBJ,
+            "description": (
+                "Filter by Nagios custom variables. Dict of {VARNAME: value} pairs "
+                "translated to Thruk REST _VARNAME=value params (auto-uppercased). "
+                'Example: {"KERNEL": "windows"}.'
+            ),
+        },
         limit=_int(default=50),
         offset=_int(default=0),
         sort=_str(),
@@ -1150,6 +1243,22 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         servicegroup=_OPT_STR,
         state=_OPT_STR,
         description_regex=_OPT_STR,
+        custom_vars={
+            **_OPT_OBJ,
+            "description": (
+                "Filter by service-level Nagios custom variables. Dict of {VARNAME: value} "
+                "pairs translated to _VARNAME=value REST params. "
+                'Example: {"CRITICALITY": "prod"}.'
+            ),
+        },
+        host_custom_vars={
+            **_OPT_OBJ,
+            "description": (
+                "Filter by host-level Nagios custom variables (applied to the parent host). "
+                "Dict of {VARNAME: value} pairs translated to _HOSTVARNAME=value REST params. "
+                'Example: {"KERNEL": "windows"}.'
+            ),
+        },
         limit=_int(default=50),
         offset=_int(default=0),
         sort=_str(),
@@ -1181,6 +1290,21 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         limit=_int(default=100),
         offset=_int(default=0),
         columns=_OPT_STR,
+        custom_vars={
+            **_OPT_OBJ,
+            "description": (
+                "Filter problems by Nagios custom variables (applied to host own vars in "
+                "the hosts query, and service own vars in the services query). "
+                'Example: {"ENV": "prod"}.'
+            ),
+        },
+        host_custom_vars={
+            **_OPT_OBJ,
+            "description": (
+                "Filter service problems by host-level Nagios custom variables. "
+                'Translated to _HOSTVARNAME=value. Example: {"KERNEL": "windows"}.'
+            ),
+        },
         backends=_BACKENDS,
     ),
     "thruk_stats": _s(backends=_BACKENDS),

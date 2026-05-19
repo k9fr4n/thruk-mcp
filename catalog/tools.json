@@ -1,7 +1,7 @@
 [
   {
     "name": "thruk_list_hosts",
-    "description": "List monitored hosts. Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex). Pagination: `limit` (max 1000), `offset`. Sort: `sort` (e.g. 'name', '-state'). Columns: by default a tight subset is returned to save tokens. Pass an empty string `columns=''` to return ALL columns, or a custom comma list.",
+    "description": "List monitored hosts. Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex), `custom_vars` (Nagios custom variables, e.g. {\"KERNEL\": \"windows\"}). Pagination: `limit` (max 1000), `offset`. Sort: `sort` (e.g. 'name', '-state'). Columns: by default a tight subset is returned to save tokens. Pass an empty string `columns=''` to return ALL columns, or a custom comma list.",
     "inputSchema": {
       "properties": {
         "hostgroup": {
@@ -39,6 +39,19 @@
           ],
           "default": null,
           "title": "Name Regex"
+        },
+        "custom_vars": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custom Vars",
+          "description": "Filter by Nagios custom variables. Dict of {VARNAME: value} pairs translated to Thruk REST _VARNAME=value params (auto-uppercased). Example: {\"KERNEL\": \"windows\"}."
         },
         "limit": {
           "default": 50,
@@ -115,7 +128,7 @@
   },
   {
     "name": "thruk_list_services",
-    "description": "List monitored services. Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown), `description_regex`. Pagination via `limit`/`offset`, sort via `sort` (e.g. '-last_state_change'). Default columns are a tight subset to save tokens; pass `columns=''` for all columns or a custom comma list.",
+    "description": "List monitored services. Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown), `description_regex`, `custom_vars` (service-level Nagios custom variables), `host_custom_vars` (host-level custom variables on the parent host). Pagination via `limit`/`offset`, sort via `sort` (e.g. '-last_state_change'). Default columns are a tight subset to save tokens; pass `columns=''` for all columns or a custom comma list.",
     "inputSchema": {
       "properties": {
         "host": {
@@ -165,6 +178,32 @@
           ],
           "default": null,
           "title": "Description Regex"
+        },
+        "custom_vars": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custom Vars",
+          "description": "Filter by service-level Nagios custom variables. Dict of {VARNAME: value} pairs translated to _VARNAME=value REST params. Example: {\"CRITICALITY\": \"prod\"}."
+        },
+        "host_custom_vars": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host Custom Vars",
+          "description": "Filter services by host-level Nagios custom variables. Dict of {VARNAME: value} pairs translated to _HOSTVARNAME=value REST params. Example: {\"KERNEL\": \"windows\"}."
         },
         "limit": {
           "default": 50,
@@ -344,7 +383,7 @@
   },
   {
     "name": "thruk_problems",
-    "description": "List all current unhandled host/service problems (not acknowledged, not in downtime). Sorted by worst state first. Default columns are tight; pass `columns=''` for all.",
+    "description": "List all current unhandled host/service problems (not acknowledged, not in downtime). Sorted by worst state first. Default columns are tight; pass `columns=''` for all. Optional `custom_vars` restricts by Nagios custom variables; `host_custom_vars` restricts service problems by host-level custom variables.",
     "inputSchema": {
       "properties": {
         "limit": {
@@ -368,6 +407,32 @@
           ],
           "default": null,
           "title": "Columns"
+        },
+        "custom_vars": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Custom Vars",
+          "description": "Filter problems by Nagios custom variables (host own vars in the hosts query, service own vars in the services query). Example: {\"ENV\": \"prod\"}."
+        },
+        "host_custom_vars": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host Custom Vars",
+          "description": "Filter service problems by host-level Nagios custom variables. Translated to _HOSTVARNAME=value. Example: {\"KERNEL\": \"windows\"}."
         },
         "backends": {
           "anyOf": [

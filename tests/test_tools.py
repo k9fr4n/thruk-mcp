@@ -45,6 +45,89 @@ async def test_list_services_with_servicegroup(mocked_server) -> None:
     assert params["state"] == "2"
 
 
+# ---------------------------------------------------------------- custom-var filtering
+
+
+@pytest.mark.asyncio
+async def test_list_hosts_custom_vars(mocked_server) -> None:
+    """custom_vars dict is translated to _VARNAME=value top-level params (uppercase)."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "w01"}]))
+    await mcp.call_tool("thruk_list_hosts", {"custom_vars": {"KERNEL": "windows"}, "limit": 5})
+    params = route.calls.last.request.url.params
+    assert params["_KERNEL"] == "windows"
+
+
+@pytest.mark.asyncio
+async def test_list_hosts_custom_vars_uppercased(mocked_server) -> None:
+    """Varnames are auto-uppercased regardless of input case."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_hosts", {"custom_vars": {"kernel": "linux"}})
+    params = route.calls.last.request.url.params
+    assert params["_KERNEL"] == "linux"
+    assert "_kernel" not in params
+
+
+@pytest.mark.asyncio
+async def test_list_services_custom_vars(mocked_server) -> None:
+    """custom_vars filters on service-level custom variables."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_services", {"custom_vars": {"CRITICALITY": "prod"}})
+    params = route.calls.last.request.url.params
+    assert params["_CRITICALITY"] == "prod"
+
+
+@pytest.mark.asyncio
+async def test_list_services_host_custom_vars(mocked_server) -> None:
+    """host_custom_vars filters services by *host*-level vars via _HOST prefix."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_services", {"host_custom_vars": {"KERNEL": "windows"}})
+    params = route.calls.last.request.url.params
+    assert params["_HOSTKERNEL"] == "windows"
+    assert "_KERNEL" not in params
+
+
+@pytest.mark.asyncio
+async def test_list_services_custom_vars_combined(mocked_server) -> None:
+    """custom_vars and host_custom_vars can be used simultaneously."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_services",
+        {"custom_vars": {"CRITICALITY": "prod"}, "host_custom_vars": {"KERNEL": "windows"}},
+    )
+    params = route.calls.last.request.url.params
+    assert params["_CRITICALITY"] == "prod"
+    assert params["_HOSTKERNEL"] == "windows"
+
+
+@pytest.mark.asyncio
+async def test_problems_host_custom_vars(mocked_server) -> None:
+    """host_custom_vars injected into service query only (with _HOST prefix)."""
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_problems", {"host_custom_vars": {"KERNEL": "windows"}})
+    svc_params = r_svc.calls.last.request.url.params
+    host_params = r_hosts.calls.last.request.url.params
+    assert svc_params["_HOSTKERNEL"] == "windows"
+    assert "_HOSTKERNEL" not in host_params
+
+
+@pytest.mark.asyncio
+async def test_problems_custom_vars_both_queries(mocked_server) -> None:
+    """custom_vars injected into both host and service queries."""
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_problems", {"custom_vars": {"ENV": "prod"}})
+    assert r_hosts.calls.last.request.url.params["_ENV"] == "prod"
+    assert r_svc.calls.last.request.url.params["_ENV"] == "prod"
+
+
 @pytest.mark.asyncio
 async def test_get_service(mocked_server) -> None:
     mcp, router = mocked_server
@@ -499,6 +582,40 @@ async def test_recheck_service_unforced(mocked_server) -> None:
 
 
 # ---------------------------------------------------- Query escape hatches
+
+
+@pytest.mark.asyncio
+async def test_query_cv_warning_injected(mocked_server) -> None:
+    """thruk_query wraps the response in a _warning envelope when q= contains custom_variables."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "h1"}, {"name": "h2"}]))
+    result = await mcp.call_tool(
+        "thruk_query",
+        {"path": "/hosts", "params": {"q": "custom_variables >= 'KERNEL windows'", "limit": 10}},
+    )
+    payload = _json.loads(result[0].text)
+    assert "_warning" in payload
+    assert "custom_variables" in payload["_warning"]
+    assert "data" in payload
+    assert len(payload["data"]) == 2  # the actual result is still returned
+
+
+@pytest.mark.asyncio
+async def test_query_no_warning_without_cv(mocked_server) -> None:
+    """thruk_query does NOT inject a warning when q= does not mention custom_variables."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "h1"}]))
+    result = await mcp.call_tool(
+        "thruk_query",
+        {"path": "/hosts", "params": {"q": "state = 1", "limit": 5}},
+    )
+    payload = _json.loads(result[0].text)
+    # Plain list, no envelope
+    assert isinstance(payload, list)
 
 
 @pytest.mark.asyncio
