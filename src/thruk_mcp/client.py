@@ -171,8 +171,14 @@ class ThrukClient:
         *,
         params: dict[str, Any] | None = None,
         backends: tuple[str, ...] | None = None,
+        method: str = "GET",
     ) -> tuple[Any, list[str]]:
-        """GET with automatic per-backend fallback on federation failure.
+        """GET (or POST) with automatic per-backend fallback on federation failure.
+
+        ``method`` defaults to ``"GET"``; pass ``"POST"`` to send *params* as a
+        form-encoded body instead of query-string (required when the parameter
+        set would produce a URL longer than ~4 KB, e.g. a large
+        ``host_name[regex]`` with hundreds of alternates).
 
         Returns ``(data, warnings)`` where *warnings* is a list of
         ``"<backend_id>: <error>"`` strings for any backend that failed
@@ -187,14 +193,18 @@ class ThrukClient:
         full ``limit`` from *params*, so the aggregated result may contain
         up to ``N * limit`` rows across N backends.
         """
+        req_kwargs: dict[str, Any] = (
+            {"data": params} if method.upper() == "POST" else {"params": params}
+        )
         try:
-            result = await self.get(path, params=params, backends=backends)
+            result = await self.request(method, path, backends=backends, **req_kwargs)
             return result, []
         except ThrukError as initial_exc:
             if backends is not None:
                 raise
             log.warning(
-                "All-backends GET %s failed, falling back to per-backend queries: %s",
+                "All-backends %s %s failed, falling back to per-backend queries: %s",
+                method,
                 path,
                 initial_exc,
             )
@@ -217,7 +227,7 @@ class ThrukClient:
             n = len(sites_raw)
             raise ThrukError(f"All {n} backend(s) are disconnected — no fallback possible")
 
-        tasks = [self.get(path, params=params, backends=(bid,)) for bid in connected_ids]
+        tasks = [self.request(method, path, backends=(bid,), **req_kwargs) for bid in connected_ids]
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         aggregated: list[Any] = []

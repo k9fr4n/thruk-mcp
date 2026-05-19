@@ -469,7 +469,13 @@ async def _fetch_logs(
         # None → no matching hosts; query will naturally return empty result
     if extra:
         params.update(extra)
-    return await _get_client().get_with_fallback(path, params=params, backends=_backends(backends))
+    # Switch to POST when the query string would exceed ~4 KB (e.g. large
+    # host_name[regex] with hundreds of alternates triggers HTTP 414).
+    query_len = sum(len(k) + len(str(v)) + 2 for k, v in params.items())
+    method = "POST" if query_len > 3800 else "GET"
+    return await _get_client().get_with_fallback(
+        path, params=params, backends=_backends(backends), method=method
+    )
 
 
 async def thruk_list_logs(
