@@ -245,6 +245,18 @@ async def test_list_notifications_with_contact(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_notifications_default_columns(mocked_server) -> None:
+    """Default columns must include contact_name and command_name; state_type must be absent."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_notifications", {"host": "REDONLINE006"})
+    cols = route.calls.last.request.url.params.get("columns", "")
+    assert "contact_name" in cols, f"contact_name missing from columns: {cols}"
+    assert "command_name" in cols, f"command_name missing from columns: {cols}"
+    assert "state_type" not in cols, f"state_type should not be in notification columns: {cols}"
+
+
+@pytest.mark.asyncio
 async def test_recent_events(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
