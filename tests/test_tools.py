@@ -7,10 +7,19 @@ This is the primary regression guard against URL / param mistakes.
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs
+
 import httpx
 import pytest
 
 from tests.conftest import ok
+
+
+def post_params(call) -> dict[str, str]:
+    """Parse a form-encoded POST body into a flat {key: value} dict."""
+    body = call.request.content.decode()
+    return {k: v[0] for k, v in parse_qs(body).items()}
+
 
 # ---------------------------------------------------------------- Read tools
 
@@ -214,9 +223,9 @@ async def test_sites(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_list_logs(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_logs", {"host": "srv01", "message_regex": "timeout"})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert p["host_name"] == "srv01"
     assert p["message[regex]"] == "timeout"
     assert p["time[gte]"] == "-24h"
@@ -226,9 +235,9 @@ async def test_list_logs(mocked_server) -> None:
 async def test_list_alerts_with_state(mocked_server) -> None:
     mcp, router = mocked_server
     # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_alerts", {"state": "warning"})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert p["state"] == "1"  # service warning
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
@@ -237,9 +246,9 @@ async def test_list_alerts_with_state(mocked_server) -> None:
 async def test_list_notifications_with_contact(mocked_server) -> None:
     mcp, router = mocked_server
     # Uses /logs with client-side alias expansion (fixes broken /notifications on some backends)
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_notifications", {"contact": "oncall"})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert p["contact_name"] == "oncall"
     assert p["class"] == "3"
 
@@ -248,9 +257,10 @@ async def test_list_notifications_with_contact(mocked_server) -> None:
 async def test_list_notifications_default_columns(mocked_server) -> None:
     """Default columns must include contact_name and command_name; state_type must be absent."""
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_notifications", {"host": "REDONLINE006"})
-    cols = route.calls.last.request.url.params.get("columns", "")
+    p = post_params(route.calls.last)
+    cols = p.get("columns", "")
     assert "contact_name" in cols, f"contact_name missing from columns: {cols}"
     assert "command_name" in cols, f"command_name missing from columns: {cols}"
     assert "state_type" not in cols, f"state_type should not be in notification columns: {cols}"
@@ -259,9 +269,9 @@ async def test_list_notifications_default_columns(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_recent_events(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hours": 2})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert p["time[gte]"] == "-2h"
 
 
@@ -269,10 +279,10 @@ async def test_recent_events(mocked_server) -> None:
 async def test_recent_events_only_alerts(mocked_server) -> None:
     mcp, router = mocked_server
     # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hours": 1, "only_alerts": True})
     assert route.called
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
 
@@ -309,9 +319,9 @@ async def test_list_notifications_hostgroup(mocked_server) -> None:
     router.get("https://thruk.test/r/hosts").mock(
         return_value=ok([{"name": "db01"}, {"name": "db02"}])
     )
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_notifications", {"hostgroup": "db-servers"})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert "host_name[regex]" in p, "host_name[regex] must be set on /logs"
     assert "db01" in p["host_name[regex]"] and "db02" in p["host_name[regex]"]
     assert "current_host_groups" not in str(p), "current_host_groups must not appear on /logs"
@@ -325,9 +335,9 @@ async def test_recent_events_hostgroup(mocked_server) -> None:
     router.get("https://thruk.test/r/hosts").mock(
         return_value=ok([{"name": "sw01"}, {"name": "sw02"}])
     )
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hostgroup": "network", "hours": 2})
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert "host_name[regex]" in p
     assert "sw01" in p["host_name[regex]"] and "sw02" in p["host_name[regex]"]
     assert p["time[gte]"] == "-2h"
@@ -338,11 +348,11 @@ async def test_recent_events_hostgroup_and_only_alerts(mocked_server) -> None:
     """hostgroup and only_alerts can be combined — both params present on /logs."""
     mcp, router = mocked_server
     router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "sw01"}]))
-    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
         "thruk_recent_events", {"hostgroup": "network", "only_alerts": True, "hours": 1}
     )
-    p = route.calls.last.request.url.params
+    p = post_params(route.calls.last)
     assert "host_name[regex]" in p
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
