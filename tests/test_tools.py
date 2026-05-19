@@ -264,6 +264,67 @@ async def test_recent_events_only_alerts(mocked_server) -> None:
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
 
+# ---------------------------------------------- hostgroup filter (issue #43)
+
+
+@pytest.mark.asyncio
+async def test_problems_hostgroup_applied_to_both_queries(mocked_server) -> None:
+    """hostgroup filter sent as groups[gte] for hosts and host_groups[gte] for services."""
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_problems", {"hostgroup": "linux-servers"})
+    assert r_hosts.called and r_svc.called
+    assert r_hosts.calls.last.request.url.params["groups[gte]"] == "linux-servers"
+    assert r_svc.calls.last.request.url.params["host_groups[gte]"] == "linux-servers"
+
+
+@pytest.mark.asyncio
+async def test_problems_no_hostgroup_no_group_param(mocked_server) -> None:
+    """Without hostgroup, neither groups[gte] nor host_groups[gte] appear."""
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_problems", {})
+    assert "groups[gte]" not in r_hosts.calls.last.request.url.params
+    assert "host_groups[gte]" not in r_svc.calls.last.request.url.params
+
+
+@pytest.mark.asyncio
+async def test_list_notifications_hostgroup(mocked_server) -> None:
+    """hostgroup filter mapped to current_host_groups[gte] on /logs."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_notifications", {"hostgroup": "db-servers"})
+    p = route.calls.last.request.url.params
+    assert p["current_host_groups[gte]"] == "db-servers"
+    assert p["class"] == "3"  # notification class still applied
+
+
+@pytest.mark.asyncio
+async def test_recent_events_hostgroup(mocked_server) -> None:
+    """hostgroup filter mapped to current_host_groups[gte] on /logs."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_recent_events", {"hostgroup": "network", "hours": 2})
+    p = route.calls.last.request.url.params
+    assert p["current_host_groups[gte]"] == "network"
+    assert p["time[gte]"] == "-2h"
+
+
+@pytest.mark.asyncio
+async def test_recent_events_hostgroup_and_only_alerts(mocked_server) -> None:
+    """hostgroup and only_alerts can be combined — both params present on /logs."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_recent_events", {"hostgroup": "network", "only_alerts": True, "hours": 1}
+    )
+    p = route.calls.last.request.url.params
+    assert p["current_host_groups[gte]"] == "network"
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+
+
 # ---------------------------------------------------------- Downtime writes
 
 
