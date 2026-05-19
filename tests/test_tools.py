@@ -225,19 +225,23 @@ async def test_list_logs(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_list_alerts_with_state(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/alerts").mock(return_value=ok([]))
+    # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_alerts", {"state": "warning"})
     p = route.calls.last.request.url.params
     assert p["state"] == "1"  # service warning
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
 
 @pytest.mark.asyncio
 async def test_list_notifications_with_contact(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/notifications").mock(return_value=ok([]))
+    # Uses /logs with client-side alias expansion (fixes broken /notifications on some backends)
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_notifications", {"contact": "oncall"})
     p = route.calls.last.request.url.params
     assert p["contact_name"] == "oncall"
+    assert p["class"] == "3"
 
 
 @pytest.mark.asyncio
@@ -252,9 +256,12 @@ async def test_recent_events(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_recent_events_only_alerts(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/alerts").mock(return_value=ok([]))
+    # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
+    route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hours": 1, "only_alerts": True})
     assert route.called
+    p = route.calls.last.request.url.params
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
 
 # ---------------------------------------------------------- Downtime writes

@@ -451,11 +451,15 @@ async def thruk_list_alerts(
     columns: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """List HOST/SERVICE ALERT entries from the log (/alerts).
+    """List HOST/SERVICE ALERT entries from the log.
+
+    Queries /logs with type[~]=^(HOST|SERVICE) ALERT directly (client-side
+    alias expansion) because the /alerts server-side alias is broken on some
+    Thruk versions and returns [] even when alert rows are present.
 
     Optional `state` filters alert state: up/down/unreachable for hosts,
     ok/warning/critical/unknown for services."""
-    extra: dict[str, Any] = {}
+    extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"}
     if state:
         s = state.lower()
         if s in HOST_STATE_MAP:
@@ -463,7 +467,7 @@ async def thruk_list_alerts(
         elif s in SVC_STATE_MAP:
             extra["state"] = SVC_STATE_MAP[s]
     data, warnings = await _fetch_logs(
-        "/alerts",
+        "/logs",
         host,
         service,
         since,
@@ -493,14 +497,18 @@ async def thruk_list_notifications(
     columns: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """List notification entries from the log (/notifications, class=3).
+    """List notification entries from the log (class=3).
+
+    Queries /logs with class=3 directly (client-side alias expansion) because
+    the /notifications server-side alias is subject to the same broken-alias
+    regression as /alerts on some Thruk versions.
 
     Optional `contact` filters notifications sent to a specific contact name."""
-    extra: dict[str, Any] = {}
+    extra: dict[str, Any] = {"class": "3"}
     if contact:
         extra["contact_name"] = contact
     data, warnings = await _fetch_logs(
-        "/notifications",
+        "/logs",
         host,
         service,
         since,
@@ -530,10 +538,25 @@ async def thruk_recent_events(
 ) -> str:
     """Return the most recent monitoring events from the last N hours
     (default 1h). Defaults to all log classes; set `only_alerts=True` to
-    restrict to HOST/SERVICE ALERT entries."""
-    path = "/alerts" if only_alerts else "/logs"
+    restrict to HOST/SERVICE ALERT entries.
+
+    Uses /logs with an explicit type filter when only_alerts=True (client-side
+    alias expansion — the /alerts server-side alias is broken on some Thruk
+    versions)."""
+    extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"} if only_alerts else {}
     data, warnings = await _fetch_logs(
-        path, host, service, f"-{hours}h", None, None, limit, offset, "-time", columns, backends
+        "/logs",
+        host,
+        service,
+        f"-{hours}h",
+        None,
+        None,
+        limit,
+        offset,
+        "-time",
+        columns,
+        backends,
+        extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
