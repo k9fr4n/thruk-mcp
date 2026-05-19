@@ -1344,7 +1344,7 @@ _LOG_HOSTGROUP = {
 _LOG_CUSTOM_VARS = {
     **_OPT_OBJ,
     "description": (
-        "Filter by host-level Nagios custom variables, e.g. {\"KERNEL\": \"windows\"}. "
+        'Filter by host-level Nagios custom variables, e.g. {"KERNEL": "windows"}. '
         "Resolved via a /hosts lookup then host_name[regex] — the log table does not "
         "expose custom-variable columns directly."
     ),

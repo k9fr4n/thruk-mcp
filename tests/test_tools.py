@@ -337,9 +337,7 @@ async def test_recent_events_hostgroup(mocked_server) -> None:
 async def test_recent_events_hostgroup_and_only_alerts(mocked_server) -> None:
     """hostgroup and only_alerts can be combined — both params present on /logs."""
     mcp, router = mocked_server
-    router.get("https://thruk.test/r/hosts").mock(
-        return_value=ok([{"name": "sw01"}])
-    )
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "sw01"}]))
     route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
         "thruk_recent_events", {"hostgroup": "network", "only_alerts": True, "hours": 1}
