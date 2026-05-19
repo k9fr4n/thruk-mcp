@@ -393,25 +393,33 @@ async def thruk_sites() -> str:
 
 
 # ------------------------------------------------------ Logs / history helper
-async def _resolve_hostgroup_hosts(hostgroup: str, backends: str | None) -> str | None:
-    """Return a regex alternation of host names belonging to *hostgroup*.
+async def _resolve_hosts_to_regex(
+    backends: str | None,
+    hostgroup: str | None = None,
+    custom_vars: dict | None = None,
+) -> str | None:
+    """Resolve a hostgroup / custom-variable filter to a ``host_name[regex]`` pattern.
 
-    The Naemon Livestatus ``log`` table does not expose ``current_host_groups``,
-    so we cannot filter logs by hostgroup directly.  Instead we resolve the group
-    to an explicit list of host names and build a ``host_name[regex]`` filter.
+    The Naemon Livestatus ``log`` table exposes neither ``current_host_groups``
+    nor custom-variable columns.  We work around this by querying ``/hosts``
+    (which supports both) and building an explicit alternation regex from the
+    matching host names.
 
-    Returns ``None`` when the hostgroup is empty or the lookup fails.
+    *hostgroup* and *custom_vars* may be combined: the ``/hosts`` call applies
+    both filters simultaneously (logical AND), so we issue only one request.
+
+    Returns ``None`` when no hosts match (caller should emit an empty result).
     """
-    data = await _get_client().get(
-        "/hosts",
-        params={"groups[gte]": hostgroup, "columns": "name", "limit": "1000"},
-        backends=_backends(backends),
-    )
+    params: dict[str, str] = {"columns": "name", "limit": "1000"}
+    if hostgroup:
+        params["groups[gte]"] = hostgroup
+    if custom_vars:
+        params.update(_build_cv_params(custom_vars))
+    data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
     names = [row["name"] for row in (data if isinstance(data, list) else []) if row.get("name")]
     if not names:
         return None
-    escaped = [re.escape(n) for n in names]
-    return f"^({'|'.join(escaped)})$"
+    return f"^({'|'.join(re.escape(n) for n in names)})$"
 
 
 async def _fetch_logs(
@@ -429,16 +437,17 @@ async def _fetch_logs(
     extra: dict[str, Any] | None = None,
     hostgroup: str | None = None,
     default_columns: str = DEFAULT_LOG_COLUMNS,
+    custom_vars: dict | None = None,
 ) -> tuple[Any, list[str]]:
     """Fetch log-family data with graceful per-backend fallback.
 
     Returns ``(data, warnings)``.  *warnings* is non-empty only when the
     all-backends query failed and some backends also failed individually.
 
-    ``hostgroup`` is resolved to the list of host names in the group (via a
-    ``/hosts?groups[gte]=`` call) and then applied as ``host_name[regex]``.
-    The Naemon Livestatus ``log`` table does not expose ``current_host_groups``,
-    so a direct group filter on ``/logs`` is not possible.
+    ``hostgroup`` and ``custom_vars`` are resolved to a ``host_name[regex]``
+    filter via a single ``/hosts`` lookup.  The Naemon Livestatus ``log``
+    table exposes neither ``current_host_groups`` nor custom-variable columns,
+    so direct filtering on ``/logs`` is not possible.
     """
     params = _list_params(limit, offset, sort, columns, default_columns)
     if host:
@@ -451,12 +460,13 @@ async def _fetch_logs(
         params["time[lte]"] = until
     if message_regex:
         params["message[regex]"] = message_regex
-    if hostgroup:
-        host_regex = await _resolve_hostgroup_hosts(hostgroup, backends)
+    if hostgroup or custom_vars:
+        host_regex = await _resolve_hosts_to_regex(
+            backends, hostgroup=hostgroup, custom_vars=custom_vars
+        )
         if host_regex:
             params["host_name[regex]"] = host_regex
-        # if host_regex is None the hostgroup was empty — query proceeds unfiltered
-        # (caller will receive an empty result or all logs, both acceptable)
+        # None → no matching hosts; query will naturally return empty result
     if extra:
         params.update(extra)
     return await _get_client().get_with_fallback(path, params=params, backends=_backends(backends))
@@ -473,15 +483,33 @@ async def thruk_list_logs(
     sort: str = "-time",
     columns: str | None = None,
     backends: str | None = None,
+    hostgroup: str | None = None,
+    custom_vars: dict | None = None,
 ) -> str:
     """Query raw Livestatus log entries (/logs).
 
     Time arguments accept Thruk relative timestamps (e.g. '-24h', '-7d', '-30m')
     or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first.
     Pagination via `limit`/`offset`. Default columns are a tight subset;
-    pass `columns=''` for all columns."""
+    pass `columns=''` for all columns.
+
+    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
+    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
+    ``host_name[regex]`` — the log table does not expose these columns directly."""
     data, warnings = await _fetch_logs(
-        "/logs", host, service, since, until, message_regex, limit, offset, sort, columns, backends
+        "/logs",
+        host,
+        service,
+        since,
+        until,
+        message_regex,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
+        hostgroup=hostgroup,
+        custom_vars=custom_vars,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -499,6 +527,8 @@ async def thruk_list_alerts(
     sort: str = "-time",
     columns: str | None = None,
     backends: str | None = None,
+    hostgroup: str | None = None,
+    custom_vars: dict | None = None,
 ) -> str:
     """List HOST/SERVICE ALERT entries from the log.
 
@@ -507,7 +537,9 @@ async def thruk_list_alerts(
     Thruk versions and returns [] even when alert rows are present.
 
     Optional `state` filters alert state: up/down/unreachable for hosts,
-    ok/warning/critical/unknown for services."""
+    ok/warning/critical/unknown for services.
+    Optional `hostgroup` and `custom_vars` are resolved via a ``/hosts`` lookup
+    then ``host_name[regex]`` (the log table does not expose these columns)."""
     extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"}
     if state:
         s = state.lower()
@@ -528,6 +560,8 @@ async def thruk_list_alerts(
         columns,
         backends,
         extra=extra,
+        hostgroup=hostgroup,
+        custom_vars=custom_vars,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -539,6 +573,7 @@ async def thruk_list_notifications(
     service: str | None = None,
     contact: str | None = None,
     hostgroup: str | None = None,
+    custom_vars: dict | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -554,8 +589,9 @@ async def thruk_list_notifications(
     regression as /alerts on some Thruk versions.
 
     Optional `contact` filters notifications sent to a specific contact name.
-    Optional `hostgroup` resolves the group to host names first, then filters
-    via ``host_name[regex]`` (two-step; works on all Thruk backends)."""
+    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
+    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
+    ``host_name[regex]`` (two-step; works on all Thruk backends)."""
     extra: dict[str, Any] = {"class": "3"}
     if contact:
         extra["contact_name"] = contact
@@ -574,6 +610,7 @@ async def thruk_list_notifications(
         extra=extra,
         hostgroup=hostgroup,
         default_columns=DEFAULT_NOTIFICATION_COLUMNS,
+        custom_vars=custom_vars,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -585,6 +622,7 @@ async def thruk_recent_events(
     host: str | None = None,
     service: str | None = None,
     hostgroup: str | None = None,
+    custom_vars: dict | None = None,
     only_alerts: bool = False,
     limit: int = 100,
     offset: int = 0,
@@ -599,8 +637,9 @@ async def thruk_recent_events(
     alias expansion — the /alerts server-side alias is broken on some Thruk
     versions).
 
-    Optional `hostgroup` resolves the group to host names first, then filters
-    via ``host_name[regex]`` (two-step; works on all Thruk backends)."""
+    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
+    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
+    ``host_name[regex]`` (two-step; works on all Thruk backends)."""
     extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"} if only_alerts else {}
     data, warnings = await _fetch_logs(
         "/logs",
@@ -616,6 +655,7 @@ async def thruk_recent_events(
         backends,
         extra=extra,
         hostgroup=hostgroup,
+        custom_vars=custom_vars,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -1293,6 +1333,22 @@ _OPT_STR = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
 _OPT_INT = {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
 _OPT_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}], "default": None}
 _OPT_OBJ = {"anyOf": [{"type": "object"}, {"type": "null"}], "default": None}
+# Reusable schema fragment for log-family host-resolution filters.
+_LOG_HOSTGROUP = {
+    **_OPT_STR,
+    "description": (
+        "Filter to hosts belonging to this hostgroup. Resolved via a /hosts lookup "
+        "then host_name[regex] — works on all backends (log table has no group column)."
+    ),
+}
+_LOG_CUSTOM_VARS = {
+    **_OPT_OBJ,
+    "description": (
+        "Filter by host-level Nagios custom variables, e.g. {\"KERNEL\": \"windows\"}. "
+        "Resolved via a /hosts lookup then host_name[regex] — the log table does not "
+        "expose custom-variable columns directly."
+    ),
+}
 _BACKENDS = {
     "anyOf": [{"type": "string"}, {"type": "null"}],
     "default": None,
@@ -1428,6 +1484,8 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         sort=_str(),
         columns=_OPT_STR,
         backends=_BACKENDS,
+        hostgroup=_LOG_HOSTGROUP,
+        custom_vars=_LOG_CUSTOM_VARS,
     ),
     "thruk_list_alerts": _s(
         host=_OPT_STR,
@@ -1440,18 +1498,15 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         sort=_str(),
         columns=_OPT_STR,
         backends=_BACKENDS,
+        hostgroup=_LOG_HOSTGROUP,
+        custom_vars=_LOG_CUSTOM_VARS,
     ),
     "thruk_list_notifications": _s(
         host=_OPT_STR,
         service=_OPT_STR,
         contact=_OPT_STR,
-        hostgroup={
-            **_OPT_STR,
-            "description": (
-                "Filter notifications to hosts belonging to this hostgroup. "
-                "Resolved via a /hosts lookup then host_name[regex] — works on all backends."
-            ),
-        },
+        hostgroup=_LOG_HOSTGROUP,
+        custom_vars=_LOG_CUSTOM_VARS,
         since=_OPT_STR,
         until=_OPT_STR,
         limit=_int(default=100),
@@ -1464,13 +1519,8 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         hours=_int(default=1),
         host=_OPT_STR,
         service=_OPT_STR,
-        hostgroup={
-            **_OPT_STR,
-            "description": (
-                "Filter events to hosts belonging to this hostgroup. "
-                "Resolved via a /hosts lookup then host_name[regex] — works on all backends."
-            ),
-        },
+        hostgroup=_LOG_HOSTGROUP,
+        custom_vars=_LOG_CUSTOM_VARS,
         only_alerts=_bool(default=False),
         limit=_int(default=100),
         offset=_int(default=0),
