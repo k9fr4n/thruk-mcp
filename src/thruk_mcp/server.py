@@ -1228,7 +1228,7 @@ _TOOL_SCHEMAS: dict[str, dict] = {
             "description": (
                 "Filter by Nagios custom variables. Dict of {VARNAME: value} pairs "
                 "translated to Thruk REST _VARNAME=value params (auto-uppercased). "
-                "Example: {\"KERNEL\": \"windows\"}."
+                'Example: {"KERNEL": "windows"}.'
             ),
         },
         limit=_int(default=50),
@@ -1248,7 +1248,7 @@ _TOOL_SCHEMAS: dict[str, dict] = {
             "description": (
                 "Filter by service-level Nagios custom variables. Dict of {VARNAME: value} "
                 "pairs translated to _VARNAME=value REST params. "
-                "Example: {\"CRITICALITY\": \"prod\"}."
+                'Example: {"CRITICALITY": "prod"}.'
             ),
         },
         host_custom_vars={
@@ -1256,7 +1256,7 @@ _TOOL_SCHEMAS: dict[str, dict] = {
             "description": (
                 "Filter by host-level Nagios custom variables (applied to the parent host). "
                 "Dict of {VARNAME: value} pairs translated to _HOSTVARNAME=value REST params. "
-                "Example: {\"KERNEL\": \"windows\"}."
+                'Example: {"KERNEL": "windows"}.'
             ),
         },
         limit=_int(default=50),
@@ -1295,14 +1295,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
             "description": (
                 "Filter problems by Nagios custom variables (applied to host own vars in "
                 "the hosts query, and service own vars in the services query). "
-                "Example: {\"ENV\": \"prod\"}."
+                'Example: {"ENV": "prod"}.'
             ),
         },
         host_custom_vars={
             **_OPT_OBJ,
             "description": (
                 "Filter service problems by host-level Nagios custom variables. "
-                "Translated to _HOSTVARNAME=value. Example: {\"KERNEL\": \"windows\"}."
+                'Translated to _HOSTVARNAME=value. Example: {"KERNEL": "windows"}.'
             ),
         },
         backends=_BACKENDS,

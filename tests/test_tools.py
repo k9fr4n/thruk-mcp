@@ -590,9 +590,7 @@ async def test_query_cv_warning_injected(mocked_server) -> None:
     import json as _json
 
     mcp, router = mocked_server
-    router.get("https://thruk.test/r/hosts").mock(
-        return_value=ok([{"name": "h1"}, {"name": "h2"}])
-    )
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "h1"}, {"name": "h2"}]))
     result = await mcp.call_tool(
         "thruk_query",
         {"path": "/hosts", "params": {"q": "custom_variables >= 'KERNEL windows'", "limit": 10}},
