@@ -71,6 +71,11 @@ DEFAULT_SERVICE_COLUMNS = (
 )
 DEFAULT_GROUP_COLUMNS = "name,alias,num_hosts,num_services,worst_host_state,worst_service_state"
 DEFAULT_LOG_COLUMNS = "time,type,class,host_name,service_description,state,state_type,message"
+# Notification-specific columns: contact_name and command_name are populated for class=3
+# log entries; state_type is alert-only and always null for notifications.
+DEFAULT_NOTIFICATION_COLUMNS = (
+    "time,type,class,host_name,service_description,state,contact_name,command_name,message"
+)
 DEFAULT_DOWNTIME_COLUMNS = (
     "id,host_name,service_description,author,comment,"
     "start_time,end_time,fixed,duration,triggered_by,peer_name"
@@ -401,6 +406,7 @@ async def _fetch_logs(
     backends: str | None,
     extra: dict[str, Any] | None = None,
     hostgroup: str | None = None,
+    default_columns: str = DEFAULT_LOG_COLUMNS,
 ) -> tuple[Any, list[str]]:
     """Fetch log-family data with graceful per-backend fallback.
 
@@ -413,7 +419,7 @@ async def _fetch_logs(
     not be filterable and the filter could be silently ignored; in that case all log
     rows are returned unfiltered.
     """
-    params = _list_params(limit, offset, sort, columns, DEFAULT_LOG_COLUMNS)
+    params = _list_params(limit, offset, sort, columns, default_columns)
     if host:
         params["host_name"] = host
     if service:
@@ -543,6 +549,7 @@ async def thruk_list_notifications(
         backends,
         extra=extra,
         hostgroup=hostgroup,
+        default_columns=DEFAULT_NOTIFICATION_COLUMNS,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
