@@ -304,23 +304,32 @@ async def test_problems_no_hostgroup_no_group_param(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_list_notifications_hostgroup(mocked_server) -> None:
-    """hostgroup filter mapped to current_host_groups[gte] on /logs."""
+    """hostgroup resolved to host_name[regex] on /logs (two-step approach)."""
     mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "db01"}, {"name": "db02"}])
+    )
     route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_notifications", {"hostgroup": "db-servers"})
     p = route.calls.last.request.url.params
-    assert p["current_host_groups[gte]"] == "db-servers"
+    assert "host_name[regex]" in p, "host_name[regex] must be set on /logs"
+    assert "db01" in p["host_name[regex]"] and "db02" in p["host_name[regex]"]
+    assert "current_host_groups" not in str(p), "current_host_groups must not appear on /logs"
     assert p["class"] == "3"  # notification class still applied
 
 
 @pytest.mark.asyncio
 async def test_recent_events_hostgroup(mocked_server) -> None:
-    """hostgroup filter mapped to current_host_groups[gte] on /logs."""
+    """hostgroup resolved to host_name[regex] on /logs (two-step approach)."""
     mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "sw01"}, {"name": "sw02"}])
+    )
     route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hostgroup": "network", "hours": 2})
     p = route.calls.last.request.url.params
-    assert p["current_host_groups[gte]"] == "network"
+    assert "host_name[regex]" in p
+    assert "sw01" in p["host_name[regex]"] and "sw02" in p["host_name[regex]"]
     assert p["time[gte]"] == "-2h"
 
 
@@ -328,12 +337,15 @@ async def test_recent_events_hostgroup(mocked_server) -> None:
 async def test_recent_events_hostgroup_and_only_alerts(mocked_server) -> None:
     """hostgroup and only_alerts can be combined — both params present on /logs."""
     mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "sw01"}])
+    )
     route = router.get("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
         "thruk_recent_events", {"hostgroup": "network", "only_alerts": True, "hours": 1}
     )
     p = route.calls.last.request.url.params
-    assert p["current_host_groups[gte]"] == "network"
+    assert "host_name[regex]" in p
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
 
 
