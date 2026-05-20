@@ -128,13 +128,15 @@ async def test_problems_host_custom_vars(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_problems_custom_vars_both_queries(mocked_server) -> None:
-    """custom_vars injected into both host and service queries."""
+    """custom_vars: _VAR on hosts query, _HOSTVAR on services query."""
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
     r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
     await mcp.call_tool("thruk_problems", {"custom_vars": {"ENV": "prod"}})
     assert r_hosts.calls.last.request.url.params["_ENV"] == "prod"
-    assert r_svc.calls.last.request.url.params["_ENV"] == "prod"
+    # services sub-query must use host-prefix so _HOSTENV=prod, not _ENV=prod
+    assert r_svc.calls.last.request.url.params["_HOSTENV"] == "prod"
+    assert "_ENV" not in r_svc.calls.last.request.url.params
 
 
 @pytest.mark.asyncio
