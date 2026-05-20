@@ -354,15 +354,22 @@ def _q_leaf(leaf: dict[str, Any], context: str) -> str:
     return f'({q_field} = "{value}")'
 
 
-def _build_q_expr(node: dict[str, Any], context: str) -> str:
-    """Recursively build a Thruk q= expression from a filter tree."""
+def _build_q_expr(node: dict[str, Any], context: str, _root: bool = True) -> str:
+    """Recursively build a Thruk q= expression from a filter tree.
+
+    Thruk's q= parser rejects a top-level expression wrapped in parentheses
+    (e.g. ``((A) or (B))`` is invalid, ``(A) or (B)`` is valid).  Only nested
+    groups — i.e. groups that are children of another group — are wrapped.
+    """
     if node.get("type") == "leaf":
         return _q_leaf(node, context)
     operator = node["operator"]
-    parts = [_build_q_expr(child, context) for child in node["conditions"]]
+    parts = [_build_q_expr(child, context, _root=False) for child in node["conditions"]]
     if len(parts) == 1:
         return parts[0]
-    return "(" + f" {operator} ".join(parts) + ")"
+    joined = f" {operator} ".join(parts)
+    # Don't wrap the root expression — Thruk rejects outer parens at q= top level
+    return joined if _root else f"({joined})"
 
 
 # ---------------------------------------------------------------------------
