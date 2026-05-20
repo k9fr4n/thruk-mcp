@@ -15,11 +15,17 @@ functions defined as closures inside ``build_server()``, yielding
      any catalog label gymnastics.
 """
 
+import asyncio
+import contextlib
 import fnmatch
+import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -147,6 +153,85 @@ def _build_cv_params(
         return {}
     prefix = "_HOST" if host_prefix else "_"
     return {f"{prefix}{k.upper()}": str(v) for k, v in custom_vars.items()}
+
+
+# ---------------------------------------------------------------------------
+# Large-response spill helpers (issue #49)
+# ---------------------------------------------------------------------------
+
+def _write_spill_sync(dest: Path, workdir: Path, payload: str) -> None:
+    """Write *payload* to *dest* atomically (tmpfile + os.replace).
+
+    Uses a temp file in the same directory so that os.replace() is guaranteed
+    to be atomic on POSIX (same filesystem).  The temp file is removed on any
+    error to avoid leaving partial files.
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=workdir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp_path, dest)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+async def _spill_if_needed(
+    payload: str,
+    tool_name: str,
+    meta: dict[str, Any],
+) -> str:
+    """Return *payload* inline, or spill to workdir and return a compact handle.
+
+    Spill is triggered when ALL of the following are true:
+    - ``THRUK_MCP_WORKDIR`` is configured (``config.workdir`` is not None)
+    - ``len(payload.encode())`` exceeds ``config.spill_threshold_kb * 1024``
+
+    The handle JSON always contains:
+    - ``mode``: ``"file"``
+    - ``saved_to``: absolute path of the written file
+    - ``bytes``: payload size in bytes
+    - ``sha256``: hex digest of the UTF-8 payload (integrity check)
+    - all keys from *meta* (e.g. ``rows``, ``filters``)
+
+    On any I/O error the spill is aborted and the original *payload* is
+    returned inline with a WARNING log, so the tool never fails silently.
+    """
+    cfg = _get_client().config
+    if cfg.workdir is None:
+        return payload
+    byte_size = len(payload.encode())
+    if byte_size <= cfg.spill_threshold_kb * 1024:
+        return payload
+
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    # Use a short hash of the first 512 bytes as a collision-avoidance suffix.
+    suffix = hashlib.sha256(payload[:512].encode()).hexdigest()[:8]
+    filename = f"{tool_name}_{ts}_{suffix}.json"
+    dest = cfg.workdir / filename
+
+    try:
+        await asyncio.to_thread(_write_spill_sync, dest, cfg.workdir, payload)
+    except OSError as exc:
+        log.warning(
+            "thruk_mcp: spill to %s failed (%s) — returning inline payload", dest, exc
+        )
+        return payload
+
+    sha = hashlib.sha256(payload.encode()).hexdigest()
+    log.info(
+        "thruk_mcp: spilled %s to %s (%d bytes)", tool_name, dest, byte_size
+    )
+    handle: dict[str, Any] = {
+        "mode": "file",
+        "saved_to": str(dest),
+        "bytes": byte_size,
+        "sha256": sha,
+    }
+    handle.update(meta)
+    return json.dumps(handle, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +429,17 @@ async def thruk_problems(
     all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
     if all_warnings:
         result["_warnings"] = all_warnings
-    return json.dumps(result, indent=2, default=str)
+    n_hosts = len(hosts) if isinstance(hosts, list) else 0
+    n_svcs = len(services) if isinstance(services, list) else 0
+    meta: dict[str, Any] = {
+        "rows": n_hosts + n_svcs,
+        "filters": {k: v for k, v in {
+            "hostgroup": hostgroup,
+            "custom_vars": custom_vars,
+            "host_custom_vars": host_custom_vars,
+        }.items() if v is not None},
+    }
+    return await _spill_if_needed(json.dumps(result, indent=2, default=str), "thruk_problems", meta)
 
 
 async def thruk_stats(backends: str | None = None) -> str:
@@ -621,9 +716,23 @@ async def thruk_list_notifications(
         default_columns=DEFAULT_NOTIFICATION_COLUMNS,
         custom_vars=custom_vars,
     )
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    result_obj: Any = {"data": data, "_warnings": warnings} if warnings else data
+    rows = len(data) if isinstance(data, list) else 0
+    meta: dict[str, Any] = {
+        "rows": rows,
+        "filters": {k: v for k, v in {
+            "host": host,
+            "service": service,
+            "contact": contact,
+            "hostgroup": hostgroup,
+            "custom_vars": custom_vars,
+            "since": since,
+            "until": until,
+        }.items() if v is not None},
+    }
+    return await _spill_if_needed(
+        json.dumps(result_obj, indent=2, default=str), "thruk_list_notifications", meta
+    )
 
 
 async def thruk_recent_events(
@@ -666,9 +775,22 @@ async def thruk_recent_events(
         hostgroup=hostgroup,
         custom_vars=custom_vars,
     )
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    result_obj: Any = {"data": data, "_warnings": warnings} if warnings else data
+    rows = len(data) if isinstance(data, list) else 0
+    meta: dict[str, Any] = {
+        "rows": rows,
+        "filters": {k: v for k, v in {
+            "hours": hours,
+            "host": host,
+            "service": service,
+            "hostgroup": hostgroup,
+            "custom_vars": custom_vars,
+            "only_alerts": only_alerts,
+        }.items() if v is not None and v is not False},
+    }
+    return await _spill_if_needed(
+        json.dumps(result_obj, indent=2, default=str), "thruk_recent_events", meta
+    )
 
 
 async def thruk_query(
