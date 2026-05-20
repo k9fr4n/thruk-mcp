@@ -5,14 +5,10 @@ from __future__ import annotations
 import pytest
 
 from thruk_mcp.filters import (
-    FIELDS_ALERTS,
     FIELDS_HOSTS,
     FIELDS_LOGS,
-    FIELDS_NOTIFICATIONS,
-    FIELDS_PROBLEMS,
     FIELDS_SERVICES,
     FilterError,
-    _build_q_expr,
     _has_or,
     build_tool_schema,
     compile_filter,
@@ -150,7 +146,9 @@ def test_validate_group_empty_conditions():
 
 def test_validate_group_condition_not_dict():
     with pytest.raises(FilterError, match="must be a dict"):
-        validate_filter({"type": "group", "operator": "and", "conditions": ["not a dict"]}, FIELDS_HOSTS)
+        validate_filter(
+            {"type": "group", "operator": "and", "conditions": ["not a dict"]}, FIELDS_HOSTS
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -413,9 +411,7 @@ def test_log_split_or_with_lookup_raises():
 
 
 def test_problems_custom_var():
-    host_p, svc_p = compile_filter_problems(
-        leaf("custom_var", "eq", {"var": "ENV", "val": "prod"})
-    )
+    host_p, svc_p = compile_filter_problems(leaf("custom_var", "eq", {"var": "ENV", "val": "prod"}))
     assert host_p["_ENV"] == "prod"
     assert svc_p["_HOSTENV"] == "prod"
 
