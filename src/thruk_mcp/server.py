@@ -641,8 +641,18 @@ async def thruk_list_logs(
     if "time[lte]" not in extra and until:
         extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs", None, None, None, None, None,
-        limit, offset, sort, columns, backends, extra=extra,
+        "/logs",
+        None,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
+        extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -677,8 +687,18 @@ async def thruk_list_alerts(
     if "time[lte]" not in extra and until:
         extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs", None, None, None, None, None,
-        limit, offset, sort, columns, backends, extra=extra,
+        "/logs",
+        None,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
+        extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -712,9 +732,19 @@ async def thruk_list_notifications(
     if "time[lte]" not in extra and until:
         extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs", None, None, None, None, None,
-        limit, offset, sort, columns, backends,
-        extra=extra, default_columns=DEFAULT_NOTIFICATION_COLUMNS,
+        "/logs",
+        None,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        offset,
+        sort,
+        columns,
+        backends,
+        extra=extra,
+        default_columns=DEFAULT_NOTIFICATION_COLUMNS,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -746,8 +776,18 @@ async def thruk_recent_events(
     if "time[gte]" not in extra:
         extra["time[gte]"] = f"-{hours}h"
     data, warnings = await _fetch_logs(
-        "/logs", None, None, None, None, None,
-        limit, offset, "-time", columns, backends, extra=extra,
+        "/logs",
+        None,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        offset,
+        "-time",
+        columns,
+        backends,
+        extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)

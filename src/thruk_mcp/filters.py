@@ -25,6 +25,7 @@ Log-family tools  → callers must call :func:`extract_log_lookup_fields` to
                     separate fields that need a ``/hosts`` secondary lookup
                     (``hostgroup``, ``custom_var``) from direct params.
 """
+
 from __future__ import annotations
 
 import re
@@ -59,9 +60,7 @@ FIELDS_ALERTS: frozenset[str] = frozenset(
 FIELDS_NOTIFICATIONS: frozenset[str] = frozenset(
     {"host", "service", "state", "contact", "hostgroup", "custom_var", "since", "until"}
 )
-FIELDS_PROBLEMS: frozenset[str] = frozenset(
-    {"state", "hostgroup", "custom_var", "host_custom_var"}
-)
+FIELDS_PROBLEMS: frozenset[str] = frozenset({"state", "hostgroup", "custom_var", "host_custom_var"})
 
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})
@@ -74,11 +73,22 @@ LOG_LOOKUP_FIELDS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 # ---------------------------------------------------------------------------
 
 _HOST_STATE_MAP: dict[str, int] = {
-    "up": 0, "down": 1, "unreachable": 2, "0": 0, "1": 1, "2": 2,
+    "up": 0,
+    "down": 1,
+    "unreachable": 2,
+    "0": 0,
+    "1": 1,
+    "2": 2,
 }
 _SVC_STATE_MAP: dict[str, int] = {
-    "ok": 0, "warning": 1, "critical": 2, "unknown": 3,
-    "0": 0, "1": 1, "2": 2, "3": 3,
+    "ok": 0,
+    "warning": 1,
+    "critical": 2,
+    "unknown": 3,
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
 }
 
 # ---------------------------------------------------------------------------
@@ -116,9 +126,7 @@ def validate_filter(
     elif node_type == "group":
         _validate_group(node, allowed_fields, _depth)
     else:
-        raise FilterError(
-            f"Filter node 'type' must be 'leaf' or 'group', got {node_type!r}"
-        )
+        raise FilterError(f"Filter node 'type' must be 'leaf' or 'group', got {node_type!r}")
 
 
 def _validate_leaf(node: dict[str, Any], allowed_fields: frozenset[str]) -> None:
@@ -131,13 +139,9 @@ def _validate_leaf(node: dict[str, Any], allowed_fields: frozenset[str]) -> None
     value: Any = node["value"]
 
     if not isinstance(field, str) or field not in allowed_fields:
-        raise FilterError(
-            f"Unknown filter field {field!r}. Allowed: {sorted(allowed_fields)}"
-        )
+        raise FilterError(f"Unknown filter field {field!r}. Allowed: {sorted(allowed_fields)}")
     if not isinstance(op, str) or op not in LEAF_OPS:
-        raise FilterError(
-            f"Unknown filter operator {op!r}. Allowed: {sorted(LEAF_OPS)}"
-        )
+        raise FilterError(f"Unknown filter operator {op!r}. Allowed: {sorted(LEAF_OPS)}")
     if value is None:
         raise FilterError("Filter leaf 'value' must not be null")
 
@@ -156,9 +160,7 @@ def _validate_leaf(node: dict[str, Any], allowed_fields: frozenset[str]) -> None
             raise FilterError(f"op='regex' invalid pattern {value!r}: {exc}") from exc
     elif field not in _CV_FIELDS:
         if not isinstance(value, (str, int, float)):
-            raise FilterError(
-                f"op={op!r} requires a scalar value (string, integer, or float)"
-            )
+            raise FilterError(f"op={op!r} requires a scalar value (string, integer, or float)")
 
     if field in _CV_FIELDS:
         if not isinstance(value, dict) or "var" not in value:
@@ -322,9 +324,7 @@ def _q_leaf(leaf: dict[str, Any], context: str) -> str:
         return f"(state {_op} {int_val})"
 
     if field in ("hostgroup", "servicegroup"):
-        q_field = (
-            "host_groups" if (field == "hostgroup" and context == "services") else "groups"
-        )
+        q_field = "host_groups" if (field == "hostgroup" and context == "services") else "groups"
         if op == "in":
             parts = [f'({q_field} >= "{v}")' for v in value]
             return "(" + " or ".join(parts) + ")"
@@ -632,8 +632,7 @@ def filter_schema_property(fields: frozenset[str]) -> dict[str, Any]:
             '  leaf:  {"type":"leaf",  "field":"...", "op":"...", "value":...}\n'
             '  group: {"type":"group", "operator":"and"|"or", "conditions":[...]}\n\n'
             f"Available fields: {', '.join(sorted(fields))}\n"
-            f"Operators: {', '.join(sorted(LEAF_OPS))}\n\n"
-            + _build_examples(fields)
+            f"Operators: {', '.join(sorted(LEAF_OPS))}\n\n" + _build_examples(fields)
         ),
     }
 
