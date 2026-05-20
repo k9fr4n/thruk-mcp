@@ -59,8 +59,8 @@ WRITE_TOOLS: frozenset[str] = frozenset(
 
 HOST_STATES = {0: "UP", 1: "DOWN", 2: "UNREACHABLE"}
 SERVICE_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
-HOST_STATE_MAP = {"up": 0, "down": 1, "unreachable": 2}
-SVC_STATE_MAP = {"ok": 0, "warning": 1, "critical": 2, "unknown": 3}
+HOST_STATE_MAP = {"up": 0, "down": 1, "unreachable": 2, "0": 0, "1": 1, "2": 2}
+SVC_STATE_MAP = {"ok": 0, "warning": 1, "critical": 2, "unknown": 3, "0": 0, "1": 1, "2": 2, "3": 3}
 
 # Default columns: tight by design to minimize LLM token usage. A typical
 # Thruk host row has ~80 attributes (custom vars, perf_data expansions, ...);
@@ -287,7 +287,7 @@ async def thruk_list_hosts(
 ) -> str:
     """List monitored hosts.
 
-    Filters: `hostgroup`, `state` (up/down/unreachable), `name_regex` (CI regex),
+    Filters: `hostgroup`, `state` (up/down/unreachable or numeric 0/1/2), `name_regex` (CI regex),
     `custom_vars` (Nagios custom variables, e.g. ``{"KERNEL": "windows"}``).
 
     Custom-variable filtering uses Thruk's native ``_VARNAME=value`` REST param
@@ -335,7 +335,7 @@ async def thruk_list_services(
 ) -> str:
     """List monitored services.
 
-    Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown),
+    Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown or numeric 0/1/2/3),
     `description_regex`, `custom_vars` (service-level Nagios custom variables,
     e.g. ``{"CRITICALITY": "prod"}``), `host_custom_vars` (host-level custom
     variables applied to the parent host, e.g. ``{"KERNEL": "windows"}``).
