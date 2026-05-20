@@ -485,6 +485,45 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
 # ---------------------------------------------------------------------------
 
 
+def _compile_hybrid(node: dict[str, Any], context: str) -> dict[str, Any]:
+    """Compile a root AND tree that contains at least one OR subtree.
+
+    Thruk's ``q=`` parser silently returns empty results when an expression
+    of the form ``((groups >= X) or (_VAR = Y)) and (state = N)`` is used —
+    it cannot evaluate OR across heterogeneous list-columns (``groups``,
+    ``custom_variables``) combined with an outer AND on a scalar column.
+
+    Work-around: extract top-level AND conditions that contain no OR node
+    and compile them as bracket-operator params; keep the OR subtree(s) in
+    ``q=``.  Thruk evaluates both independently and intersects the results,
+    which is exactly the AND semantics we need.
+
+    Example
+    -------
+    Filter: ``AND(state=down, OR(hostgroup=HG_WINDOWS, cv=KERNEL=windows))``
+    Output: ``{"state": 1, "q": "(groups >= \\"HG_WINDOWS\\") or (_KERNEL = \\"windows\\")"}``
+    """
+    # Root must be an AND group here (caller guarantees it).
+    bracket_params: dict[str, Any] = {}
+    or_nodes: list[dict[str, Any]] = []
+
+    for child in node["conditions"]:
+        if _has_or(child):
+            or_nodes.append(child)
+        else:
+            bracket_params.update(_and_tree_to_params(child, context))
+
+    if or_nodes:
+        if len(or_nodes) == 1:
+            q_node = or_nodes[0]
+        else:
+            # Multiple OR subtrees at the AND level → AND them in q=
+            q_node = {"type": "group", "operator": "and", "conditions": or_nodes}
+        bracket_params["q"] = _build_q_expr(q_node, context)
+
+    return bracket_params
+
+
 def compile_filter(node: dict[str, Any], context: str) -> dict[str, Any]:
     """Compile a validated filter tree to Thruk REST query params.
 
@@ -500,12 +539,20 @@ def compile_filter(node: dict[str, Any], context: str) -> dict[str, Any]:
     Returns
     -------
     dict
-        Bracket-operator params for pure-AND trees, ``q=`` expression
-        when any OR node is present.
+        - Pure-AND tree → bracket-operator params only.
+        - Root OR tree  → single ``q=`` expression.
+        - AND tree with OR subtree(s) → bracket params for the AND leaves
+          + ``q=`` for the OR subtree(s).  This hybrid mode avoids the Thruk
+          ``q=`` parser bug where ``((groups >= X) or (_VAR = Y)) and (state
+          = N)`` silently returns empty results.
     """
-    if _has_or(node):
+    if not _has_or(node):
+        return _and_tree_to_params(node, context)
+    # Root is OR (or a bare leaf with no AND wrapper) → full q= as before
+    if node.get("type") == "leaf" or node.get("operator") == "or":
         return {"q": _build_q_expr(node, context)}
-    return _and_tree_to_params(node, context)
+    # Root is AND containing at least one OR subtree → hybrid
+    return _compile_hybrid(node, context)
 
 
 # ---------------------------------------------------------------------------

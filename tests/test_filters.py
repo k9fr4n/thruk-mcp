@@ -319,8 +319,32 @@ def test_compile_nested_or_and():
         leaf("state", "eq", "down"),
     )
     p = compile_filter(node, "hosts")
+    # Hybrid mode: OR subtree → q=, AND scalar leaf (state) → bracket param.
+    # Thruk silently returns [] when state is inside q= together with a groups
+    # OR expression, so state must be a top-level bracket param.
     assert "q" in p
-    assert "state" in p["q"]
+    assert "state" not in p["q"]  # state extracted as bracket param
+    assert p.get("state") == 1
+
+
+def test_compile_hybrid_hostgroup_or_custom_var_with_state():
+    """AND(state=down, OR(hostgroup=HG_WINDOWS, cv=KERNEL=windows)) must not put
+    state inside q= — Thruk silently returns [] in that case (confirmed live)."""
+    node = group(
+        "and",
+        leaf("state", "eq", "down"),
+        group(
+            "or",
+            leaf("hostgroup", "eq", "HG_WINDOWS"),
+            leaf("custom_var", "eq", {"var": "KERNEL", "val": "windows"}),
+        ),
+    )
+    p = compile_filter(node, "hosts")
+    assert p.get("state") == 1
+    assert "q" in p
+    assert "HG_WINDOWS" in p["q"]
+    assert "_KERNEL" in p["q"]
+    assert "state" not in p["q"]
 
 
 def test_q_expr_state_in():
