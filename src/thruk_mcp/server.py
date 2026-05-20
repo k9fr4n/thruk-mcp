@@ -34,6 +34,21 @@ from mcp.types import TextContent, Tool
 from . import audit
 from .client import ThrukClient, ThrukError
 from .config import ThrukConfig
+from .filters import (
+    FIELDS_ALERTS,
+    FIELDS_HOSTS,
+    FIELDS_LOGS,
+    FIELDS_NOTIFICATIONS,
+    FIELDS_PROBLEMS,
+    FIELDS_SERVICES,
+    FilterError,
+    build_tool_schema,
+    compile_filter,
+    compile_filter_problems,
+    extract_log_lookup_fields,
+    filter_schema_property,
+    validate_filter,
+)
 
 log = logging.getLogger("thruk_mcp.server")
 
@@ -275,10 +290,7 @@ def _get_client() -> ThrukClient:
 
 
 async def thruk_list_hosts(
-    hostgroup: str | None = None,
-    state: str | None = None,
-    name_regex: str | None = None,
-    custom_vars: dict | None = None,
+    filter: dict | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "name",
@@ -287,29 +299,23 @@ async def thruk_list_hosts(
 ) -> str:
     """List monitored hosts.
 
-    Filters: `hostgroup`, `state` (up/down/unreachable or numeric 0/1/2), `name_regex` (CI regex),
-    `custom_vars` (Nagios custom variables, e.g. ``{"KERNEL": "windows"}``).
+    ``filter`` is a structured AND/OR tree — see the ``filter`` parameter
+    description for syntax, available fields and examples.
 
-    Custom-variable filtering uses Thruk's native ``_VARNAME=value`` REST param
-    convention (the only correct server-side path — the ``q=custom_variables``
-    Livestatus syntax is silently broken in Thruk's REST q= parser).
-    Note: the ``custom_variables`` column may come back empty if Thruk's
-    ``expose_custom_vars`` setting (``thruk_local.conf``) does not whitelist the
-    variable — filtering by ``_VARNAME`` still works even when the column is hidden.
+    Fields: ``name``, ``state`` (up/down/unreachable), ``hostgroup``,
+    ``custom_var`` (e.g. ``{"var":"KERNEL","val":"windows"}``), ``address``.
 
-    Pagination: `limit` (max 1000), `offset`. Sort: `sort` (e.g. 'name', '-state').
-    Columns: by default a tight subset is returned to save tokens. Pass an empty
-    string `columns=''` to return ALL columns, or a custom comma list.
+    Pagination: ``limit`` (max 1000), ``offset``.
+    Sort: e.g. ``'name'``, ``'-state'``.
+    Columns: default is a tight subset to save tokens; pass ``''`` for all.
     """
     params = _list_params(limit, offset, sort, columns, DEFAULT_HOST_COLUMNS)
-    if hostgroup:
-        params["groups[gte]"] = hostgroup
-    if state and state.lower() in HOST_STATE_MAP:
-        params["state"] = HOST_STATE_MAP[state.lower()]
-    if name_regex:
-        params["name[regex]"] = name_regex
-    if custom_vars:
-        params.update(_build_cv_params(custom_vars))
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_HOSTS)
+        except FilterError as exc:
+            return json.dumps({"error": str(exc)}, indent=2)
+        params.update(compile_filter(filter, "hosts"))
     data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
     return json.dumps(data, indent=2, default=str)
 
@@ -321,12 +327,7 @@ async def thruk_get_host(host: str, backends: str | None = None) -> str:
 
 
 async def thruk_list_services(
-    host: str | None = None,
-    servicegroup: str | None = None,
-    state: str | None = None,
-    description_regex: str | None = None,
-    custom_vars: dict | None = None,
-    host_custom_vars: dict | None = None,
+    filter: dict | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "host_name,description",
@@ -335,33 +336,25 @@ async def thruk_list_services(
 ) -> str:
     """List monitored services.
 
-    Filters: `host`, `servicegroup`, `state` (ok/warning/critical/unknown or numeric 0/1/2/3),
-    `description_regex`, `custom_vars` (service-level Nagios custom variables,
-    e.g. ``{"CRITICALITY": "prod"}``), `host_custom_vars` (host-level custom
-    variables applied to the parent host, e.g. ``{"KERNEL": "windows"}``).
+    ``filter`` is a structured AND/OR tree — see the ``filter`` parameter
+    description for syntax, available fields and examples.
 
-    Custom-variable filtering uses Thruk's native ``_VARNAME=value`` /
-    ``_HOSTVARNAME=value`` REST param convention.  The ``q=custom_variables``
-    Livestatus syntax is silently broken in Thruk's REST q= parser — always
-    use these dedicated parameters instead.
+    Fields: ``host``, ``description``, ``state`` (ok/warning/critical/unknown),
+    ``hostgroup``, ``servicegroup``,
+    ``custom_var`` (service-level, e.g. ``{"var":"CRITICALITY","val":"prod"}``),
+    ``host_custom_var`` (host-level, e.g. ``{"var":"KERNEL","val":"windows"}``).
 
-    Pagination via `limit`/`offset`, sort via `sort`
-    (e.g. '-last_state_change'). Default columns are a tight subset to save
-    tokens; pass `columns=''` for all columns or a custom comma list.
+    Pagination via ``limit``/``offset``, sort via ``sort``
+    (e.g. ``'-last_state_change'``). Default columns are a tight subset;
+    pass ``columns=''`` for all.
     """
     params = _list_params(limit, offset, sort, columns, DEFAULT_SERVICE_COLUMNS)
-    if host:
-        params["host_name"] = host
-    if servicegroup:
-        params["groups[gte]"] = servicegroup
-    if state and state.lower() in SVC_STATE_MAP:
-        params["state"] = SVC_STATE_MAP[state.lower()]
-    if description_regex:
-        params["description[regex]"] = description_regex
-    if custom_vars:
-        params.update(_build_cv_params(custom_vars))
-    if host_custom_vars:
-        params.update(_build_cv_params(host_custom_vars, host_prefix=True))
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_SERVICES)
+        except FilterError as exc:
+            return json.dumps({"error": str(exc)}, indent=2)
+        params.update(compile_filter(filter, "services"))
     data = await _get_client().get("/services", params=params, backends=_backends(backends))
     return json.dumps(data, indent=2, default=str)
 
@@ -399,48 +392,37 @@ async def thruk_list_servicegroups(
 
 
 async def thruk_problems(
+    filter: dict | None = None,
     limit: int = 100,
     offset: int = 0,
     columns: str | None = None,
-    hostgroup: str | None = None,
-    custom_vars: dict | None = None,
-    host_custom_vars: dict | None = None,
     backends: str | None = None,
 ) -> str:
     """List all current unhandled host/service problems (not acknowledged, not in downtime).
 
-    Sorted by worst state first. Default columns are tight; pass `columns=''` for all.
+    Sorted by worst state first. Default columns are tight; pass ``columns=''`` for all.
 
-    Optional ``hostgroup`` restricts both the hosts and services sub-queries to hosts that
-    belong to the given hostgroup name (exact match via Thruk's ``groups[gte]`` /
-    ``host_groups[gte]`` list-contains operator).
-
-    Optional ``custom_vars`` filters by host-level custom variables: applied as
-    ``_VARNAME`` on the hosts query and ``_HOSTVARNAME`` on the services query.
-    This means ``custom_vars={"KERNEL": "windows"}`` returns host problems where
-    the host has ``_KERNEL=windows``, and service problems on those same hosts.
-    ``host_custom_vars`` restricts the services sub-query only (same host-prefix
-    logic, useful when you want to combine with a service-level ``custom_vars``).
+    ``filter`` supports fields: ``hostgroup``, ``custom_var`` (host-level, applied as
+    ``_VAR`` on hosts and ``_HOSTVAR`` on services), ``host_custom_var`` (services
+    sub-query only), ``state``. OR is not supported (dual-query architecture requires AND).
     """
     host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
     host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
-    if hostgroup:
-        host_params["groups[gte]"] = hostgroup
-    if custom_vars:
-        host_params.update(_build_cv_params(custom_vars))
     svc_params = _list_params(
         limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
     )
     svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
-    if hostgroup:
-        svc_params["host_groups[gte]"] = hostgroup
-    if custom_vars:
-        # For the services sub-query, custom_vars are host-level attributes
-        # (e.g. KERNEL is a host var, not a service var) → use host_prefix=True
-        # so Thruk receives _HOSTKERNEL=windows instead of _KERNEL=windows.
-        svc_params.update(_build_cv_params(custom_vars, host_prefix=True))
-    if host_custom_vars:
-        svc_params.update(_build_cv_params(host_custom_vars, host_prefix=True))
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_PROBLEMS)
+        except FilterError as exc:
+            return json.dumps({"error": str(exc)}, indent=2)
+        try:
+            extra_host, extra_svc = compile_filter_problems(filter)
+        except FilterError as exc:
+            return json.dumps({"error": str(exc)}, indent=2)
+        host_params.update(extra_host)
+        svc_params.update(extra_svc)
     hosts, host_warnings = await _get_client().get_with_fallback(
         "/hosts", params=host_params, backends=_backends(backends)
     )
@@ -448,7 +430,6 @@ async def thruk_problems(
         "/services", params=svc_params, backends=_backends(backends)
     )
     result: dict[str, Any] = {"hosts": hosts, "services": services}
-    # Deduplicate warnings that appear for both the hosts and services queries.
     all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
     if all_warnings:
         result["_warnings"] = all_warnings
@@ -589,44 +570,79 @@ async def _fetch_logs(
     )
 
 
+async def _resolve_log_filter(
+    filter_node: dict | None,
+    allowed_fields: frozenset,
+    backends: str | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Validate + compile a log-family filter.
+
+    Returns ``(extra_params, error_list)``. On error, ``error_list`` is
+    non-empty and ``extra_params`` is empty.  Hostgroup/custom_var fields
+    are resolved via a ``/hosts`` lookup.
+    """
+    if filter_node is None:
+        return {}, []
+    try:
+        validate_filter(filter_node, allowed_fields)
+        direct_node, lookup_node = extract_log_lookup_fields(filter_node)
+    except FilterError as exc:
+        return {}, [str(exc)]
+
+    extra: dict[str, Any] = {}
+    if direct_node is not None:
+        extra.update(compile_filter(direct_node, "logs"))
+    if lookup_node is not None:
+        lookup_params = compile_filter(lookup_node, "hosts")
+        host_regex = await _resolve_hosts_to_regex_from_params(lookup_params, backends)
+        if host_regex is None:
+            return {}, ["No hosts matched the hostgroup/custom_var filter"]
+        extra["host_name[regex]"] = host_regex
+    return extra, []
+
+
+async def _resolve_hosts_to_regex_from_params(
+    params: dict[str, Any], backends: str | None
+) -> str | None:
+    """Like _resolve_hosts_to_regex but accepts a pre-built params dict."""
+    host_params: dict[str, Any] = {"columns": "name", "limit": "1000", **params}
+    data = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
+    names = [r["name"] for r in (data if isinstance(data, list) else []) if r.get("name")]
+    if not names:
+        return None
+    return f"^({'|'.join(re.escape(n) for n in names)})$"
+
+
 async def thruk_list_logs(
-    host: str | None = None,
-    service: str | None = None,
+    filter: dict | None = None,
     since: str | None = "-24h",
     until: str | None = None,
-    message_regex: str | None = None,
     limit: int = 100,
     offset: int = 0,
     sort: str = "-time",
     columns: str | None = None,
     backends: str | None = None,
-    hostgroup: str | None = None,
-    custom_vars: dict | None = None,
 ) -> str:
     """Query raw Livestatus log entries (/logs).
 
-    Time arguments accept Thruk relative timestamps (e.g. '-24h', '-7d', '-30m')
-    or absolute unix epoch. Default window: last 24h. Sort '-time' = newest first.
-    Pagination via `limit`/`offset`. Default columns are a tight subset;
-    pass `columns=''` for all columns.
+    ``filter`` fields: ``host``, ``service``, ``message`` (regex),
+    ``since`` / ``until`` (Thruk relative times, e.g. ``'-24h'``, ``'-7d'``),
+    ``hostgroup`` and ``custom_var`` (resolved via a ``/hosts`` lookup — AND only).
 
-    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
-    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
-    ``host_name[regex]`` — the log table does not expose these columns directly."""
+    Default window: last 24 h. Sort ``'-time'`` = newest first.
+    Pagination via ``limit``/``offset``.
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+    # since/until defaults only when not overridden by filter
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs",
-        host,
-        service,
-        since,
-        until,
-        message_regex,
-        limit,
-        offset,
-        sort,
-        columns,
-        backends,
-        hostgroup=hostgroup,
-        custom_vars=custom_vars,
+        "/logs", None, None, None, None, None,
+        limit, offset, sort, columns, backends, extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -634,9 +650,7 @@ async def thruk_list_logs(
 
 
 async def thruk_list_alerts(
-    host: str | None = None,
-    service: str | None = None,
-    state: str | None = None,
+    filter: dict | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -644,41 +658,27 @@ async def thruk_list_alerts(
     sort: str = "-time",
     columns: str | None = None,
     backends: str | None = None,
-    hostgroup: str | None = None,
-    custom_vars: dict | None = None,
 ) -> str:
     """List HOST/SERVICE ALERT entries from the log.
 
-    Queries /logs with type[~]=^(HOST|SERVICE) ALERT directly (client-side
-    alias expansion) because the /alerts server-side alias is broken on some
-    Thruk versions and returns [] even when alert rows are present.
+    Queries ``/logs`` with ``type[~]=^(HOST|SERVICE) ALERT`` (client-side alias
+    expansion — the ``/alerts`` endpoint is broken on some Thruk versions).
 
-    Optional `state` filters alert state: up/down/unreachable for hosts,
-    ok/warning/critical/unknown for services.
-    Optional `hostgroup` and `custom_vars` are resolved via a ``/hosts`` lookup
-    then ``host_name[regex]`` (the log table does not expose these columns)."""
-    extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"}
-    if state:
-        s = state.lower()
-        if s in HOST_STATE_MAP:
-            extra["state"] = HOST_STATE_MAP[s]
-        elif s in SVC_STATE_MAP:
-            extra["state"] = SVC_STATE_MAP[s]
+    ``filter`` fields: ``host``, ``service``, ``state``
+    (up/down/unreachable for hosts, ok/warning/critical/unknown for services),
+    ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_ALERTS, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs",
-        host,
-        service,
-        since,
-        until,
-        None,
-        limit,
-        offset,
-        sort,
-        columns,
-        backends,
-        extra=extra,
-        hostgroup=hostgroup,
-        custom_vars=custom_vars,
+        "/logs", None, None, None, None, None,
+        limit, offset, sort, columns, backends, extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -686,11 +686,7 @@ async def thruk_list_alerts(
 
 
 async def thruk_list_notifications(
-    host: str | None = None,
-    service: str | None = None,
-    contact: str | None = None,
-    hostgroup: str | None = None,
-    custom_vars: dict | None = None,
+    filter: dict | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -701,33 +697,24 @@ async def thruk_list_notifications(
 ) -> str:
     """List notification entries from the log (class=3).
 
-    Queries /logs with class=3 directly (client-side alias expansion) because
-    the /notifications server-side alias is subject to the same broken-alias
-    regression as /alerts on some Thruk versions.
+    Queries ``/logs`` with ``class=3`` (client-side alias expansion — the
+    ``/notifications`` endpoint is broken on some Thruk versions).
 
-    Optional `contact` filters notifications sent to a specific contact name.
-    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
-    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
-    ``host_name[regex]`` (two-step; works on all Thruk backends)."""
-    extra: dict[str, Any] = {"class": "3"}
-    if contact:
-        extra["contact_name"] = contact
+    ``filter`` fields: ``host``, ``service``, ``contact``, ``state``,
+    ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+    extra["class"] = "3"
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
     data, warnings = await _fetch_logs(
-        "/logs",
-        host,
-        service,
-        since,
-        until,
-        None,
-        limit,
-        offset,
-        sort,
-        columns,
-        backends,
-        extra=extra,
-        hostgroup=hostgroup,
-        default_columns=DEFAULT_NOTIFICATION_COLUMNS,
-        custom_vars=custom_vars,
+        "/logs", None, None, None, None, None,
+        limit, offset, sort, columns, backends,
+        extra=extra, default_columns=DEFAULT_NOTIFICATION_COLUMNS,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -735,44 +722,32 @@ async def thruk_list_notifications(
 
 
 async def thruk_recent_events(
+    filter: dict | None = None,
     hours: int = 1,
-    host: str | None = None,
-    service: str | None = None,
-    hostgroup: str | None = None,
-    custom_vars: dict | None = None,
     only_alerts: bool = False,
     limit: int = 100,
     offset: int = 0,
     columns: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """Return the most recent monitoring events from the last N hours
-    (default 1h). Defaults to all log classes; set `only_alerts=True` to
-    restrict to HOST/SERVICE ALERT entries.
+    """Return the most recent monitoring events from the last N hours (default 1 h).
 
-    Uses /logs with an explicit type filter when only_alerts=True (client-side
-    alias expansion — the /alerts server-side alias is broken on some Thruk
-    versions).
+    Set ``only_alerts=True`` to restrict to HOST/SERVICE ALERT entries.
 
-    Optional `hostgroup` and `custom_vars` (host-level Nagios custom variables,
-    e.g. ``{"KERNEL": "windows"}``) are resolved via a ``/hosts`` lookup then
-    ``host_name[regex]`` (two-step; works on all Thruk backends)."""
-    extra: dict[str, Any] = {"type[~]": "^(HOST|SERVICE) ALERT"} if only_alerts else {}
+    ``filter`` fields: ``host``, ``service``, ``since`` / ``until``,
+    ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
+    The ``since`` / ``until`` filter fields override the ``hours`` parameter.
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+    if only_alerts:
+        extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    if "time[gte]" not in extra:
+        extra["time[gte]"] = f"-{hours}h"
     data, warnings = await _fetch_logs(
-        "/logs",
-        host,
-        service,
-        f"-{hours}h",
-        None,
-        None,
-        limit,
-        offset,
-        "-time",
-        columns,
-        backends,
-        extra=extra,
-        hostgroup=hostgroup,
-        custom_vars=custom_vars,
+        "/logs", None, None, None, None, None,
+        limit, offset, "-time", columns, backends, extra=extra,
     )
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
@@ -1474,18 +1449,9 @@ _BACKENDS = {
 
 
 _TOOL_SCHEMAS: dict[str, dict] = {
-    "thruk_list_hosts": _s(
-        hostgroup=_OPT_STR,
-        state=_OPT_STR,
-        name_regex=_OPT_STR,
-        custom_vars={
-            **_OPT_OBJ,
-            "description": (
-                "Filter by Nagios custom variables. Dict of {VARNAME: value} pairs "
-                "translated to Thruk REST _VARNAME=value params (auto-uppercased). "
-                'Example: {"KERNEL": "windows"}.'
-            ),
-        },
+    "thruk_list_hosts": build_tool_schema(
+        FIELDS_HOSTS,
+        filter=filter_schema_property(FIELDS_HOSTS),
         limit=_int(default=50),
         offset=_int(default=0),
         sort=_str(),
@@ -1493,27 +1459,9 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         backends=_BACKENDS,
     ),
     "thruk_get_host": _s("host", host=_str("Host name"), backends=_BACKENDS),
-    "thruk_list_services": _s(
-        host=_OPT_STR,
-        servicegroup=_OPT_STR,
-        state=_OPT_STR,
-        description_regex=_OPT_STR,
-        custom_vars={
-            **_OPT_OBJ,
-            "description": (
-                "Filter by service-level Nagios custom variables. Dict of {VARNAME: value} "
-                "pairs translated to _VARNAME=value REST params. "
-                'Example: {"CRITICALITY": "prod"}.'
-            ),
-        },
-        host_custom_vars={
-            **_OPT_OBJ,
-            "description": (
-                "Filter by host-level Nagios custom variables (applied to the parent host). "
-                "Dict of {VARNAME: value} pairs translated to _HOSTVARNAME=value REST params. "
-                'Example: {"KERNEL": "windows"}.'
-            ),
-        },
+    "thruk_list_services": build_tool_schema(
+        FIELDS_SERVICES,
+        filter=filter_schema_property(FIELDS_SERVICES),
         limit=_int(default=50),
         offset=_int(default=0),
         sort=_str(),
@@ -1541,33 +1489,12 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         columns=_OPT_STR,
         backends=_BACKENDS,
     ),
-    "thruk_problems": _s(
+    "thruk_problems": build_tool_schema(
+        FIELDS_PROBLEMS,
+        filter=filter_schema_property(FIELDS_PROBLEMS),
         limit=_int(default=100),
         offset=_int(default=0),
         columns=_OPT_STR,
-        hostgroup={
-            **_OPT_STR,
-            "description": (
-                "Restrict both hosts and services sub-queries to hosts belonging to this "
-                "hostgroup name (exact match via groups[gte] / host_groups[gte]). "
-                'Example: "linux-servers".'
-            ),
-        },
-        custom_vars={
-            **_OPT_OBJ,
-            "description": (
-                "Filter problems by Nagios custom variables (applied to host own vars in "
-                "the hosts query, and service own vars in the services query). "
-                'Example: {"ENV": "prod"}.'
-            ),
-        },
-        host_custom_vars={
-            **_OPT_OBJ,
-            "description": (
-                "Filter service problems by host-level Nagios custom variables. "
-                'Translated to _HOSTVARNAME=value. Example: {"KERNEL": "windows"}.'
-            ),
-        },
         backends=_BACKENDS,
     ),
     "thruk_stats": _s(backends=_BACKENDS),
@@ -1590,40 +1517,9 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         backends=_BACKENDS,
     ),
     "thruk_sites": _s(),
-    "thruk_list_logs": _s(
-        host=_OPT_STR,
-        service=_OPT_STR,
-        since=_OPT_STR,
-        until=_OPT_STR,
-        message_regex=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-        hostgroup=_LOG_HOSTGROUP,
-        custom_vars=_LOG_CUSTOM_VARS,
-    ),
-    "thruk_list_alerts": _s(
-        host=_OPT_STR,
-        service=_OPT_STR,
-        state=_OPT_STR,
-        since=_OPT_STR,
-        until=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-        hostgroup=_LOG_HOSTGROUP,
-        custom_vars=_LOG_CUSTOM_VARS,
-    ),
-    "thruk_list_notifications": _s(
-        host=_OPT_STR,
-        service=_OPT_STR,
-        contact=_OPT_STR,
-        hostgroup=_LOG_HOSTGROUP,
-        custom_vars=_LOG_CUSTOM_VARS,
+    "thruk_list_logs": build_tool_schema(
+        FIELDS_LOGS,
+        filter=filter_schema_property(FIELDS_LOGS),
         since=_OPT_STR,
         until=_OPT_STR,
         limit=_int(default=100),
@@ -1632,12 +1528,32 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         columns=_OPT_STR,
         backends=_BACKENDS,
     ),
-    "thruk_recent_events": _s(
+    "thruk_list_alerts": build_tool_schema(
+        FIELDS_ALERTS,
+        filter=filter_schema_property(FIELDS_ALERTS),
+        since=_OPT_STR,
+        until=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_list_notifications": build_tool_schema(
+        FIELDS_NOTIFICATIONS,
+        filter=filter_schema_property(FIELDS_NOTIFICATIONS),
+        since=_OPT_STR,
+        until=_OPT_STR,
+        limit=_int(default=100),
+        offset=_int(default=0),
+        sort=_str(),
+        columns=_OPT_STR,
+        backends=_BACKENDS,
+    ),
+    "thruk_recent_events": build_tool_schema(
+        FIELDS_LOGS,
+        filter=filter_schema_property(FIELDS_LOGS),
         hours=_int(default=1),
-        host=_OPT_STR,
-        service=_OPT_STR,
-        hostgroup=_LOG_HOSTGROUP,
-        custom_vars=_LOG_CUSTOM_VARS,
         only_alerts=_bool(default=False),
         limit=_int(default=100),
         offset=_int(default=0),

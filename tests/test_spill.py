@@ -210,11 +210,18 @@ async def test_dispatch_thruk_list_notifications_spills(tmp_path: Path) -> None:
         r.post(f"{BASE}/r/logs").mock(return_value=ok(_log_rows(500)))
         handle = await _call(
             "thruk_list_notifications",
-            {"since": "-24h", "hostgroup": "PROD"},
+            {
+                "since": "-24h",
+                "filter": {
+                    "type": "leaf",
+                    "field": "hostgroup",
+                    "op": "eq",
+                    "value": "PROD",
+                },
+            },
             tmp_path,
         )
     assert handle["mode"] == "file"
-    assert handle["filters"]["hostgroup"] == "PROD"
     assert handle["rows"] == 500
     assert Path(handle["saved_to"]).exists()
 

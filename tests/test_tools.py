@@ -28,7 +28,10 @@ def post_params(call) -> dict[str, str]:
 async def test_list_hosts(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "a"}]))
-    await mcp.call_tool("thruk_list_hosts", {"state": "down", "limit": 10})
+    await mcp.call_tool(
+        "thruk_list_hosts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "down"}, "limit": 10},
+    )
     assert route.called
     params = route.calls.last.request.url.params
     assert params["state"] == "1"  # down
@@ -38,20 +41,26 @@ async def test_list_hosts(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_list_hosts_state_numeric_string(mocked_server) -> None:
-    """state="1" (numeric string) must be accepted — regression for silent filter drop."""
+    """state='1' (numeric string) must be accepted inside filter."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "b"}]))
-    await mcp.call_tool("thruk_list_hosts", {"state": "1"})
+    await mcp.call_tool(
+        "thruk_list_hosts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "1"}},
+    )
     params = route.calls.last.request.url.params
     assert params["state"] == "1", "numeric state string must be forwarded to Thruk REST"
 
 
 @pytest.mark.asyncio
 async def test_list_services_state_numeric_string(mocked_server) -> None:
-    """state="2" (numeric string) must be accepted for services too."""
+    """state='2' (numeric string) must be accepted for services too."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_services", {"state": "2"})
+    await mcp.call_tool(
+        "thruk_list_services",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "2"}},
+    )
     params = route.calls.last.request.url.params
     assert params["state"] == "2", "numeric state string must be forwarded to Thruk REST"
 
@@ -68,65 +77,137 @@ async def test_get_host(mocked_server) -> None:
 async def test_list_services_with_servicegroup(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_services", {"servicegroup": "db", "state": "critical"})
+    await mcp.call_tool(
+        "thruk_list_services",
+        {
+            "filter": {
+                "type": "group",
+                "operator": "and",
+                "conditions": [
+                    {"type": "leaf", "field": "servicegroup", "op": "eq", "value": "db"},
+                    {"type": "leaf", "field": "state", "op": "eq", "value": "critical"},
+                ],
+            }
+        },
+    )
     params = route.calls.last.request.url.params
     assert params["groups[gte]"] == "db"
     assert params["state"] == "2"
 
 
-# ---------------------------------------------------------------- custom-var filtering
+# ---------------------------------------------------------------- filter: custom-var
 
 
 @pytest.mark.asyncio
-async def test_list_hosts_custom_vars(mocked_server) -> None:
-    """custom_vars dict is translated to _VARNAME=value top-level params (uppercase)."""
+async def test_list_hosts_custom_var(mocked_server) -> None:
+    """custom_var leaf translates to _VARNAME=value (uppercase)."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "w01"}]))
-    await mcp.call_tool("thruk_list_hosts", {"custom_vars": {"KERNEL": "windows"}, "limit": 5})
+    await mcp.call_tool(
+        "thruk_list_hosts",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "KERNEL", "val": "windows"},
+            },
+            "limit": 5,
+        },
+    )
     params = route.calls.last.request.url.params
     assert params["_KERNEL"] == "windows"
 
 
 @pytest.mark.asyncio
-async def test_list_hosts_custom_vars_uppercased(mocked_server) -> None:
-    """Varnames are auto-uppercased regardless of input case."""
+async def test_list_hosts_custom_var_uppercased(mocked_server) -> None:
+    """custom_var 'var' name is auto-uppercased."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_hosts", {"custom_vars": {"kernel": "linux"}})
+    await mcp.call_tool(
+        "thruk_list_hosts",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "kernel", "val": "linux"},
+            }
+        },
+    )
     params = route.calls.last.request.url.params
     assert params["_KERNEL"] == "linux"
     assert "_kernel" not in params
 
 
 @pytest.mark.asyncio
-async def test_list_services_custom_vars(mocked_server) -> None:
-    """custom_vars filters on service-level custom variables."""
+async def test_list_services_custom_var(mocked_server) -> None:
+    """custom_var leaf on services translates to _VARNAME=value."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_services", {"custom_vars": {"CRITICALITY": "prod"}})
+    await mcp.call_tool(
+        "thruk_list_services",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "CRITICALITY", "val": "prod"},
+            }
+        },
+    )
     params = route.calls.last.request.url.params
     assert params["_CRITICALITY"] == "prod"
 
 
 @pytest.mark.asyncio
-async def test_list_services_host_custom_vars(mocked_server) -> None:
-    """host_custom_vars filters services by *host*-level vars via _HOST prefix."""
+async def test_list_services_host_custom_var(mocked_server) -> None:
+    """host_custom_var leaf translates to _HOSTVARNAME=value."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_services", {"host_custom_vars": {"KERNEL": "windows"}})
+    await mcp.call_tool(
+        "thruk_list_services",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "host_custom_var",
+                "op": "eq",
+                "value": {"var": "KERNEL", "val": "windows"},
+            }
+        },
+    )
     params = route.calls.last.request.url.params
     assert params["_HOSTKERNEL"] == "windows"
     assert "_KERNEL" not in params
 
 
 @pytest.mark.asyncio
-async def test_list_services_custom_vars_combined(mocked_server) -> None:
-    """custom_vars and host_custom_vars can be used simultaneously."""
+async def test_list_services_custom_var_combined(mocked_server) -> None:
+    """custom_var and host_custom_var can be combined in one AND group."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
     await mcp.call_tool(
         "thruk_list_services",
-        {"custom_vars": {"CRITICALITY": "prod"}, "host_custom_vars": {"KERNEL": "windows"}},
+        {
+            "filter": {
+                "type": "group",
+                "operator": "and",
+                "conditions": [
+                    {
+                        "type": "leaf",
+                        "field": "custom_var",
+                        "op": "eq",
+                        "value": {"var": "CRITICALITY", "val": "prod"},
+                    },
+                    {
+                        "type": "leaf",
+                        "field": "host_custom_var",
+                        "op": "eq",
+                        "value": {"var": "KERNEL", "val": "windows"},
+                    },
+                ],
+            }
+        },
     )
     params = route.calls.last.request.url.params
     assert params["_CRITICALITY"] == "prod"
@@ -134,12 +215,22 @@ async def test_list_services_custom_vars_combined(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_problems_host_custom_vars(mocked_server) -> None:
-    """host_custom_vars injected into service query only (with _HOST prefix)."""
+async def test_problems_host_custom_var(mocked_server) -> None:
+    """host_custom_var in problems filter → _HOSTVAR on services only."""
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
     r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_problems", {"host_custom_vars": {"KERNEL": "windows"}})
+    await mcp.call_tool(
+        "thruk_problems",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "host_custom_var",
+                "op": "eq",
+                "value": {"var": "KERNEL", "val": "windows"},
+            }
+        },
+    )
     svc_params = r_svc.calls.last.request.url.params
     host_params = r_hosts.calls.last.request.url.params
     assert svc_params["_HOSTKERNEL"] == "windows"
@@ -147,14 +238,23 @@ async def test_problems_host_custom_vars(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_problems_custom_vars_both_queries(mocked_server) -> None:
-    """custom_vars: _VAR on hosts query, _HOSTVAR on services query."""
+async def test_problems_custom_var_both_queries(mocked_server) -> None:
+    """custom_var in problems → _VAR on hosts, _HOSTVAR on services."""
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
     r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_problems", {"custom_vars": {"ENV": "prod"}})
+    await mcp.call_tool(
+        "thruk_problems",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "ENV", "val": "prod"},
+            }
+        },
+    )
     assert r_hosts.calls.last.request.url.params["_ENV"] == "prod"
-    # services sub-query must use host-prefix so _HOSTENV=prod, not _ENV=prod
     assert r_svc.calls.last.request.url.params["_HOSTENV"] == "prod"
     assert "_ENV" not in r_svc.calls.last.request.url.params
 
@@ -246,19 +346,33 @@ async def test_sites(mocked_server) -> None:
 async def test_list_logs(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_logs", {"host": "srv01", "message_regex": "timeout"})
+    await mcp.call_tool(
+        "thruk_list_logs",
+        {
+            "filter": {
+                "type": "group",
+                "operator": "and",
+                "conditions": [
+                    {"type": "leaf", "field": "host", "op": "eq", "value": "srv01"},
+                    {"type": "leaf", "field": "message", "op": "regex", "value": "timeout"},
+                ],
+            }
+        },
+    )
     p = post_params(route.calls.last)
     assert p["host_name"] == "srv01"
     assert p["message[regex]"] == "timeout"
-    assert p["time[gte]"] == "-24h"
+    assert p["time[gte]"] == "-24h"  # since default still applied
 
 
 @pytest.mark.asyncio
 async def test_list_alerts_with_state(mocked_server) -> None:
     mcp, router = mocked_server
-    # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_alerts", {"state": "warning"})
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "warning"}},
+    )
     p = post_params(route.calls.last)
     assert p["state"] == "1"  # service warning
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
@@ -267,9 +381,11 @@ async def test_list_alerts_with_state(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_list_notifications_with_contact(mocked_server) -> None:
     mcp, router = mocked_server
-    # Uses /logs with client-side alias expansion (fixes broken /notifications on some backends)
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_notifications", {"contact": "oncall"})
+    await mcp.call_tool(
+        "thruk_list_notifications",
+        {"filter": {"type": "leaf", "field": "contact", "op": "eq", "value": "oncall"}},
+    )
     p = post_params(route.calls.last)
     assert p["contact_name"] == "oncall"
     assert p["class"] == "3"
@@ -280,7 +396,10 @@ async def test_list_notifications_default_columns(mocked_server) -> None:
     """Default columns must include contact_name and command_name; state_type must be absent."""
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_notifications", {"host": "REDONLINE006"})
+    await mcp.call_tool(
+        "thruk_list_notifications",
+        {"filter": {"type": "leaf", "field": "host", "op": "eq", "value": "REDONLINE006"}},
+    )
     p = post_params(route.calls.last)
     cols = p.get("columns", "")
     assert "contact_name" in cols, f"contact_name missing from columns: {cols}"
@@ -300,7 +419,6 @@ async def test_recent_events(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_recent_events_only_alerts(mocked_server) -> None:
     mcp, router = mocked_server
-    # Uses /logs with client-side alias expansion (fixes broken /alerts on some backends)
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_recent_events", {"hours": 1, "only_alerts": True})
     assert route.called
@@ -313,11 +431,14 @@ async def test_recent_events_only_alerts(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_problems_hostgroup_applied_to_both_queries(mocked_server) -> None:
-    """hostgroup filter sent as groups[gte] for hosts and host_groups[gte] for services."""
+    """hostgroup in filter → groups[gte] on hosts, host_groups[gte] on services."""
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
     r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_problems", {"hostgroup": "linux-servers"})
+    await mcp.call_tool(
+        "thruk_problems",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "linux-servers"}},
+    )
     assert r_hosts.called and r_svc.called
     assert r_hosts.calls.last.request.url.params["groups[gte]"] == "linux-servers"
     assert r_svc.calls.last.request.url.params["host_groups[gte]"] == "linux-servers"
@@ -342,12 +463,15 @@ async def test_list_notifications_hostgroup(mocked_server) -> None:
         return_value=ok([{"name": "db01"}, {"name": "db02"}])
     )
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_notifications", {"hostgroup": "db-servers"})
+    await mcp.call_tool(
+        "thruk_list_notifications",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "db-servers"}},
+    )
     p = post_params(route.calls.last)
     assert "host_name[regex]" in p, "host_name[regex] must be set on /logs"
     assert "db01" in p["host_name[regex]"] and "db02" in p["host_name[regex]"]
     assert "current_host_groups" not in str(p), "current_host_groups must not appear on /logs"
-    assert p["class"] == "3"  # notification class still applied
+    assert p["class"] == "3"
 
 
 @pytest.mark.asyncio
@@ -358,7 +482,13 @@ async def test_recent_events_hostgroup(mocked_server) -> None:
         return_value=ok([{"name": "sw01"}, {"name": "sw02"}])
     )
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_recent_events", {"hostgroup": "network", "hours": 2})
+    await mcp.call_tool(
+        "thruk_recent_events",
+        {
+            "filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "network"},
+            "hours": 2,
+        },
+    )
     p = post_params(route.calls.last)
     assert "host_name[regex]" in p
     assert "sw01" in p["host_name[regex]"] and "sw02" in p["host_name[regex]"]
@@ -367,12 +497,17 @@ async def test_recent_events_hostgroup(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_recent_events_hostgroup_and_only_alerts(mocked_server) -> None:
-    """hostgroup and only_alerts can be combined — both params present on /logs."""
+    """hostgroup and only_alerts can be combined."""
     mcp, router = mocked_server
     router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "sw01"}]))
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
-        "thruk_recent_events", {"hostgroup": "network", "only_alerts": True, "hours": 1}
+        "thruk_recent_events",
+        {
+            "filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "network"},
+            "only_alerts": True,
+            "hours": 1,
+        },
     )
     p = post_params(route.calls.last)
     assert "host_name[regex]" in p
