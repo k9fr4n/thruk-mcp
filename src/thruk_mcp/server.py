@@ -159,6 +159,7 @@ def _build_cv_params(
 # Large-response spill helpers (issue #49)
 # ---------------------------------------------------------------------------
 
+
 def _write_spill_sync(dest: Path, workdir: Path, payload: str) -> None:
     """Write *payload* to *dest* atomically (tmpfile + os.replace).
 
@@ -241,15 +242,11 @@ async def _spill_if_needed(
     try:
         await asyncio.to_thread(_write_spill_sync, dest, cfg.workdir, payload)
     except OSError as exc:
-        log.warning(
-            "thruk_mcp: spill to %s failed (%s) — returning inline payload", dest, exc
-        )
+        log.warning("thruk_mcp: spill to %s failed (%s) — returning inline payload", dest, exc)
         return payload
 
     sha = hashlib.sha256(payload.encode()).hexdigest()
-    log.info(
-        "thruk_mcp: spilled %s to %s (%d bytes)", tool_name, dest, byte_size
-    )
+    log.info("thruk_mcp: spilled %s to %s (%d bytes)", tool_name, dest, byte_size)
     handle: dict[str, Any] = {
         "mode": "file",
         "saved_to": str(dest),
