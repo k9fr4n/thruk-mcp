@@ -178,6 +178,32 @@ def _write_spill_sync(dest: Path, workdir: Path, payload: str) -> None:
         raise
 
 
+def _make_spill_meta(payload: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build the ``meta`` dict embedded in the spill handle.
+
+    Parses the serialized *payload* once to estimate row count (cheap — the
+    object is already in L1/L2 cache as a Python string).  Filters out
+    presentation-only arguments (``columns``, ``sort``, ``offset``, ``limit``)
+    so the handle only carries semantically meaningful filter context.
+    """
+    try:
+        parsed = json.loads(payload)
+        if isinstance(parsed, list):
+            rows = len(parsed)
+        elif isinstance(parsed, dict):
+            # problems-style envelope: {"hosts": [...], "services": [...]}
+            # or warnings envelope: {"data": [...], "_warnings": [...]}
+            rows = sum(len(v) for v in parsed.values() if isinstance(v, list))
+        else:
+            rows = 1
+    except (json.JSONDecodeError, TypeError):
+        rows = 0
+
+    _SKIP = frozenset({"columns", "sort", "offset", "limit"})
+    filters = {k: v for k, v in arguments.items() if v is not None and k not in _SKIP}
+    return {"rows": rows, "filters": filters}
+
+
 async def _spill_if_needed(
     payload: str,
     tool_name: str,
@@ -429,17 +455,7 @@ async def thruk_problems(
     all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
     if all_warnings:
         result["_warnings"] = all_warnings
-    n_hosts = len(hosts) if isinstance(hosts, list) else 0
-    n_svcs = len(services) if isinstance(services, list) else 0
-    meta: dict[str, Any] = {
-        "rows": n_hosts + n_svcs,
-        "filters": {k: v for k, v in {
-            "hostgroup": hostgroup,
-            "custom_vars": custom_vars,
-            "host_custom_vars": host_custom_vars,
-        }.items() if v is not None},
-    }
-    return await _spill_if_needed(json.dumps(result, indent=2, default=str), "thruk_problems", meta)
+    return json.dumps(result, indent=2, default=str)
 
 
 async def thruk_stats(backends: str | None = None) -> str:
@@ -716,23 +732,9 @@ async def thruk_list_notifications(
         default_columns=DEFAULT_NOTIFICATION_COLUMNS,
         custom_vars=custom_vars,
     )
-    result_obj: Any = {"data": data, "_warnings": warnings} if warnings else data
-    rows = len(data) if isinstance(data, list) else 0
-    meta: dict[str, Any] = {
-        "rows": rows,
-        "filters": {k: v for k, v in {
-            "host": host,
-            "service": service,
-            "contact": contact,
-            "hostgroup": hostgroup,
-            "custom_vars": custom_vars,
-            "since": since,
-            "until": until,
-        }.items() if v is not None},
-    }
-    return await _spill_if_needed(
-        json.dumps(result_obj, indent=2, default=str), "thruk_list_notifications", meta
-    )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
+    return json.dumps(data, indent=2, default=str)
 
 
 async def thruk_recent_events(
@@ -775,22 +777,9 @@ async def thruk_recent_events(
         hostgroup=hostgroup,
         custom_vars=custom_vars,
     )
-    result_obj: Any = {"data": data, "_warnings": warnings} if warnings else data
-    rows = len(data) if isinstance(data, list) else 0
-    meta: dict[str, Any] = {
-        "rows": rows,
-        "filters": {k: v for k, v in {
-            "hours": hours,
-            "host": host,
-            "service": service,
-            "hostgroup": hostgroup,
-            "custom_vars": custom_vars,
-            "only_alerts": only_alerts,
-        }.items() if v is not None and v is not False},
-    }
-    return await _spill_if_needed(
-        json.dumps(result_obj, indent=2, default=str), "thruk_recent_events", meta
-    )
+    if warnings:
+        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
+    return json.dumps(data, indent=2, default=str)
 
 
 async def thruk_query(
@@ -1886,6 +1875,7 @@ class ThrukMCPServer:
             return [TextContent(type="text", text=f"Error: {exc}")]
         if self._cfg.audit_log and name in WRITE_TOOLS:
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
+        result = await _spill_if_needed(result, name, _make_spill_meta(result, arguments))
         return [TextContent(type="text", text=result)]
 
     async def run(self, read_stream, write_stream, init_options=None):
