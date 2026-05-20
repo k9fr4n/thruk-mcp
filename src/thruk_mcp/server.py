@@ -307,11 +307,12 @@ async def thruk_problems(
     belong to the given hostgroup name (exact match via Thruk's ``groups[gte]`` /
     ``host_groups[gte]`` list-contains operator).
 
-    Optional ``custom_vars`` restricts results to objects whose *own* Nagios custom
-    variable matches (host var for the hosts query, service var for the services query).
-    ``host_custom_vars`` further restricts the services query by the *host*'s custom
-    variables (e.g. ``host_custom_vars={"KERNEL": "windows"}`` to see only problems on
-    Windows hosts).
+    Optional ``custom_vars`` filters by host-level custom variables: applied as
+    ``_VARNAME`` on the hosts query and ``_HOSTVARNAME`` on the services query.
+    This means ``custom_vars={"KERNEL": "windows"}`` returns host problems where
+    the host has ``_KERNEL=windows``, and service problems on those same hosts.
+    ``host_custom_vars`` restricts the services sub-query only (same host-prefix
+    logic, useful when you want to combine with a service-level ``custom_vars``).
     """
     host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
     host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
@@ -326,7 +327,10 @@ async def thruk_problems(
     if hostgroup:
         svc_params["host_groups[gte]"] = hostgroup
     if custom_vars:
-        svc_params.update(_build_cv_params(custom_vars))
+        # For the services sub-query, custom_vars are host-level attributes
+        # (e.g. KERNEL is a host var, not a service var) → use host_prefix=True
+        # so Thruk receives _HOSTKERNEL=windows instead of _KERNEL=windows.
+        svc_params.update(_build_cv_params(custom_vars, host_prefix=True))
     if host_custom_vars:
         svc_params.update(_build_cv_params(host_custom_vars, host_prefix=True))
     hosts, host_warnings = await _get_client().get_with_fallback(
@@ -469,7 +473,12 @@ async def _fetch_logs(
         # None → no matching hosts; query will naturally return empty result
     if extra:
         params.update(extra)
-    return await _get_client().get_with_fallback(path, params=params, backends=_backends(backends))
+    # Always POST: log queries can carry large host_name[regex] alternations
+    # (e.g. 976-host hostgroups) that would exceed Apache URI limits with GET.
+    # Thruk REST accepts POST with form-encoded body on all /r/* endpoints.
+    return await _get_client().get_with_fallback(
+        path, params=params, backends=_backends(backends), method="POST"
+    )
 
 
 async def thruk_list_logs(
