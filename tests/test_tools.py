@@ -37,6 +37,26 @@ async def test_list_hosts(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_hosts_state_numeric_string(mocked_server) -> None:
+    """state="1" (numeric string) must be accepted — regression for silent filter drop."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "b"}]))
+    await mcp.call_tool("thruk_list_hosts", {"state": "1"})
+    params = route.calls.last.request.url.params
+    assert params["state"] == "1", "numeric state string must be forwarded to Thruk REST"
+
+
+@pytest.mark.asyncio
+async def test_list_services_state_numeric_string(mocked_server) -> None:
+    """state="2" (numeric string) must be accepted for services too."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_list_services", {"state": "2"})
+    params = route.calls.last.request.url.params
+    assert params["state"] == "2", "numeric state string must be forwarded to Thruk REST"
+
+
+@pytest.mark.asyncio
 async def test_get_host(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts/srv01").mock(return_value=ok({"name": "srv01"}))
