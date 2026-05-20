@@ -90,9 +90,9 @@ class ThrukConfig:
     workdir: Path | None = None
 
     # Payload size threshold in KB above which the response is spilled to disk
-    # instead of returned inline. Default 200 KB — safely below Dust's ~256 KB
-    # inline MCP result cap.
-    spill_threshold_kb: int = 200
+    # instead of returned inline. Default 256 KB — matches Dust's inline MCP
+    # result cap. Lower this if your MCP client has a stricter limit.
+    spill_threshold_kb: int = 256
 
     @classmethod
     def from_env(cls) -> ThrukConfig:

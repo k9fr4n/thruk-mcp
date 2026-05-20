@@ -108,8 +108,9 @@ config:
         type: string
         description: >-
           Payload size threshold in KB above which the response is spilled to disk
-          instead of returned inline. Default: 200 (safely below Dust's ~256 KB cap).
-        default: "200"
+          instead of returned inline. Default: 256 (matches Dust's inline MCP result cap).
+          Lower this value if your MCP client has a stricter limit.
+        default: "256"
     required:
       - base_url
 # allowHosts restricts outbound network access when running under the Docker MCP Gateway.
