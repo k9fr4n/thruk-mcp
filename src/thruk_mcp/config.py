@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Sentinel values injected by orchestrators (e.g. Docker MCP Gateway) when an
 # optional secret is declared in the catalog but left unbound by the operator.
@@ -82,6 +83,17 @@ class ThrukConfig:
     # Protects the Thruk core from an LLM that loops on tools.
     max_concurrent: int = 0
 
+    # --- Large-response spill (issue #49) ------------------------------------
+    # Directory where large tool responses are written instead of being returned
+    # inline. When None (default), all responses are returned inline.
+    # Set THRUK_MCP_WORKDIR to enable (e.g. /tmp/thruk-report).
+    workdir: Path | None = None
+
+    # Payload size threshold in KB above which the response is spilled to disk
+    # instead of returned inline. Default 256 KB — matches Dust's inline MCP
+    # result cap. Lower this if your MCP client has a stricter limit.
+    spill_threshold_kb: int = 256
+
     @classmethod
     def from_env(cls) -> ThrukConfig:
         # THRUK_API_KEY is mandatory — also reject the placeholder.
@@ -102,6 +114,8 @@ class ThrukConfig:
             enabled_tools=_split_csv(_str_env("THRUK_ENABLED_TOOLS")),
             audit_log=_envbool("THRUK_AUDIT_LOG", True),
             max_concurrent=_int_env("THRUK_MAX_CONCURRENT", 0),
+            workdir=Path(_wd) if (_wd := _raw_env("THRUK_MCP_WORKDIR")) else None,
+            spill_threshold_kb=_int_env("THRUK_SPILL_THRESHOLD_KB", 200),
         )
 
     def headers(self) -> dict[str, str]:

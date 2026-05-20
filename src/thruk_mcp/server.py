@@ -15,11 +15,17 @@ functions defined as closures inside ``build_server()``, yielding
      any catalog label gymnastics.
 """
 
+import asyncio
+import contextlib
 import fnmatch
+import hashlib
 import json
 import logging
+import os
 import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -147,6 +153,108 @@ def _build_cv_params(
         return {}
     prefix = "_HOST" if host_prefix else "_"
     return {f"{prefix}{k.upper()}": str(v) for k, v in custom_vars.items()}
+
+
+# ---------------------------------------------------------------------------
+# Large-response spill helpers (issue #49)
+# ---------------------------------------------------------------------------
+
+
+def _write_spill_sync(dest: Path, workdir: Path, payload: str) -> None:
+    """Write *payload* to *dest* atomically (tmpfile + os.replace).
+
+    Uses a temp file in the same directory so that os.replace() is guaranteed
+    to be atomic on POSIX (same filesystem).  The temp file is removed on any
+    error to avoid leaving partial files.
+    """
+    workdir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=workdir, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp_path, dest)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
+
+def _make_spill_meta(payload: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build the ``meta`` dict embedded in the spill handle.
+
+    Parses the serialized *payload* once to estimate row count (cheap — the
+    object is already in L1/L2 cache as a Python string).  Filters out
+    presentation-only arguments (``columns``, ``sort``, ``offset``, ``limit``)
+    so the handle only carries semantically meaningful filter context.
+    """
+    try:
+        parsed = json.loads(payload)
+        if isinstance(parsed, list):
+            rows = len(parsed)
+        elif isinstance(parsed, dict):
+            # problems-style envelope: {"hosts": [...], "services": [...]}
+            # or warnings envelope: {"data": [...], "_warnings": [...]}
+            rows = sum(len(v) for v in parsed.values() if isinstance(v, list))
+        else:
+            rows = 1
+    except (json.JSONDecodeError, TypeError):
+        rows = 0
+
+    _SKIP = frozenset({"columns", "sort", "offset", "limit"})
+    filters = {k: v for k, v in arguments.items() if v is not None and k not in _SKIP}
+    return {"rows": rows, "filters": filters}
+
+
+async def _spill_if_needed(
+    payload: str,
+    tool_name: str,
+    meta: dict[str, Any],
+) -> str:
+    """Return *payload* inline, or spill to workdir and return a compact handle.
+
+    Spill is triggered when ALL of the following are true:
+    - ``THRUK_MCP_WORKDIR`` is configured (``config.workdir`` is not None)
+    - ``len(payload.encode())`` exceeds ``config.spill_threshold_kb * 1024``
+
+    The handle JSON always contains:
+    - ``mode``: ``"file"``
+    - ``saved_to``: absolute path of the written file
+    - ``bytes``: payload size in bytes
+    - ``sha256``: hex digest of the UTF-8 payload (integrity check)
+    - all keys from *meta* (e.g. ``rows``, ``filters``)
+
+    On any I/O error the spill is aborted and the original *payload* is
+    returned inline with a WARNING log, so the tool never fails silently.
+    """
+    cfg = _get_client().config
+    if cfg.workdir is None:
+        return payload
+    byte_size = len(payload.encode())
+    if byte_size <= cfg.spill_threshold_kb * 1024:
+        return payload
+
+    ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+    # Use a short hash of the first 512 bytes as a collision-avoidance suffix.
+    suffix = hashlib.sha256(payload[:512].encode()).hexdigest()[:8]
+    filename = f"{tool_name}_{ts}_{suffix}.json"
+    dest = cfg.workdir / filename
+
+    try:
+        await asyncio.to_thread(_write_spill_sync, dest, cfg.workdir, payload)
+    except OSError as exc:
+        log.warning("thruk_mcp: spill to %s failed (%s) — returning inline payload", dest, exc)
+        return payload
+
+    sha = hashlib.sha256(payload.encode()).hexdigest()
+    log.info("thruk_mcp: spilled %s to %s (%d bytes)", tool_name, dest, byte_size)
+    handle: dict[str, Any] = {
+        "mode": "file",
+        "saved_to": str(dest),
+        "bytes": byte_size,
+        "sha256": sha,
+    }
+    handle.update(meta)
+    return json.dumps(handle, indent=2, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -1764,6 +1872,7 @@ class ThrukMCPServer:
             return [TextContent(type="text", text=f"Error: {exc}")]
         if self._cfg.audit_log and name in WRITE_TOOLS:
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
+        result = await _spill_if_needed(result, name, _make_spill_meta(result, arguments))
         return [TextContent(type="text", text=result)]
 
     async def run(self, read_stream, write_stream, init_options=None):
