@@ -115,7 +115,7 @@ class ThrukConfig:
             audit_log=_envbool("THRUK_AUDIT_LOG", True),
             max_concurrent=_int_env("THRUK_MAX_CONCURRENT", 0),
             workdir=Path(_wd) if (_wd := _raw_env("THRUK_MCP_WORKDIR")) else None,
-            spill_threshold_kb=_int_env("THRUK_SPILL_THRESHOLD_KB", 200),
+            spill_threshold_kb=_int_env("THRUK_SPILL_THRESHOLD_KB", 256),
         )
 
     def headers(self) -> dict[str, str]:

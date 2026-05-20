@@ -65,7 +65,7 @@ config:
       example: "/tmp/thruk-report"
       value: '{{thruk-mcp.workdir}}'
     - name: THRUK_SPILL_THRESHOLD_KB
-      example: "200"
+      example: "256"
       value: '{{thruk-mcp.spill_threshold_kb}}'
   parameters:
     type: object
