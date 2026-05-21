@@ -61,12 +61,6 @@ config:
     - name: THRUK_MAX_CONCURRENT
       example: "8"
       value: '{{thruk-mcp.max_concurrent}}'
-    - name: THRUK_MCP_WORKDIR
-      example: "/tmp/thruk-report"
-      value: '{{thruk-mcp.workdir}}'
-    - name: THRUK_SPILL_THRESHOLD_KB
-      example: "200"
-      value: '{{thruk-mcp.spill_threshold_kb}}'
   parameters:
     type: object
     properties:
@@ -98,19 +92,6 @@ config:
         type: string
         description: Cap of concurrent in-flight HTTP requests to Thruk. 0 = unlimited.
         default: "0"
-      workdir:
-        type: string
-        description: >-
-          Directory where large tool responses are written instead of being returned
-          inline (e.g. /tmp/thruk-report). When unset, all responses are inline.
-          Recommended for pipelines processing hundreds of hosts over 24-72 h windows.
-      spill_threshold_kb:
-        type: string
-        description: >-
-          Payload size threshold in KB above which the response is spilled to disk
-          instead of returned inline. Default: 256 (matches Dust's inline MCP result cap).
-          Lower this value if your MCP client has a stricter limit.
-        default: "256"
     required:
       - base_url
 # allowHosts restricts outbound network access when running under the Docker MCP Gateway.
