@@ -314,3 +314,198 @@ async def test_problems_by_hostgroup_empty(mocked_server) -> None:
     )
     result = await mcp.call_tool("thruk_problems_by_hostgroup", {})
     assert json.loads(result[0].text) == []
+
+
+# ---------------------------------------------------------------------------
+# thruk_concurrent_failures
+# ---------------------------------------------------------------------------
+
+BASE_TS = 1_700_000_000  # arbitrary fixed epoch for deterministic tests
+
+# Helpers to build fake log entries
+def _evt(host: str, offset_secs: int = 0, state: int = 1) -> dict:
+    return {"host_name": host, "state": state, "time": BASE_TS + offset_secs}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_no_events(mocked_server) -> None:
+    """Empty log response → empty results."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["results"] == []
+    assert payload["total_down_events"] == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_below_threshold(mocked_server) -> None:
+    """Only 2 distinct hosts in window; min_hosts=3 → no burst reported."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([_evt("h1", 0), _evt("h2", 30)])
+    )
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["results"] == []
+    assert payload["total_down_events"] == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_basic_burst(mocked_server) -> None:
+    """3 distinct hosts within a 5-min window → 1 burst returned."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([
+            _evt("h1", 0),
+            _evt("h2", 60),
+            _evt("h3", 120),
+        ])
+    )
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert len(payload["results"]) == 1
+    burst = payload["results"][0]
+    assert burst["count"] == 3
+    assert sorted(burst["hosts"]) == ["h1", "h2", "h3"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_dedup_same_host(mocked_server) -> None:
+    """Same host DOWN twice in one window counts as 1 distinct host."""
+    mcp, router = mocked_server
+    # h1 appears twice, h2 and h3 once → 3 distinct but h1 deduped
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([
+            _evt("h1", 0),
+            _evt("h1", 30),   # duplicate
+            _evt("h2", 60),
+            _evt("h3", 90),
+        ])
+    )
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert len(payload["results"]) == 1
+    assert payload["results"][0]["count"] == 3
+    assert sorted(payload["results"][0]["hosts"]) == ["h1", "h2", "h3"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_merge_overlapping(mocked_server) -> None:
+    """Two overlapping hit windows are merged into a single burst."""
+    mcp, router = mocked_server
+    # Window anchored at T+0: h1,h2,h3 (ok)
+    # Window anchored at T+60: h2,h3,h4 (ok) — overlaps with previous (T+0+300 > T+60)
+    # Expected: 1 merged burst containing h1,h2,h3,h4
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([
+            _evt("h1", 0),
+            _evt("h2", 60),
+            _evt("h3", 120),
+            _evt("h4", 180),
+        ])
+    )
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert len(payload["results"]) == 1
+    burst = payload["results"][0]
+    assert burst["count"] == 4
+    assert sorted(burst["hosts"]) == ["h1", "h2", "h3", "h4"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_two_separate_bursts(mocked_server) -> None:
+    """Two bursts separated by more than window_minutes → 2 distinct results."""
+    mcp, router = mocked_server
+    gap = 15 * 60  # 15 min gap between bursts
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([
+            # Burst 1
+            _evt("h1", 0),
+            _evt("h2", 30),
+            _evt("h3", 60),
+            # Burst 2 (15 min later, outside any 5-min window from burst 1)
+            _evt("h4", gap),
+            _evt("h5", gap + 30),
+            _evt("h6", gap + 60),
+        ])
+    )
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    payload = json.loads(result[0].text)
+    assert len(payload["results"]) == 2
+    assert sorted(payload["results"][0]["hosts"]) == ["h1", "h2", "h3"]
+    assert sorted(payload["results"][1]["hosts"]) == ["h4", "h5", "h6"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_recovery_excluded(mocked_server) -> None:
+    """state=0 (UP/recovery) entries are filtered out by state[gte]=1 in the query."""
+    mcp, router = mocked_server
+    # Verify the HTTP params contain state[gte]=1 and type regex
+    log_route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-2h", "until": "2026-05-20 16:00:00", "window_minutes": 10, "min_hosts": 2},
+    )
+    # respx captures the POST body as form-encoded
+    body = log_route.calls.last.request.content.decode()
+    assert "state%5Bgte%5D=1" in body or "state[gte]=1" in body
+    assert "HOST+ALERT" in body or "HOST%20ALERT" in body or "HOST ALERT" in body
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_invalid_filter(mocked_server) -> None:
+    """Invalid filter tree returns an error JSON, not a crash."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {
+            "filter": {"type": "leaf", "field": "nonexistent_field", "op": "eq", "value": "x"},
+        },
+    )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_metadata(mocked_server) -> None:
+    """Returned payload always includes since/until/window_minutes/min_hosts metadata."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-6h", "until": None, "window_minutes": 10, "min_hosts": 5},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["since"] == "-6h"
+    assert payload["until"] is None
+    assert payload["window_minutes"] == 10
+    assert payload["min_hosts"] == 5
