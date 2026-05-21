@@ -2475,6 +2475,45 @@
     }
   },
   {
+    "name": "thruk_concurrent_failures",
+    "description": "Detect time windows where multiple hosts failed concurrently. Fetches HOST ALERT DOWN/UNREACHABLE log entries, applies a sliding window, and returns merged bursts where at least min_hosts distinct hosts failed. Useful for detecting network incidents or datacenter outages.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": "-1h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime. Default: last 1 h."
+        },
+        "until": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "window_minutes": {
+          "type": "integer",
+          "default": 5,
+          "description": "Sliding window size in minutes (default 5)."
+        },
+        "min_hosts": {
+          "type": "integer",
+          "default": 3,
+          "description": "Minimum number of distinct failing hosts to constitute a burst (default 3)."
+        },
+        "filter": {
+          "anyOf": [{"type": "object"}, {"type": "null"}],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: host, hostgroup, custom_var."
+        },
+        "backends": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_recurring_problems",
     "description": "Return hosts/services that generated repeated alerts over a time window. Identifies chronic problems by counting non-recovery HOST/SERVICE ALERT entries per object and filtering by a minimum threshold. Results sorted by alert count descending.",
     "inputSchema": {
