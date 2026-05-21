@@ -18,26 +18,31 @@ from tests.conftest import ok
 
 def test_duration_human_minutes_only() -> None:
     from thruk_mcp.server import _duration_human
+
     assert _duration_human(300) == "5m"
 
 
 def test_duration_human_hours_and_minutes() -> None:
     from thruk_mcp.server import _duration_human
+
     assert _duration_human(3600 + 900) == "1h 15m"
 
 
 def test_duration_human_days() -> None:
     from thruk_mcp.server import _duration_human
+
     assert _duration_human(3 * 86400 + 2 * 3600 + 15 * 60) == "3d 2h 15m"
 
 
 def test_duration_human_zero() -> None:
     from thruk_mcp.server import _duration_human
+
     assert _duration_human(0) == "0m"
 
 
 def test_duration_human_negative() -> None:
     from thruk_mcp.server import _duration_human
+
     assert _duration_human(-100) == "0m"
 
 
@@ -52,7 +57,7 @@ async def test_oldest_problems_basic(mocked_server) -> None:
     mcp, router = mocked_server
     now = int(time.time())
     old_lsc = now - 7200  # 2h ago
-    new_lsc = now - 300   # 5m ago
+    new_lsc = now - 300  # 5m ago
 
     host_route = router.get("https://thruk.test/r/hosts").mock(
         return_value=ok(
@@ -61,8 +66,15 @@ async def test_oldest_problems_basic(mocked_server) -> None:
     )
     svc_route = router.get("https://thruk.test/r/services").mock(
         return_value=ok(
-            [{"host_name": "h2", "description": "svc1", "state": 2,
-              "last_state_change": new_lsc, "peer_name": "local"}]
+            [
+                {
+                    "host_name": "h2",
+                    "description": "svc1",
+                    "state": 2,
+                    "last_state_change": new_lsc,
+                    "peer_name": "local",
+                }
+            ]
         )
     )
 
@@ -109,7 +121,7 @@ async def test_unacked_critical_basic(mocked_server) -> None:
     mcp, router = mocked_server
     now = int(time.time())
     long_ago = now - 7200  # 120 min
-    recent   = now - 1800  # 30 min
+    recent = now - 1800  # 30 min
 
     router.get("https://thruk.test/r/hosts").mock(
         return_value=ok(
@@ -118,8 +130,15 @@ async def test_unacked_critical_basic(mocked_server) -> None:
     )
     router.get("https://thruk.test/r/services").mock(
         return_value=ok(
-            [{"host_name": "h2", "description": "disk", "state": 2,
-              "last_state_change": recent, "peer_name": "local"}]
+            [
+                {
+                    "host_name": "h2",
+                    "description": "disk",
+                    "state": 2,
+                    "last_state_change": recent,
+                    "peer_name": "local",
+                }
+            ]
         )
     )
 
@@ -163,16 +182,28 @@ async def test_stale_acks_basic(mocked_server) -> None:
     """entry_type=4 queried; results sorted stalest first; empty service_description → None."""
     mcp, router = mocked_server
     now = int(time.time())
-    old      = now - 20 * 86400
-    less_old = now - 8  * 86400
+    old = now - 20 * 86400
+    less_old = now - 8 * 86400
 
     route = router.get("https://thruk.test/r/comments").mock(
         return_value=ok(
             [
-                {"host_name": "h1", "service_description": "", "author": "alice",
-                 "comment": "known issue", "entry_time": old, "peer_name": "local"},
-                {"host_name": "h2", "service_description": "svc", "author": "bob",
-                 "comment": "tbd", "entry_time": less_old, "peer_name": "local"},
+                {
+                    "host_name": "h1",
+                    "service_description": "",
+                    "author": "alice",
+                    "comment": "known issue",
+                    "entry_time": old,
+                    "peer_name": "local",
+                },
+                {
+                    "host_name": "h2",
+                    "service_description": "svc",
+                    "author": "bob",
+                    "comment": "tbd",
+                    "entry_time": less_old,
+                    "peer_name": "local",
+                },
             ]
         )
     )
@@ -217,15 +248,33 @@ async def test_problems_by_hostgroup_basic(mocked_server) -> None:
     route = router.get("https://thruk.test/r/hostgroups").mock(
         return_value=ok(
             [
-                {"name": "hg-web", "alias": "Web", "num_hosts_down": 2,
-                 "num_hosts_unreachable": 0, "num_services_warn": 1,
-                 "num_services_crit": 3, "num_services_unknown": 0},
-                {"name": "hg-db",  "alias": "DB",  "num_hosts_down": 0,
-                 "num_hosts_unreachable": 0, "num_services_warn": 0,
-                 "num_services_crit": 0, "num_services_unknown": 0},
-                {"name": "hg-app", "alias": "App", "num_hosts_down": 0,
-                 "num_hosts_unreachable": 0, "num_services_warn": 5,
-                 "num_services_crit": 1, "num_services_unknown": 0},
+                {
+                    "name": "hg-web",
+                    "alias": "Web",
+                    "num_hosts_down": 2,
+                    "num_hosts_unreachable": 0,
+                    "num_services_warn": 1,
+                    "num_services_crit": 3,
+                    "num_services_unknown": 0,
+                },
+                {
+                    "name": "hg-db",
+                    "alias": "DB",
+                    "num_hosts_down": 0,
+                    "num_hosts_unreachable": 0,
+                    "num_services_warn": 0,
+                    "num_services_crit": 0,
+                    "num_services_unknown": 0,
+                },
+                {
+                    "name": "hg-app",
+                    "alias": "App",
+                    "num_hosts_down": 0,
+                    "num_hosts_unreachable": 0,
+                    "num_services_warn": 5,
+                    "num_services_crit": 1,
+                    "num_services_unknown": 0,
+                },
             ]
         )
     )
@@ -250,9 +299,17 @@ async def test_problems_by_hostgroup_empty(mocked_server) -> None:
     mcp, router = mocked_server
     router.get("https://thruk.test/r/hostgroups").mock(
         return_value=ok(
-            [{"name": "hg-ok", "alias": "All good", "num_hosts_down": 0,
-              "num_hosts_unreachable": 0, "num_services_warn": 0,
-              "num_services_crit": 0, "num_services_unknown": 0}]
+            [
+                {
+                    "name": "hg-ok",
+                    "alias": "All good",
+                    "num_hosts_down": 0,
+                    "num_hosts_unreachable": 0,
+                    "num_services_warn": 0,
+                    "num_services_crit": 0,
+                    "num_services_unknown": 0,
+                }
+            ]
         )
     )
     result = await mcp.call_tool("thruk_problems_by_hostgroup", {})
