@@ -322,6 +322,7 @@ async def test_problems_by_hostgroup_empty(mocked_server) -> None:
 
 BASE_TS = 1_700_000_000  # arbitrary fixed epoch for deterministic tests
 
+
 # Helpers to build fake log entries
 def _evt(host: str, offset_secs: int = 0, state: int = 1) -> dict:
     return {"host_name": host, "state": state, "time": BASE_TS + offset_secs}
@@ -346,9 +347,7 @@ async def test_concurrent_failures_no_events(mocked_server) -> None:
 async def test_concurrent_failures_below_threshold(mocked_server) -> None:
     """Only 2 distinct hosts in window; min_hosts=3 → no burst reported."""
     mcp, router = mocked_server
-    router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([_evt("h1", 0), _evt("h2", 30)])
-    )
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([_evt("h1", 0), _evt("h2", 30)]))
 
     result = await mcp.call_tool(
         "thruk_concurrent_failures",
@@ -364,11 +363,13 @@ async def test_concurrent_failures_basic_burst(mocked_server) -> None:
     """3 distinct hosts within a 5-min window → 1 burst returned."""
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([
-            _evt("h1", 0),
-            _evt("h2", 60),
-            _evt("h3", 120),
-        ])
+        return_value=ok(
+            [
+                _evt("h1", 0),
+                _evt("h2", 60),
+                _evt("h3", 120),
+            ]
+        )
     )
 
     result = await mcp.call_tool(
@@ -388,12 +389,14 @@ async def test_concurrent_failures_dedup_same_host(mocked_server) -> None:
     mcp, router = mocked_server
     # h1 appears twice, h2 and h3 once → 3 distinct but h1 deduped
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([
-            _evt("h1", 0),
-            _evt("h1", 30),   # duplicate
-            _evt("h2", 60),
-            _evt("h3", 90),
-        ])
+        return_value=ok(
+            [
+                _evt("h1", 0),
+                _evt("h1", 30),  # duplicate
+                _evt("h2", 60),
+                _evt("h3", 90),
+            ]
+        )
     )
 
     result = await mcp.call_tool(
@@ -414,12 +417,14 @@ async def test_concurrent_failures_merge_overlapping(mocked_server) -> None:
     # Window anchored at T+60: h2,h3,h4 (ok) — overlaps with previous (T+0+300 > T+60)
     # Expected: 1 merged burst containing h1,h2,h3,h4
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([
-            _evt("h1", 0),
-            _evt("h2", 60),
-            _evt("h3", 120),
-            _evt("h4", 180),
-        ])
+        return_value=ok(
+            [
+                _evt("h1", 0),
+                _evt("h2", 60),
+                _evt("h3", 120),
+                _evt("h4", 180),
+            ]
+        )
     )
 
     result = await mcp.call_tool(
@@ -439,16 +444,18 @@ async def test_concurrent_failures_two_separate_bursts(mocked_server) -> None:
     mcp, router = mocked_server
     gap = 15 * 60  # 15 min gap between bursts
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([
-            # Burst 1
-            _evt("h1", 0),
-            _evt("h2", 30),
-            _evt("h3", 60),
-            # Burst 2 (15 min later, outside any 5-min window from burst 1)
-            _evt("h4", gap),
-            _evt("h5", gap + 30),
-            _evt("h6", gap + 60),
-        ])
+        return_value=ok(
+            [
+                # Burst 1
+                _evt("h1", 0),
+                _evt("h2", 30),
+                _evt("h3", 60),
+                # Burst 2 (15 min later, outside any 5-min window from burst 1)
+                _evt("h4", gap),
+                _evt("h5", gap + 30),
+                _evt("h6", gap + 60),
+            ]
+        )
     )
 
     result = await mcp.call_tool(

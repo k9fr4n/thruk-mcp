@@ -2110,8 +2110,8 @@ _TOOL_SCHEMAS: dict[str, dict] = {
             "anyOf": [{"type": "string"}, {"type": "null"}],
             "default": "-1h",
             "description": (
-                "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") "
-                "or ISO datetime (\"2026-05-20 14:00:00\"). Default: last 1 hour."
+                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
             ),
         },
         until=_OPT_STR,
