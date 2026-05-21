@@ -137,6 +137,20 @@ async def test_audit_log_records_error_status(caplog) -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_empty_filter_returns_tool_error() -> None:
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        result = await mcp.call_tool("thruk_delete_downtimes_by_filter", {})
+        assert len(result) == 1
+        assert result[0].text == (
+            "Error: Provide at least one of host, hostgroup, service, start_time, comment."
+        )
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
 async def test_max_concurrent_creates_semaphore() -> None:
     cfg = ThrukConfig(base_url=BASE, api_key="k", max_concurrent=4)
     client = ThrukClient(cfg)

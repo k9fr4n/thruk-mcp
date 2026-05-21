@@ -1732,7 +1732,7 @@ async def thruk_delete_downtimes_by_filter(
     if comment:
         payload["comment"] = comment
     if not payload:
-        raise ValueError("Provide at least one of host, hostgroup, service, start_time, comment.")
+        raise ThrukError("Provide at least one of host, hostgroup, service, start_time, comment.")
     if hostgroup:
         cmd = "del_downtime_by_hostgroup_name"
     elif host:
