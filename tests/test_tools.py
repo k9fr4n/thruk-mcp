@@ -896,3 +896,142 @@ async def test_query_with_backends(mocked_server) -> None:
         {"path": "/hosts", "backends": "prod,dr"},
     )
     assert route.called
+
+
+# ---------------------------------------------------------------- Noisy tools
+
+
+def _make_log_entry(
+    host: str,
+    state: int,
+    time_offset: int = 0,
+    service: str | None = None,
+) -> dict:
+    """Build a minimal log entry for noisy-* tests."""
+    entry: dict = {"host_name": host, "state": state, "time": 1_700_000_000 + time_offset}
+    if service is not None:
+        entry["service_description"] = service
+    return entry
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_basic(mocked_server) -> None:
+    """Top-noisy-hosts aggregates by host and excludes RECOVERY (state=0)."""
+    import json as _json
+    mcp, router = mocked_server
+    raw = [
+        _make_log_entry("alpha", 1, 10),   # DOWN
+        _make_log_entry("alpha", 1, 20),   # DOWN
+        _make_log_entry("alpha", 0, 30),   # UP = recovery, excluded
+        _make_log_entry("beta",  1, 40),   # DOWN
+    ]
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 6, "limit": 5})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^HOST ALERT"
+    assert p["time[gte]"] == "-6h"
+    assert p["columns"] == "host_name,state,time"
+
+    payload = _json.loads(result[0].text)
+    assert payload["window_hours"] == 6
+    assert payload["total_alerts_in_window"] == 3   # alpha×2 + beta×1 (recovery excluded)
+    results = payload["results"]
+    assert results[0]["host"] == "alpha"
+    assert results[0]["alert_count"] == 2
+    assert results[0]["last_state"] == "DOWN"
+    assert results[1]["host"] == "beta"
+    assert results[1]["alert_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_only_recovery_returns_empty(mocked_server) -> None:
+    """When all entries are RECOVERY the results list should be empty."""
+    import json as _json
+    mcp, router = mocked_server
+    raw = [_make_log_entry("alpha", 0), _make_log_entry("beta", 0)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {})
+    payload = _json.loads(result[0].text)
+    assert payload["total_alerts_in_window"] == 0
+    assert payload["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_limit_respected(mocked_server) -> None:
+    """Only ``limit`` hosts are returned even when more are present."""
+    import json as _json
+    mcp, router = mocked_server
+    raw = [_make_log_entry(f"host{i}", 1, i) for i in range(20)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"limit": 3})
+    payload = _json.loads(result[0].text)
+    assert len(payload["results"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_filter_error(mocked_server) -> None:
+    """Invalid filter field must return an error key."""
+    import json as _json
+    mcp, _router = mocked_server
+    result = await mcp.call_tool(
+        "thruk_top_noisy_hosts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "down"}},
+    )
+    payload = _json.loads(result[0].text)
+    assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_services_basic(mocked_server) -> None:
+    """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
+    import json as _json
+    mcp, router = mocked_server
+    raw = [
+        _make_log_entry("alpha", 2, 10, service="HTTP"),   # CRITICAL
+        _make_log_entry("alpha", 1, 20, service="HTTP"),   # WARNING
+        _make_log_entry("alpha", 0, 30, service="HTTP"),   # OK = recovery, excluded
+        _make_log_entry("alpha", 2, 40, service="DISK"),   # CRITICAL
+        _make_log_entry("beta",  1, 50, service="CPU"),    # WARNING
+    ]
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_services", {"hours": 12, "limit": 5})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^SERVICE ALERT"
+    assert p["time[gte]"] == "-12h"
+    assert p["columns"] == "host_name,service_description,state,time"
+
+    payload = _json.loads(result[0].text)
+    assert payload["window_hours"] == 12
+    assert payload["total_alerts_in_window"] == 4  # recovery excluded
+    results = payload["results"]
+    # alpha/HTTP has 2 alerts → ranked first
+    assert results[0]["host"] == "alpha"
+    assert results[0]["service"] == "HTTP"
+    assert results[0]["alert_count"] == 2
+    assert results[0]["last_state"] == "WARNING"  # last non-recovery state
+    assert results[0]["last_alert_time"] is not None
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_services_default_hours(mocked_server) -> None:
+    """Default window should be 24 h."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_top_noisy_services", {})
+    p = post_params(router.calls.last)
+    assert p["time[gte]"] == "-24h"
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_services_filter_error(mocked_server) -> None:
+    """Invalid filter field (e.g. 'state') must return an error key."""
+    import json as _json
+    mcp, _router = mocked_server
+    result = await mcp.call_tool(
+        "thruk_top_noisy_services",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "warning"}},
+    )
+    payload = _json.loads(result[0].text)
+    assert "error" in payload

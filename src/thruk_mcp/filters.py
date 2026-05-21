@@ -61,6 +61,8 @@ FIELDS_NOTIFICATIONS: frozenset[str] = frozenset(
     {"host", "service", "state", "contact", "hostgroup", "custom_var", "since", "until"}
 )
 FIELDS_PROBLEMS: frozenset[str] = frozenset({"state", "hostgroup", "custom_var", "host_custom_var"})
+FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
+FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
 
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})
