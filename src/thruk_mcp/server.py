@@ -1832,6 +1832,119 @@ async def thruk_problems_by_hostgroup(
     return json.dumps(rows, indent=2, default=str)
 
 
+async def thruk_concurrent_failures(
+    since: str | None = "-1h",
+    until: str | None = None,
+    window_minutes: int = 5,
+    min_hosts: int = 3,
+    filter: dict | None = None,
+    backends: str | None = None,
+) -> str:
+    """Detect time windows where multiple hosts failed concurrently.
+
+    Fetches HOST ALERT DOWN/UNREACHABLE log entries in the given time range,
+    applies a sliding window of ``window_minutes``, and returns merged bursts
+    where at least ``min_hosts`` distinct hosts failed. Useful for detecting
+    network incidents or datacenter outages.
+
+    ``since`` / ``until`` accept Thruk relative times (``"-2h"``, ``"-7d"``)
+    or ISO datetime strings (``"2026-05-20 14:00:00"``). Defaults to last 1 hour.
+
+    ``filter`` fields: ``host`` (eq/regex), ``hostgroup``, ``custom_var``
+    (host-level Nagios variable, resolved via /hosts lookup).
+
+    Returns a wrapped object:
+    ``since``, ``until``, ``window_minutes``, ``min_hosts``,
+    ``total_down_events``, ``results`` -- list of merged burst windows sorted by
+    start time, each with ``window_start``, ``window_end``, ``hosts`` (sorted
+    list of distinct host names), ``count``.
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+
+    extra["type[~]"] = "^HOST ALERT"
+    extra["state[gte]"] = "1"  # exclude state 0 (UP / recovery)
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",  # ascending -- needed for the sliding window scan
+        "columns": "host_name,state,time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Build a sorted (ascending) list of (timestamp, host_name) -- valid entries only
+    events: list[tuple[int, str]] = sorted(
+        [
+            (int(e["time"]), str(e["host_name"]))
+            for e in data
+            if e.get("time") and e.get("host_name")
+        ],
+        key=lambda x: x[0],
+    )
+
+    window_secs = window_minutes * 60
+    n = len(events)
+
+    # Sliding window: anchor at each event i, collect distinct hosts in [T_i, T_i + W].
+    # O(n^2) -- acceptable for typical alert volumes over a few hours.
+    hit_windows: list[dict[str, Any]] = []
+    for i in range(n):
+        t_anchor = events[i][0]
+        t_end = t_anchor + window_secs
+        hosts_in_window: set[str] = set()
+        for j in range(i, n):
+            if events[j][0] > t_end:
+                break
+            hosts_in_window.add(events[j][1])
+        if len(hosts_in_window) >= min_hosts:
+            hit_windows.append({"start": t_anchor, "end": t_end, "hosts": hosts_in_window})
+
+    # Merge overlapping hit windows into bursts
+    merged: list[dict[str, Any]] = []
+    for w in hit_windows:
+        if merged and w["start"] <= merged[-1]["end"]:
+            merged[-1]["end"] = max(merged[-1]["end"], w["end"])
+            merged[-1]["hosts"] |= w["hosts"]
+        else:
+            merged.append({"start": w["start"], "end": w["end"], "hosts": set(w["hosts"])})
+
+    results = [
+        {
+            "window_start": _ts(m["start"]),
+            "window_end": _ts(m["end"]),
+            "hosts": sorted(m["hosts"]),
+            "count": len(m["hosts"]),
+        }
+        for m in merged
+    ]
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "window_minutes": window_minutes,
+        "min_hosts": min_hosts,
+        "total_down_events": len(events),
+        "results": results,
+    }
+    if len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; detection may be incomplete."
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return json.dumps(payload, indent=2, default=str)
+
+
 # ---------------------------------------------------------------------------
 # build_server: registers module-level functions into a fresh FastMCP instance
 # ---------------------------------------------------------------------------
@@ -1988,6 +2101,25 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         hours=_int(default=24),
         limit=_int(default=10),
         min_transitions=_int(default=3),
+        backends=_BACKENDS,
+    ),
+    "thruk_concurrent_failures": build_tool_schema(
+        FIELDS_NOISY_HOSTS,
+        filter=filter_schema_property(FIELDS_NOISY_HOSTS),
+        since={
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": "-1h",
+            "description": (
+                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
+            ),
+        },
+        until=_OPT_STR,
+        window_minutes=_int("Sliding window width in minutes.", default=5),
+        min_hosts=_int(
+            "Minimum number of distinct hosts failing in a window to be reported.",
+            default=3,
+        ),
         backends=_BACKENDS,
     ),
     "thruk_list_logs": build_tool_schema(
@@ -2217,6 +2349,8 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "thruk_unacked_critical": thruk_unacked_critical,
     "thruk_stale_acks": thruk_stale_acks,
     "thruk_problems_by_hostgroup": thruk_problems_by_hostgroup,
+    # concurrent failure detection (issue #54)
+    "thruk_concurrent_failures": thruk_concurrent_failures,
 }
 
 
