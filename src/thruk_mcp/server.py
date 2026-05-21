@@ -1807,9 +1807,7 @@ async def thruk_problems_by_hostgroup(
 
     rows: list[dict] = []
     for hg in data or []:
-        hosts_down = int(hg.get("num_hosts_down") or 0) + int(
-            hg.get("num_hosts_unreachable") or 0
-        )
+        hosts_down = int(hg.get("num_hosts_down") or 0) + int(hg.get("num_hosts_unreachable") or 0)
         services_crit = int(hg.get("num_services_crit") or 0)
         services_warn = int(hg.get("num_services_warn") or 0)
         services_unknown = int(hg.get("num_services_unknown") or 0)
