@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 32 MCP Tools
+### 36 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -118,6 +118,12 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 `thruk_top_noisy_hosts` (hosts ranked by alert count over a window),
 `thruk_top_noisy_services` (services ranked by alert count),
 `thruk_flap_summary` (hosts/services ranked by state transition count).
+
+**Read — problem intelligence**
+`thruk_oldest_problems` (unhandled problems sorted by age, oldest first),
+`thruk_unacked_critical` (CRITICAL/DOWN not acknowledged for > N minutes),
+`thruk_stale_acks` (acknowledgements older than N days — forgotten problems),
+`thruk_problems_by_hostgroup` (problem counts aggregated per hostgroup).
 
 **Write — downtime management**
 `thruk_schedule_downtime` (host/service), `thruk_schedule_host_services_downtime`
