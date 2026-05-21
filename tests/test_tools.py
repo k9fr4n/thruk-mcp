@@ -1041,3 +1041,121 @@ async def test_top_noisy_services_filter_error(mocked_server) -> None:
     )
     payload = _json.loads(result[0].text)
     assert "error" in payload
+
+
+# ---------------------------------------------------------------- Flap summary
+
+
+def _make_flap_sequence(
+    host: str,
+    states: list[int],
+    service: str | None = None,
+    base_time: int = 1_700_000_000,
+) -> list[dict]:
+    """Build a chronological list of log entries with alternating states."""
+    return [
+        {
+            "host_name": host,
+            "service_description": service or "",
+            "state": s,
+            "time": base_time + i * 60,
+        }
+        for i, s in enumerate(states)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_basic_service(mocked_server) -> None:
+    """Service with 4 transitions is returned; one with only 1 is excluded."""
+    import json as _json
+
+    mcp, router = mocked_server
+    # alpha/HTTP: OK->CRIT->OK->CRIT->OK = 4 transitions (included)
+    # beta/CPU:   OK->CRIT = 1 transition (excluded with min_transitions=3)
+    raw = _make_flap_sequence("alpha", [0, 2, 0, 2, 0], service="HTTP") + _make_flap_sequence(
+        "beta", [0, 2], service="CPU"
+    )
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_flap_summary", {"hours": 6, "min_transitions": 3})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+    assert p["time[gte]"] == "-6h"
+    assert p["sort"] == "time"
+
+    payload = _json.loads(result[0].text)
+    assert payload["window_hours"] == 6
+    assert payload["min_transitions"] == 3
+    assert payload["total_flapping_objects"] == 1
+    r = payload["results"][0]
+    assert r["host"] == "alpha"
+    assert r["service"] == "HTTP"
+    assert r["transition_count"] == 4
+    assert "OK" in r["states_seen"]
+    assert "CRITICAL" in r["states_seen"]
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_host_level(mocked_server) -> None:
+    """Host-level flapping has service=null in the result."""
+    import json as _json
+
+    mcp, router = mocked_server
+    # Host flapping: UP(0)->DOWN(1)->UP(0)->DOWN(1) = 3 transitions
+    raw = _make_flap_sequence("router-01", [0, 1, 0, 1])
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
+    payload = _json.loads(result[0].text)
+    assert payload["total_flapping_objects"] == 1
+    r = payload["results"][0]
+    assert r["service"] is None
+    assert r["transition_count"] == 3
+    assert "DOWN" in r["states_seen"]
+    assert "UP" in r["states_seen"]
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_ranked_by_transitions(mocked_server) -> None:
+    """Results are sorted by transition_count descending."""
+    import json as _json
+
+    mcp, router = mocked_server
+    # svc-A: 4 transitions, svc-B: 6 transitions -> B must be first
+    raw = _make_flap_sequence("h", [0, 1, 0, 1, 0], service="svc-A") + _make_flap_sequence(
+        "h", [0, 2, 0, 2, 0, 2, 0], service="svc-B"
+    )
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
+    payload = _json.loads(result[0].text)
+    results = payload["results"]
+    assert results[0]["service"] == "svc-B"
+    assert results[0]["transition_count"] == 6
+    assert results[1]["service"] == "svc-A"
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_no_flapping(mocked_server) -> None:
+    """All objects below min_transitions yields empty results."""
+    import json as _json
+
+    mcp, router = mocked_server
+    raw = _make_flap_sequence("h", [0, 1], service="svc")  # 1 transition only
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
+    payload = _json.loads(result[0].text)
+    assert payload["total_flapping_objects"] == 0
+    assert payload["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_filter_error(mocked_server) -> None:
+    """Invalid filter field returns an error key."""
+    import json as _json
+
+    mcp, _router = mocked_server
+    result = await mcp.call_tool(
+        "thruk_flap_summary",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "ok"}},
+    )
+    payload = _json.loads(result[0].text)
+    assert "error" in payload

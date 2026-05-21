@@ -647,6 +647,105 @@ async def thruk_top_noisy_services(
     return json.dumps(payload, indent=2, default=str)
 
 
+async def thruk_flap_summary(
+    hours: int = 24,
+    limit: int = 10,
+    min_transitions: int = 3,
+    filter: dict | None = None,
+    backends: str | None = None,
+) -> str:
+    """Return hosts and services with the most state transitions (flapping) over a time window.
+
+    Aggregates HOST ALERT and SERVICE ALERT log entries over ``hours`` (default 24 h),
+    counts consecutive state transitions per object, and returns those with at least
+    ``min_transitions`` changes ranked by transition count descending.
+
+    A high transition count indicates a misconfigured check threshold or a genuinely
+    unstable object -- distinct from ``thruk_top_noisy_hosts/services`` which rank by
+    raw alert count regardless of state direction.
+
+    ``filter`` fields: ``host`` (eq/regex), ``service`` (eq/regex),
+    ``hostgroup``, ``custom_var``.
+
+    Returns a wrapped object:
+    ``window_hours``, ``min_transitions``, ``total_flapping_objects``,
+    ``results`` list sorted by ``transition_count`` desc, each entry containing
+    ``host``, ``service`` (null for host-level flapping), ``transition_count``,
+    ``states_seen`` (sorted unique set of state names), ``last_state``,
+    ``last_alert_time``.
+    """
+    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+
+    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    extra["time[gte]"] = f"-{hours}h"
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",  # ascending: chronological order required for transition counting
+        "columns": "host_name,service_description,state,time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Group entries by (host, service) — service="" for host-level alerts
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in data:
+        h = entry.get("host_name") or ""
+        svc = entry.get("service_description") or ""
+        key = (h, svc)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(entry)
+
+    # Count consecutive state transitions per group (already sorted by time asc)
+    results_raw: list[dict[str, Any]] = []
+    for (h, svc), entries in groups.items():
+        if len(entries) < 2:
+            continue
+        transitions = sum(
+            1 for i in range(1, len(entries)) if entries[i]["state"] != entries[i - 1]["state"]
+        )
+        if transitions < min_transitions:
+            continue
+        state_map = HOST_STATES if not svc else SERVICE_STATES
+        last_entry = entries[-1]
+        last_state_int = last_entry.get("state", -1)
+        states_seen = sorted(
+            {state_map.get(e.get("state", -1), str(e.get("state", -1))) for e in entries}
+        )
+        results_raw.append(
+            {
+                "host": h,
+                "service": svc or None,
+                "transition_count": transitions,
+                "states_seen": states_seen,
+                "last_state": state_map.get(last_state_int, str(last_state_int)),
+                "last_alert_time": _ts(last_entry.get("time")),
+            }
+        )
+
+    results_raw.sort(key=lambda x: x["transition_count"], reverse=True)
+
+    payload: dict[str, Any] = {
+        "window_hours": hours,
+        "min_transitions": min_transitions,
+        "total_flapping_objects": len(results_raw),
+        "results": results_raw[:limit],
+    }
+    if len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return json.dumps(payload, indent=2, default=str)
+
+
 async def _resolve_log_filter(
     filter_node: dict | None,
     allowed_fields: frozenset,
@@ -1648,6 +1747,14 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         limit=_int(default=10),
         backends=_BACKENDS,
     ),
+    "thruk_flap_summary": build_tool_schema(
+        FIELDS_NOISY_SERVICES,
+        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+        hours=_int(default=24),
+        limit=_int(default=10),
+        min_transitions=_int(default=3),
+        backends=_BACKENDS,
+    ),
     "thruk_list_logs": build_tool_schema(
         FIELDS_LOGS,
         filter=filter_schema_property(FIELDS_LOGS),
@@ -1823,6 +1930,7 @@ _TOOL_SCHEMAS: dict[str, dict] = {
 _TOOL_DISPATCH: dict[str, Any] = {
     "thruk_top_noisy_hosts": thruk_top_noisy_hosts,
     "thruk_top_noisy_services": thruk_top_noisy_services,
+    "thruk_flap_summary": thruk_flap_summary,
     "thruk_list_hosts": thruk_list_hosts,
     "thruk_get_host": thruk_get_host,
     "thruk_list_services": thruk_list_services,
