@@ -486,21 +486,26 @@ _NOISY_MAX_ALERTS: int = 10_000
 
 
 async def thruk_top_noisy_hosts(
-    hours: int = 24,
+    since: str | None = "-24h",
+    until: str | None = None,
     limit: int = 10,
     filter: dict | None = None,
     backends: str | None = None,
 ) -> str:
     """Return the top N hosts ranked by HOST ALERT count over a time window.
 
-    Aggregates HOST ALERT log entries over ``hours`` (default 24 h), excludes
-    RECOVERY events (state UP = 0), and ranks by alert count descending.
+    Aggregates HOST ALERT log entries, excludes RECOVERY events (state UP = 0),
+    and ranks by alert count descending.
+
+    ``since`` / ``until`` accept relative (``-24h``, ``-30m``) or absolute
+    (``2026-05-20 14:00:00``) values — same format as ``thruk_list_alerts``.
+    Default window: last 24 h (``since="-24h"``, ``until=None``).
 
     ``filter`` fields: ``host`` (eq/regex), ``hostgroup``, ``custom_var``
     (host-level Nagios variable, resolved via /hosts lookup).
 
     Returns a wrapped object:
-    ``window_hours``, ``total_alerts_in_window`` (after RECOVERY exclusion),
+    ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
@@ -509,7 +514,10 @@ async def thruk_top_noisy_hosts(
         return json.dumps({"error": errs[0]}, indent=2)
 
     extra["type[~]"] = "^HOST ALERT"
-    extra["time[gte]"] = f"-{hours}h"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         "sort": "-time",
@@ -559,7 +567,8 @@ async def thruk_top_noisy_hosts(
     )[:limit]
 
     payload: dict[str, Any] = {
-        "window_hours": hours,
+        "since": since,
+        "until": until,
         "total_alerts_in_window": total,
         "results": results,
     }
@@ -573,22 +582,27 @@ async def thruk_top_noisy_hosts(
 
 
 async def thruk_top_noisy_services(
-    hours: int = 24,
+    since: str | None = "-24h",
+    until: str | None = None,
     limit: int = 10,
     filter: dict | None = None,
     backends: str | None = None,
 ) -> str:
     """Return the top N services ranked by SERVICE ALERT count over a time window.
 
-    Aggregates SERVICE ALERT log entries over ``hours`` (default 24 h),
-    excludes RECOVERY events (state OK = 0), and ranks by alert count descending.
+    Aggregates SERVICE ALERT log entries, excludes RECOVERY events (state OK = 0),
+    and ranks by alert count descending.
+
+    ``since`` / ``until`` accept relative (``-24h``, ``-30m``) or absolute
+    (``2026-05-20 14:00:00``) values — same format as ``thruk_list_alerts``.
+    Default window: last 24 h (``since="-24h"``, ``until=None``).
 
     ``filter`` fields: ``host`` (eq/regex), ``service`` (eq/regex),
     ``hostgroup``, ``custom_var`` (host-level Nagios variable, resolved via
     /hosts lookup).
 
     Returns a wrapped object:
-    ``window_hours``, ``total_alerts_in_window`` (after RECOVERY exclusion),
+    ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``service``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
@@ -597,7 +611,10 @@ async def thruk_top_noisy_services(
         return json.dumps({"error": errs[0]}, indent=2)
 
     extra["type[~]"] = "^SERVICE ALERT"
-    extra["time[gte]"] = f"-{hours}h"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         "sort": "-time",
@@ -650,7 +667,8 @@ async def thruk_top_noisy_services(
     )[:limit]
 
     payload: dict[str, Any] = {
-        "window_hours": hours,
+        "since": since,
+        "until": until,
         "total_alerts_in_window": total,
         "results": results,
     }
@@ -664,7 +682,8 @@ async def thruk_top_noisy_services(
 
 
 async def thruk_flap_summary(
-    hours: int = 24,
+    since: str | None = "-24h",
+    until: str | None = None,
     limit: int = 10,
     min_transitions: int = 3,
     filter: dict | None = None,
@@ -672,9 +691,13 @@ async def thruk_flap_summary(
 ) -> str:
     """Return hosts and services with the most state transitions (flapping) over a time window.
 
-    Aggregates HOST ALERT and SERVICE ALERT log entries over ``hours`` (default 24 h),
-    counts consecutive state transitions per object, and returns those with at least
-    ``min_transitions`` changes ranked by transition count descending.
+    Aggregates HOST ALERT and SERVICE ALERT log entries, counts consecutive state
+    transitions per object, and returns those with at least ``min_transitions``
+    changes ranked by transition count descending.
+
+    ``since`` / ``until`` accept relative (``-24h``, ``-30m``) or absolute
+    (``2026-05-20 14:00:00``) values — same format as ``thruk_list_alerts``.
+    Default window: last 24 h (``since="-24h"``, ``until=None``).
 
     A high transition count indicates a misconfigured check threshold or a genuinely
     unstable object -- distinct from ``thruk_top_noisy_hosts/services`` which rank by
@@ -684,7 +707,7 @@ async def thruk_flap_summary(
     ``hostgroup``, ``custom_var``.
 
     Returns a wrapped object:
-    ``window_hours``, ``min_transitions``, ``total_flapping_objects``,
+    ``since``, ``until``, ``min_transitions``, ``total_flapping_objects``,
     ``results`` list sorted by ``transition_count`` desc, each entry containing
     ``host``, ``service`` (null for host-level flapping), ``transition_count``,
     ``states_seen`` (sorted unique set of state names), ``last_state``,
@@ -695,7 +718,10 @@ async def thruk_flap_summary(
         return json.dumps({"error": errs[0]}, indent=2)
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
-    extra["time[gte]"] = f"-{hours}h"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         "sort": "time",  # ascending: chronological order required for transition counting
@@ -748,7 +774,8 @@ async def thruk_flap_summary(
     results_raw.sort(key=lambda x: x["transition_count"], reverse=True)
 
     payload: dict[str, Any] = {
-        "window_hours": hours,
+        "since": since,
+        "until": until,
         "min_transitions": min_transitions,
         "total_flapping_objects": len(results_raw),
         "results": results_raw[:limit],

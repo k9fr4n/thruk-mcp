@@ -927,7 +927,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
         _make_log_entry("beta", 1, 40),  # DOWN
     ]
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
-    result = await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 6, "limit": 5})
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-6h", "limit": 5})
     assert route.called
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^HOST ALERT"
@@ -935,7 +935,8 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
     assert p["columns"] == "host_name,state,time"
 
     payload = _json.loads(result[0].text)
-    assert payload["window_hours"] == 6
+    assert payload["since"] == "-6h"
+    assert payload["until"] is None
     assert payload["total_alerts_in_window"] == 3  # alpha x2 + beta x1 (recovery excluded)
     results = payload["results"]
     assert results[0]["host"] == "alpha"
@@ -987,6 +988,25 @@ async def test_top_noisy_hosts_filter_error(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_top_noisy_hosts_since_until(mocked_server) -> None:
+    """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    result = await mcp.call_tool(
+        "thruk_top_noisy_hosts",
+        {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59"},
+    )
+    p = post_params(router.calls.last)
+    assert p["time[gte]"] == "2026-05-20 00:00:00"
+    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    payload = _json.loads(result[0].text)
+    assert payload["since"] == "2026-05-20 00:00:00"
+    assert payload["until"] == "2026-05-20 23:59:59"
+
+
+@pytest.mark.asyncio
 async def test_top_noisy_services_basic(mocked_server) -> None:
     """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
     import json as _json
@@ -1000,7 +1020,7 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
         _make_log_entry("beta", 1, 50, service="CPU"),  # WARNING
     ]
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
-    result = await mcp.call_tool("thruk_top_noisy_services", {"hours": 12, "limit": 5})
+    result = await mcp.call_tool("thruk_top_noisy_services", {"since": "-12h", "limit": 5})
     assert route.called
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^SERVICE ALERT"
@@ -1008,7 +1028,8 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
     assert p["columns"] == "host_name,service_description,state,time"
 
     payload = _json.loads(result[0].text)
-    assert payload["window_hours"] == 12
+    assert payload["since"] == "-12h"
+    assert payload["until"] is None
     assert payload["total_alerts_in_window"] == 4  # recovery excluded
     results = payload["results"]
     # alpha/HTTP has 2 alerts → ranked first
@@ -1020,13 +1041,14 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_top_noisy_services_default_hours(mocked_server) -> None:
-    """Default window should be 24 h."""
+async def test_top_noisy_services_default_since(mocked_server) -> None:
+    """Default window should be since=-24h."""
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool("thruk_top_noisy_services", {})
     p = post_params(router.calls.last)
     assert p["time[gte]"] == "-24h"
+    assert "time[lte]" not in p
 
 
 @pytest.mark.asyncio
@@ -1041,6 +1063,25 @@ async def test_top_noisy_services_filter_error(mocked_server) -> None:
     )
     payload = _json.loads(result[0].text)
     assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_services_since_until(mocked_server) -> None:
+    """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    result = await mcp.call_tool(
+        "thruk_top_noisy_services",
+        {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59"},
+    )
+    p = post_params(router.calls.last)
+    assert p["time[gte]"] == "2026-05-20 00:00:00"
+    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    payload = _json.loads(result[0].text)
+    assert payload["since"] == "2026-05-20 00:00:00"
+    assert payload["until"] == "2026-05-20 23:59:59"
 
 
 # ---------------------------------------------------------------- Flap summary
@@ -1076,7 +1117,7 @@ async def test_flap_summary_basic_service(mocked_server) -> None:
         "beta", [0, 2], service="CPU"
     )
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
-    result = await mcp.call_tool("thruk_flap_summary", {"hours": 6, "min_transitions": 3})
+    result = await mcp.call_tool("thruk_flap_summary", {"since": "-6h", "min_transitions": 3})
     assert route.called
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
@@ -1084,7 +1125,8 @@ async def test_flap_summary_basic_service(mocked_server) -> None:
     assert p["sort"] == "time"
 
     payload = _json.loads(result[0].text)
-    assert payload["window_hours"] == 6
+    assert payload["since"] == "-6h"
+    assert payload["until"] is None
     assert payload["min_transitions"] == 3
     assert payload["total_flapping_objects"] == 1
     r = payload["results"][0]
@@ -1159,3 +1201,23 @@ async def test_flap_summary_filter_error(mocked_server) -> None:
     )
     payload = _json.loads(result[0].text)
     assert "error" in payload
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_since_until(mocked_server) -> None:
+    """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    result = await mcp.call_tool(
+        "thruk_flap_summary",
+        {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59", "min_transitions": 2},
+    )
+    p = post_params(router.calls.last)
+    assert p["time[gte]"] == "2026-05-20 00:00:00"
+    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    payload = _json.loads(result[0].text)
+    assert payload["since"] == "2026-05-20 00:00:00"
+    assert payload["until"] == "2026-05-20 23:59:59"
+    assert payload["min_transitions"] == 2
