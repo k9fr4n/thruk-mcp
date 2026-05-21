@@ -514,8 +514,12 @@ async def thruk_top_noisy_hosts(
             continue
         h = entry.get("host_name") or ""
         if h not in counts:
-            counts[h] = {"alert_count": 0, "_last_ts": 0, "last_state_int": state,
-                         "last_alert_time": None}
+            counts[h] = {
+                "alert_count": 0,
+                "_last_ts": 0,
+                "last_state_int": state,
+                "last_alert_time": None,
+            }
         counts[h]["alert_count"] += 1
         t = entry.get("time") or 0
         if t > counts[h]["_last_ts"]:
@@ -600,8 +604,12 @@ async def thruk_top_noisy_services(
         svc = entry.get("service_description") or ""
         key = (h, svc)
         if key not in counts:
-            counts[key] = {"alert_count": 0, "_last_ts": 0, "last_state_int": state,
-                           "last_alert_time": None}
+            counts[key] = {
+                "alert_count": 0,
+                "_last_ts": 0,
+                "last_state_int": state,
+                "last_alert_time": None,
+            }
         counts[key]["alert_count"] += 1
         t = entry.get("time") or 0
         if t > counts[key]["_last_ts"]:

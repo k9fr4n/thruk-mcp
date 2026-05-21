@@ -918,12 +918,13 @@ def _make_log_entry(
 async def test_top_noisy_hosts_basic(mocked_server) -> None:
     """Top-noisy-hosts aggregates by host and excludes RECOVERY (state=0)."""
     import json as _json
+
     mcp, router = mocked_server
     raw = [
-        _make_log_entry("alpha", 1, 10),   # DOWN
-        _make_log_entry("alpha", 1, 20),   # DOWN
-        _make_log_entry("alpha", 0, 30),   # UP = recovery, excluded
-        _make_log_entry("beta",  1, 40),   # DOWN
+        _make_log_entry("alpha", 1, 10),  # DOWN
+        _make_log_entry("alpha", 1, 20),  # DOWN
+        _make_log_entry("alpha", 0, 30),  # UP = recovery, excluded
+        _make_log_entry("beta", 1, 40),  # DOWN
     ]
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 6, "limit": 5})
@@ -935,7 +936,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
 
     payload = _json.loads(result[0].text)
     assert payload["window_hours"] == 6
-    assert payload["total_alerts_in_window"] == 3   # alpha x2 + beta x1 (recovery excluded)
+    assert payload["total_alerts_in_window"] == 3  # alpha x2 + beta x1 (recovery excluded)
     results = payload["results"]
     assert results[0]["host"] == "alpha"
     assert results[0]["alert_count"] == 2
@@ -948,6 +949,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
 async def test_top_noisy_hosts_only_recovery_returns_empty(mocked_server) -> None:
     """When all entries are RECOVERY the results list should be empty."""
     import json as _json
+
     mcp, router = mocked_server
     raw = [_make_log_entry("alpha", 0), _make_log_entry("beta", 0)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
@@ -961,6 +963,7 @@ async def test_top_noisy_hosts_only_recovery_returns_empty(mocked_server) -> Non
 async def test_top_noisy_hosts_limit_respected(mocked_server) -> None:
     """Only ``limit`` hosts are returned even when more are present."""
     import json as _json
+
     mcp, router = mocked_server
     raw = [_make_log_entry(f"host{i}", 1, i) for i in range(20)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
@@ -973,6 +976,7 @@ async def test_top_noisy_hosts_limit_respected(mocked_server) -> None:
 async def test_top_noisy_hosts_filter_error(mocked_server) -> None:
     """Invalid filter field must return an error key."""
     import json as _json
+
     mcp, _router = mocked_server
     result = await mcp.call_tool(
         "thruk_top_noisy_hosts",
@@ -986,13 +990,14 @@ async def test_top_noisy_hosts_filter_error(mocked_server) -> None:
 async def test_top_noisy_services_basic(mocked_server) -> None:
     """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
     import json as _json
+
     mcp, router = mocked_server
     raw = [
-        _make_log_entry("alpha", 2, 10, service="HTTP"),   # CRITICAL
-        _make_log_entry("alpha", 1, 20, service="HTTP"),   # WARNING
-        _make_log_entry("alpha", 0, 30, service="HTTP"),   # OK = recovery, excluded
-        _make_log_entry("alpha", 2, 40, service="DISK"),   # CRITICAL
-        _make_log_entry("beta",  1, 50, service="CPU"),    # WARNING
+        _make_log_entry("alpha", 2, 10, service="HTTP"),  # CRITICAL
+        _make_log_entry("alpha", 1, 20, service="HTTP"),  # WARNING
+        _make_log_entry("alpha", 0, 30, service="HTTP"),  # OK = recovery, excluded
+        _make_log_entry("alpha", 2, 40, service="DISK"),  # CRITICAL
+        _make_log_entry("beta", 1, 50, service="CPU"),  # WARNING
     ]
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_services", {"hours": 12, "limit": 5})
@@ -1028,6 +1033,7 @@ async def test_top_noisy_services_default_hours(mocked_server) -> None:
 async def test_top_noisy_services_filter_error(mocked_server) -> None:
     """Invalid filter field (e.g. 'state') must return an error key."""
     import json as _json
+
     mcp, _router = mocked_server
     result = await mcp.call_tool(
         "thruk_top_noisy_services",
