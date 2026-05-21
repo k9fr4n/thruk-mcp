@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 29 MCP Tools
+### 32 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -113,6 +113,11 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 **Read — history & comments**
 `thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`, `thruk_recent_events`,
 `thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`.
+
+**Read — noise & flap analysis**
+`thruk_top_noisy_hosts` (hosts ranked by alert count over a window),
+`thruk_top_noisy_services` (services ranked by alert count),
+`thruk_flap_summary` (hosts/services ranked by state transition count).
 
 **Write — downtime management**
 `thruk_schedule_downtime` (host/service), `thruk_schedule_host_services_downtime`
@@ -156,7 +161,7 @@ client UI:
 | --- | --- | --- |
 | `investigate_alert` | `host`, optional `service` | 7-step incident triage |
 | `schedule_maintenance` | `target`, `duration_minutes`, `kind` | Safe downtime workflow with confirmation |
-| `diagnose_flapping` | `host`, `service` | Root-cause a flapping service |
+| `diagnose_flapping` | `host`, `service` | Root-cause a flapping service (uses `thruk_flap_summary`) |
 
 ## Robustness
 
