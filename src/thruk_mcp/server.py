@@ -789,6 +789,269 @@ async def thruk_flap_summary(
     return json.dumps(payload, indent=2, default=str)
 
 
+# ---------------------------------------------------------------------------
+# Trends & history tools (issue #57)
+# ---------------------------------------------------------------------------
+
+_BUCKET_SIZES: dict[str, int] = {
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "6h": 21600,
+    "1d": 86400,
+}
+
+_THRUK_REL_RE = re.compile(r"^-(\d+)([smhdw])$")
+_THRUK_REL_MULT: dict[str, int] = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _parse_thruk_time(value: str | None) -> int | None:
+    """Parse a Thruk relative ('-2h', '-30m', '-7d') or absolute time to a Unix timestamp.
+
+    Returns ``None`` when the value cannot be parsed (caller decides fallback).
+    Absolute formats accepted: integer epoch, ``'YYYY-MM-DD HH:MM:SS'``,
+    ``'YYYY-MM-DDTHH:MM:SS'``, ``'YYYY-MM-DDTHH:MM:SSZ'``.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    m = _THRUK_REL_RE.match(value)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return int(datetime.now().timestamp()) - n * _THRUK_REL_MULT[unit]
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return int(datetime.strptime(value, fmt).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+async def thruk_alert_heatmap(
+    since: str | None = "-24h",
+    until: str | None = None,
+    bucket: str = "1h",
+    filter: dict | None = None,
+    backends: str | None = None,
+) -> str:
+    """Return alert counts grouped by time bucket over a window.
+
+    Useful for spotting alert storms, quiet periods, and recurring patterns.
+    The LLM can use the returned list as a sparkline: high counts flag
+    incidents, sustained highs flag chronic issues.
+
+    ``bucket`` controls bucket width: ``"15m"``, ``"30m"``, ``"1h"`` (default),
+    ``"6h"``, ``"1d"``. Buckets with zero alerts are included so the output
+    can be rendered as a continuous timeline.
+
+    ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
+
+    ``filter`` fields: ``host``, ``service``, ``hostgroup``,
+    ``custom_var`` (host-level, resolved via /hosts lookup).
+
+    Returns a wrapped object: ``since``, ``until``, ``bucket``,
+    ``total_alerts``, ``results`` list of ``{bucket_start, count}``
+    ordered chronologically. Empty buckets are filled with ``count=0``.
+    """
+    bucket_secs = _BUCKET_SIZES.get(bucket)
+    if bucket_secs is None:
+        return json.dumps(
+            {"error": f"Invalid bucket {bucket!r}. Allowed: {', '.join(_BUCKET_SIZES)}"},
+            indent=2,
+        )
+
+    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+
+    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",
+        "columns": "time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Count alerts per bucket
+    raw_counts: dict[int, int] = {}
+    total = 0
+    for entry in data:
+        t = entry.get("time")
+        if not t:
+            continue
+        b = (int(t) // bucket_secs) * bucket_secs
+        raw_counts[b] = raw_counts.get(b, 0) + 1
+        total += 1
+
+    # Build continuous timeline — fill empty buckets between window boundaries
+    ts_since = _parse_thruk_time(since)
+    ts_until = _parse_thruk_time(until) if until else int(datetime.now().timestamp())
+
+    results: list[dict[str, Any]] = []
+    if ts_since is not None and ts_until is not None:
+        first_b = (ts_since // bucket_secs) * bucket_secs
+        last_b = (ts_until // bucket_secs) * bucket_secs
+        b = first_b
+        while b <= last_b:
+            results.append(
+                {
+                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "count": raw_counts.get(b, 0),
+                }
+            )
+            b += bucket_secs
+    else:
+        # Fallback: only buckets that have data (unparseable since/until)
+        for b in sorted(raw_counts):
+            results.append(
+                {
+                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "count": raw_counts[b],
+                }
+            )
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "bucket": bucket,
+        "total_alerts": total,
+        "results": results,
+    }
+    if len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return json.dumps(payload, indent=2, default=str)
+
+
+async def thruk_recurring_problems(
+    since: str | None = "-24h",
+    until: str | None = None,
+    min_alerts: int = 5,
+    limit: int = 10,
+    filter: dict | None = None,
+    backends: str | None = None,
+) -> str:
+    """Return hosts/services that generated repeated alerts over a time window.
+
+    Identifies chronic problems: objects that fired more than ``min_alerts``
+    HOST/SERVICE ALERT entries (RECOVERY events — state 0 — are excluded) in
+    the requested period. Results are sorted by alert count descending.
+
+    ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
+
+    ``min_alerts`` minimum number of non-recovery alert events to appear in
+    the results (must be ≥ 1, default 5).
+    ``limit`` caps the number of returned entries (default 10).
+
+    ``filter`` fields: ``host``, ``service``, ``hostgroup``,
+    ``custom_var`` (host-level, resolved via /hosts lookup).
+
+    Returns a wrapped object: ``since``, ``until``, ``min_alerts``,
+    ``total_objects_above_threshold``, ``results`` list of
+    ``{host, service, alert_count, first_seen, last_seen, last_state}``
+    sorted by ``alert_count`` descending.
+    """
+    if min_alerts < 1:
+        return json.dumps({"error": "min_alerts must be >= 1"}, indent=2)
+
+    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return json.dumps({"error": errs[0]}, indent=2)
+
+    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",
+        "columns": "host_name,service_description,state,time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Aggregate per (host, service) — exclude state=0 (UP/OK = recovery)
+    agg: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in data:
+        state = entry.get("state", -1)
+        if state == 0:
+            continue
+        h = entry.get("host_name") or ""
+        svc = entry.get("service_description") or ""
+        key = (h, svc)
+        t = int(entry.get("time") or 0)
+        if key not in agg:
+            agg[key] = {
+                "alert_count": 0,
+                "first_ts": t,
+                "last_ts": t,
+                "last_state_int": state,
+            }
+        else:
+            if t < agg[key]["first_ts"]:
+                agg[key]["first_ts"] = t
+            if t > agg[key]["last_ts"]:
+                agg[key]["last_ts"] = t
+                agg[key]["last_state_int"] = state
+        agg[key]["alert_count"] += 1
+
+    above = [
+        {
+            "host": h,
+            "service": svc or None,
+            "alert_count": v["alert_count"],
+            "first_seen": _ts(v["first_ts"]),
+            "last_seen": _ts(v["last_ts"]),
+            "last_state": (HOST_STATES if not svc else SERVICE_STATES).get(
+                v["last_state_int"], str(v["last_state_int"])
+            ),
+        }
+        for (h, svc), v in agg.items()
+        if v["alert_count"] >= min_alerts
+    ]
+    above.sort(key=lambda x: x["alert_count"], reverse=True)
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "min_alerts": min_alerts,
+        "total_objects_above_threshold": len(above),
+        "results": above[:limit],
+    }
+    if len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return json.dumps(payload, indent=2, default=str)
+
+
 async def _resolve_log_filter(
     filter_node: dict | None,
     allowed_fields: frozenset,
@@ -2149,6 +2412,45 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         ),
         backends=_BACKENDS,
     ),
+    "thruk_alert_heatmap": build_tool_schema(
+        FIELDS_NOISY_SERVICES,
+        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+        since={
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": "-24h",
+            "description": (
+                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+            ),
+        },
+        until=_OPT_STR,
+        bucket={
+            "type": "string",
+            "default": "1h",
+            "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
+            "enum": ["15m", "30m", "1h", "6h", "1d"],
+        },
+        backends=_BACKENDS,
+    ),
+    "thruk_recurring_problems": build_tool_schema(
+        FIELDS_NOISY_SERVICES,
+        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+        since={
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "default": "-24h",
+            "description": (
+                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+            ),
+        },
+        until=_OPT_STR,
+        min_alerts=_int(
+            "Minimum number of non-recovery alert events to be included (default 5).",
+            default=5,
+        ),
+        limit=_int("Maximum number of results (default 10).", default=10),
+        backends=_BACKENDS,
+    ),
     "thruk_list_logs": build_tool_schema(
         FIELDS_LOGS,
         filter=filter_schema_property(FIELDS_LOGS),
@@ -2342,6 +2644,9 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "thruk_top_noisy_hosts": thruk_top_noisy_hosts,
     "thruk_top_noisy_services": thruk_top_noisy_services,
     "thruk_flap_summary": thruk_flap_summary,
+    # trends & history tools (issue #57)
+    "thruk_alert_heatmap": thruk_alert_heatmap,
+    "thruk_recurring_problems": thruk_recurring_problems,
     "thruk_list_hosts": thruk_list_hosts,
     "thruk_get_host": thruk_get_host,
     "thruk_list_services": thruk_list_services,
