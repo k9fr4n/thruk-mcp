@@ -137,6 +137,22 @@ def _ts(value: Any) -> str:
         return str(value)
 
 
+def _duration_human(seconds: int | float) -> str:
+    """Format a duration in seconds as a human-readable string, e.g. '3d 2h 15m'."""
+    secs = max(0, int(seconds))
+    days, rem = divmod(secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
 def _backends(backends: str | None) -> tuple[str, ...] | None:
     if backends is None:
         return None
@@ -1598,6 +1614,227 @@ def diagnose_flapping(host: str, service: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Semantic problem-management tools (issue #52)
+# ---------------------------------------------------------------------------
+
+
+async def thruk_oldest_problems(
+    limit: int = 20,
+    backends: str | None = None,
+) -> str:
+    """Unhandled problems sorted by age (oldest first).
+
+    Combines DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services that
+    are neither acknowledged nor in scheduled downtime. Results are merged and
+    sorted by ``last_state_change`` ascending so the longest-standing problems
+    appear first.
+
+    Returns a flat list of ``{host, service, state, since, duration_human}``
+    (at most ``limit`` items, default 20).
+    """
+    now = int(datetime.now().timestamp())
+    host_params = {
+        "state[gte]": 1,
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "sort": "last_state_change",
+        "columns": "name,state,last_state_change,peer_name",
+        "limit": limit,
+    }
+    svc_params = {
+        "state[gte]": 1,
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "sort": "last_state_change",
+        "columns": "host_name,description,state,last_state_change,peer_name",
+        "limit": limit,
+    }
+    hosts = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
+    services = await _get_client().get("/services", params=svc_params, backends=_backends(backends))
+
+    rows: list[dict] = []
+    for h in hosts or []:
+        lsc = int(h.get("last_state_change") or 0)
+        rows.append(
+            {
+                "_lsc": lsc,
+                "host": h.get("name", ""),
+                "service": None,
+                "state": HOST_STATES.get(int(h.get("state", -1)), str(h.get("state", ""))),
+                "since": _ts(lsc),
+                "duration_human": _duration_human(now - lsc),
+            }
+        )
+    for s in services or []:
+        lsc = int(s.get("last_state_change") or 0)
+        rows.append(
+            {
+                "_lsc": lsc,
+                "host": s.get("host_name", ""),
+                "service": s.get("description", ""),
+                "state": SERVICE_STATES.get(int(s.get("state", -1)), str(s.get("state", ""))),
+                "since": _ts(lsc),
+                "duration_human": _duration_human(now - lsc),
+            }
+        )
+
+    rows.sort(key=lambda r: r["_lsc"])
+    trimmed = [{k: v for k, v in r.items() if k != "_lsc"} for r in rows[:limit]]
+    return json.dumps(trimmed, indent=2, default=str)
+
+
+async def thruk_unacked_critical(
+    threshold_minutes: int = 60,
+    backends: str | None = None,
+) -> str:
+    """CRITICAL services and DOWN hosts not acknowledged for more than N minutes.
+
+    ``threshold_minutes`` (default 60) sets the minimum duration a problem must
+    have been active without acknowledgement to be included.
+
+    Returns ``[{host, service, state, duration_minutes}]`` sorted by
+    ``duration_minutes`` descending (longest-unacked first).
+    """
+    now = int(datetime.now().timestamp())
+    threshold_ts = now - threshold_minutes * 60
+
+    host_params = {
+        "state[gte]": 1,
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "last_state_change[lte]": threshold_ts,
+        "columns": "name,state,last_state_change,peer_name",
+        "limit": 500,
+    }
+    svc_params = {
+        "state": 2,  # CRITICAL only
+        "acknowledged": 0,
+        "scheduled_downtime_depth": 0,
+        "last_state_change[lte]": threshold_ts,
+        "columns": "host_name,description,state,last_state_change,peer_name",
+        "limit": 500,
+    }
+    hosts = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
+    services = await _get_client().get("/services", params=svc_params, backends=_backends(backends))
+
+    rows: list[dict] = []
+    for h in hosts or []:
+        lsc = int(h.get("last_state_change") or 0)
+        rows.append(
+            {
+                "host": h.get("name", ""),
+                "service": None,
+                "state": HOST_STATES.get(int(h.get("state", -1)), str(h.get("state", ""))),
+                "duration_minutes": (now - lsc) // 60,
+            }
+        )
+    for s in services or []:
+        lsc = int(s.get("last_state_change") or 0)
+        rows.append(
+            {
+                "host": s.get("host_name", ""),
+                "service": s.get("description", ""),
+                "state": SERVICE_STATES.get(int(s.get("state", -1)), str(s.get("state", ""))),
+                "duration_minutes": (now - lsc) // 60,
+            }
+        )
+
+    rows.sort(key=lambda r: r["duration_minutes"], reverse=True)
+    return json.dumps(rows, indent=2, default=str)
+
+
+async def thruk_stale_acks(
+    min_days: int = 7,
+    limit: int = 100,
+    backends: str | None = None,
+) -> str:
+    """Acknowledgements older than N days (potentially forgotten ones).
+
+    Queries ``/comments`` for ``entry_type=4`` (acknowledgements) and
+    returns entries whose ``entry_time`` is older than ``min_days`` days
+    (default 7). Useful for identifying problems that have been silenced
+    but never actually fixed.
+
+    Returns ``[{host, service, ack_author, ack_comment, ack_since_days}]``
+    sorted by age descending (stalest first).
+    """
+    now = int(datetime.now().timestamp())
+    threshold_ts = now - min_days * 86400
+
+    params: dict = {
+        "entry_type": 4,
+        "entry_time[lte]": threshold_ts,
+        "columns": "host_name,service_description,author,comment,entry_time,peer_name",
+        "limit": limit,
+        "sort": "entry_time",
+    }
+    data = await _get_client().get("/comments", params=params, backends=_backends(backends))
+
+    rows: list[dict] = []
+    for c in data or []:
+        et = int(c.get("entry_time") or 0)
+        rows.append(
+            {
+                "host": c.get("host_name", ""),
+                "service": c.get("service_description") or None,
+                "ack_author": c.get("author", ""),
+                "ack_comment": c.get("comment", ""),
+                "ack_since_days": round((now - et) / 86400, 1),
+            }
+        )
+
+    rows.sort(key=lambda r: r["ack_since_days"], reverse=True)
+    return json.dumps(rows, indent=2, default=str)
+
+
+async def thruk_problems_by_hostgroup(
+    backends: str | None = None,
+) -> str:
+    """Problem count aggregated per hostgroup.
+
+    Returns ``[{hostgroup, alias, hosts_down, services_crit, services_warn,
+    services_unknown}]`` sorted by severity (DOWN > CRIT > WARN). Only groups
+    with at least one problem are included.
+    """
+    params: dict = {
+        "columns": (
+            "name,alias,"
+            "num_hosts_down,num_hosts_unreachable,"
+            "num_services_warn,num_services_crit,num_services_unknown"
+        ),
+    }
+    data = await _get_client().get("/hostgroups", params=params, backends=_backends(backends))
+
+    rows: list[dict] = []
+    for hg in data or []:
+        hosts_down = int(hg.get("num_hosts_down") or 0) + int(
+            hg.get("num_hosts_unreachable") or 0
+        )
+        services_crit = int(hg.get("num_services_crit") or 0)
+        services_warn = int(hg.get("num_services_warn") or 0)
+        services_unknown = int(hg.get("num_services_unknown") or 0)
+        total = hosts_down + services_crit + services_warn + services_unknown
+        if total == 0:
+            continue
+        rows.append(
+            {
+                "hostgroup": hg.get("name", ""),
+                "alias": hg.get("alias", ""),
+                "hosts_down": hosts_down,
+                "services_crit": services_crit,
+                "services_warn": services_warn,
+                "services_unknown": services_unknown,
+            }
+        )
+
+    rows.sort(
+        key=lambda r: r["hosts_down"] * 10000 + r["services_crit"] * 100 + r["services_warn"],
+        reverse=True,
+    )
+    return json.dumps(rows, indent=2, default=str)
+
+
+# ---------------------------------------------------------------------------
 # build_server: registers module-level functions into a fresh FastMCP instance
 # ---------------------------------------------------------------------------
 
@@ -1921,6 +2158,23 @@ _TOOL_SCHEMAS: dict[str, dict] = {
         forced=_bool(default=True),
         backends=_BACKENDS,
     ),
+    # semantic problem tools (issue #52)
+    "thruk_oldest_problems": _s(
+        limit=_int("Maximum number of results (default 20).", default=20),
+        backends=_BACKENDS,
+    ),
+    "thruk_unacked_critical": _s(
+        threshold_minutes=_int(
+            "Minimum unacknowledged duration in minutes (default 60).", default=60
+        ),
+        backends=_BACKENDS,
+    ),
+    "thruk_stale_acks": _s(
+        min_days=_int("Minimum acknowledgement age in days (default 7).", default=7),
+        limit=_int("Maximum number of results (default 100).", default=100),
+        backends=_BACKENDS,
+    ),
+    "thruk_problems_by_hostgroup": _s(backends=_BACKENDS),
 }
 
 # ---------------------------------------------------------------------------
@@ -1960,6 +2214,11 @@ _TOOL_DISPATCH: dict[str, Any] = {
     "thruk_acknowledge": thruk_acknowledge,
     "thruk_remove_acknowledgement": thruk_remove_acknowledgement,
     "thruk_recheck": thruk_recheck,
+    # semantic problem tools (issue #52)
+    "thruk_oldest_problems": thruk_oldest_problems,
+    "thruk_unacked_critical": thruk_unacked_critical,
+    "thruk_stale_acks": thruk_stale_acks,
+    "thruk_problems_by_hostgroup": thruk_problems_by_hostgroup,
 }
 
 

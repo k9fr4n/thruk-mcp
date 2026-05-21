@@ -2362,5 +2362,81 @@
         }
       }
     }
+  },
+  {
+    "name": "thruk_oldest_problems",
+    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending — oldest first. Returns [{host, service, state, since, duration_human}].",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "default": 20,
+          "description": "Maximum number of results (default 20)."
+        },
+        "backends": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_unacked_critical",
+    "description": "CRITICAL services and DOWN/UNREACHABLE hosts not acknowledged for more than N minutes. Returns [{host, service, state, duration_minutes}] sorted by duration descending.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "threshold_minutes": {
+          "type": "integer",
+          "default": 60,
+          "description": "Minimum unacknowledged duration in minutes (default 60)."
+        },
+        "backends": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_stale_acks",
+    "description": "Acknowledgements older than N days (potentially forgotten). Queries /comments with entry_type=4. Returns [{host, service, ack_author, ack_comment, ack_since_days}] sorted by age descending.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "min_days": {
+          "type": "integer",
+          "default": 7,
+          "description": "Minimum acknowledgement age in days (default 7)."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 100,
+          "description": "Maximum number of results (default 100)."
+        },
+        "backends": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_problems_by_hostgroup",
+    "description": "Problem count aggregated per hostgroup. Returns [{hostgroup, alias, hosts_down, services_crit, services_warn, services_unknown}] sorted by severity. Only groups with at least one problem are included.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "backends": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
   }
 ]
