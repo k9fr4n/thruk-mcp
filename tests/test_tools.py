@@ -935,7 +935,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
 
     payload = _json.loads(result[0].text)
     assert payload["window_hours"] == 6
-    assert payload["total_alerts_in_window"] == 3   # alpha×2 + beta×1 (recovery excluded)
+    assert payload["total_alerts_in_window"] == 3   # alpha x2 + beta x1 (recovery excluded)
     results = payload["results"]
     assert results[0]["host"] == "alpha"
     assert results[0]["alert_count"] == 2
