@@ -263,3 +263,94 @@ async def test_path_injection_get_host_encoded() -> None:
         assert route.called, "Expected encoded URL — read-path injection was not prevented."
     finally:
         await _close(mcp)
+
+
+# ---------------------------------------------------------------------------
+# Issue #72 — Path traversal in thruk_query / thruk_run_background_query
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (documented as a reminder of the vulnerability):
+#   thruk_query(path="/../../cgi-bin/cmd.cgi?cmd_typ=14", ...)
+#   would reach _url() which only prepends '/' when missing, so the raw '../..'
+#   segments were forwarded to Thruk's HTTP client, potentially landing outside
+#   the /thruk/r/ REST prefix on internal CGI or management endpoints.
+#
+# The fix: _validate_rest_path() rejects any path containing '..' before any
+# HTTP request is attempted.
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_dotdot_traversal() -> None:
+    """thruk_query must return an error and make NO HTTP call for '..' paths.
+
+    Without the fix the path would be forwarded verbatim to httpx, potentially
+    reaching non-REST Thruk internals (CGI layer, management endpoints).
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    traversal_path = "/../../cgi-bin/cmd.cgi"
+    try:
+        with respx.mock() as router:
+            # No route registered: any HTTP call would raise a NoMatchFound error,
+            # proving the guard fired before making the request.
+            result = await mcp.call_tool("thruk_query", {"path": traversal_path})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert ".." in payload["error"]
+        # Ensure nothing was sent over the wire
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_relative_path() -> None:
+    """thruk_query must reject paths that do not start with '/'."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool("thruk_query", {"path": "hosts"})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_allows_valid_path() -> None:
+    """thruk_query must pass through normal REST paths unchanged."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            route = router.get(f"{BASE}/r/hosts").mock(
+                return_value=httpx.Response(200, json=[{"name": "srv01"}])
+            )
+            result = await mcp.call_tool("thruk_query", {"path": "/hosts"})
+        assert route.called
+        payload = json.loads(result[0].text)
+        assert payload[0]["name"] == "srv01"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_run_background_query_rejects_dotdot_traversal() -> None:
+    """thruk_run_background_query must also reject '..' path traversal."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    traversal_path = "/hosts/../../../etc/passwd"
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool("thruk_run_background_query", {"path": traversal_path})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert ".." in payload["error"]
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
