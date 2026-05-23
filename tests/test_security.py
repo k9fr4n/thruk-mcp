@@ -162,3 +162,104 @@ async def test_audit_redacts_sensitive_keys() -> None:
     """Direct unit test on the redactor."""
     out = audit._redact({"host": "srv01", "api_key": "secret", "nested": {"token": "x"}})
     assert out == {"host": "srv01", "api_key": "***", "nested": {"token": "***"}}
+
+
+# ---------------------------------------------------------------------------
+# Issue #70 — Path injection: host/service names must be URL-encoded
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (documented as a reminder of the vulnerability):
+#   endpoint = f"/hosts/{host}/cmd/schedule_host_downtime"
+# A host value like "srv01/cmd/del_all_host_downtimes" would produce:
+#   /hosts/srv01/cmd/del_all_host_downtimes/cmd/schedule_host_downtime
+# which Thruk may route to the injected sub-path, executing a different command.
+# The _seg() helper (urllib.parse.quote with safe="") prevents this.
+
+
+@pytest.mark.asyncio
+async def test_path_injection_host_name_slash_encoded() -> None:
+    """A host name containing '/' must be percent-encoded before it reaches the wire.
+
+    Without the fix the URL would contain a literal slash, corrupting the path.
+    With the fix 'srv01/evil' becomes 'srv01%2Fevil' in the path.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    injected_host = "srv01/cmd/del_all_host_downtimes"
+    try:
+        with respx.mock() as router:
+            # The mock must match the *encoded* URL — if _seg() is applied the
+            # path will contain %2F rather than a raw slash.
+            route = router.post(
+                f"{BASE}/r/hosts/srv01%2Fcmd%2Fdel_all_host_downtimes/cmd/schedule_host_downtime"
+            ).mock(return_value=httpx.Response(200, json={"rc": 0}))
+            await mcp.call_tool(
+                "thruk_schedule_downtime",
+                {
+                    "host": injected_host,
+                    "comment": "test",
+                    "start_time": "now",
+                    "end_time": "+1h",
+                },
+            )
+        assert route.called, (
+            "Expected the encoded URL to be hit — path injection was not prevented."
+        )
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_path_injection_service_name_slash_encoded() -> None:
+    """A service description containing '/' must be percent-encoded in the path."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    injected_service = "HTTP/evil"
+    try:
+        with respx.mock() as router:
+            route = router.post(
+                f"{BASE}/r/services/srv01/HTTP%2Fevil/cmd/acknowledge_svc_problem"
+            ).mock(return_value=httpx.Response(200, json={"rc": 0}))
+            await mcp.call_tool(
+                "thruk_acknowledge",
+                {"host": "srv01", "service": injected_service},
+            )
+        assert route.called, (
+            "Expected the encoded URL to be hit — service path injection was not prevented."
+        )
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_path_injection_recheck_host_encoded() -> None:
+    """thruk_recheck must encode the host name in the path."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    injected_host = "srv01/../admin"
+    try:
+        with respx.mock() as router:
+            route = router.post(
+                f"{BASE}/r/hosts/srv01%2F..%2Fadmin/cmd/schedule_forced_host_check"
+            ).mock(return_value=httpx.Response(200, json={"rc": 0}))
+            await mcp.call_tool("thruk_recheck", {"host": injected_host})
+        assert route.called, "Expected encoded URL — path traversal was not prevented."
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_path_injection_get_host_encoded() -> None:
+    """thruk_get_host must encode the host name in the read path."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    injected_host = "srv01/extra"
+    try:
+        with respx.mock() as router:
+            route = router.get(f"{BASE}/r/hosts/srv01%2Fextra").mock(
+                return_value=httpx.Response(200, json={"name": "srv01/extra"})
+            )
+            await mcp.call_tool("thruk_get_host", {"host": injected_host})
+        assert route.called, "Expected encoded URL — read-path injection was not prevented."
+    finally:
+        await _close(mcp)

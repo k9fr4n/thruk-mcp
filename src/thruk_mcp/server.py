@@ -21,6 +21,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote as _urlquote
 
 from mcp.server import Server
 from mcp.types import TextContent, Tool
@@ -160,6 +161,17 @@ def _backends(backends: str | None) -> tuple[str, ...] | None:
     return parts or None
 
 
+def _seg(value: str) -> str:
+    """URL-encode a single REST path segment.
+
+    Prevents injection of '/' or '..' into Thruk REST paths when host or
+    service names are interpolated directly into URL path f-strings.
+    Nagios/Naemon forbids slashes in object names at configuration time, so
+    no legitimate name is affected by this encoding.
+    """
+    return _urlquote(str(value), safe="")
+
+
 def _build_cv_params(
     custom_vars: dict | None,
     *,
@@ -232,7 +244,7 @@ async def thruk_list_hosts(
 
 async def thruk_get_host(host: str, backends: str | None = None) -> str:
     """Get a single host by name."""
-    data = await _get_client().get(f"/hosts/{host}", backends=_backends(backends))
+    data = await _get_client().get(f"/hosts/{_seg(host)}", backends=_backends(backends))
     return json.dumps(data, indent=2, default=str)
 
 
@@ -271,7 +283,9 @@ async def thruk_list_services(
 
 async def thruk_get_service(host: str, service: str, backends: str | None = None) -> str:
     """Get a single service by host and description."""
-    data = await _get_client().get(f"/services/{host}/{service}", backends=_backends(backends))
+    data = await _get_client().get(
+        f"/services/{_seg(host)}/{_seg(service)}", backends=_backends(backends)
+    )
     return json.dumps(data, indent=2, default=str)
 
 
@@ -1390,9 +1404,9 @@ async def thruk_schedule_downtime(
     if duration_minutes:
         end_time = f"+{duration_minutes}m"
     endpoint = (
-        f"/services/{host}/{service}/cmd/schedule_svc_downtime"
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/schedule_svc_downtime"
         if service
-        else f"/hosts/{host}/cmd/schedule_host_downtime"
+        else f"/hosts/{_seg(host)}/cmd/schedule_host_downtime"
     )
     payload = {
         "start_time": start_time,
@@ -1420,9 +1434,9 @@ async def thruk_acknowledge(
 ) -> str:
     """Acknowledge a host or service problem."""
     endpoint = (
-        f"/services/{host}/{service}/cmd/acknowledge_svc_problem"
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/acknowledge_svc_problem"
         if service
-        else f"/hosts/{host}/cmd/acknowledge_host_problem"
+        else f"/hosts/{_seg(host)}/cmd/acknowledge_host_problem"
     )
     payload = {
         "comment_data": comment,
@@ -1443,9 +1457,9 @@ async def thruk_remove_acknowledgement(
 ) -> str:
     """Remove an acknowledgement."""
     endpoint = (
-        f"/services/{host}/{service}/cmd/remove_svc_acknowledgement"
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/remove_svc_acknowledgement"
         if service
-        else f"/hosts/{host}/cmd/remove_host_acknowledgement"
+        else f"/hosts/{_seg(host)}/cmd/remove_host_acknowledgement"
     )
     return json.dumps(
         await _get_client().post(endpoint, backends=_backends(backends)),
@@ -1460,10 +1474,10 @@ async def thruk_recheck(
     """Schedule an immediate (re)check for a host or service."""
     if service:
         cmd = "schedule_forced_svc_check" if forced else "schedule_svc_check"
-        endpoint = f"/services/{host}/{service}/cmd/{cmd}"
+        endpoint = f"/services/{_seg(host)}/{_seg(service)}/cmd/{cmd}"
     else:
         cmd = "schedule_forced_host_check" if forced else "schedule_host_check"
-        endpoint = f"/hosts/{host}/cmd/{cmd}"
+        endpoint = f"/hosts/{_seg(host)}/cmd/{cmd}"
     return json.dumps(
         await _get_client().post(
             endpoint, data={"start_time": "now"}, backends=_backends(backends)
@@ -1491,14 +1505,14 @@ async def thruk_delete_downtime(
     # hitting the host endpoint on a service downtime (no-op with misleading
     # "Command successfully submitted" response — see issue #35).
     if service is None:
-        dt = await client.get(f"/downtimes/{downtime_id}", backends=be)
+        dt = await client.get(f"/downtimes/{_seg(str(downtime_id))}", backends=be)
         svc_desc = dt.get("service_description") if isinstance(dt, dict) else None
         service = svc_desc or None
 
     endpoint = (
-        f"/services/{host}/{service}/cmd/del_downtime"
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/del_downtime"
         if service
-        else f"/hosts/{host}/cmd/del_downtime"
+        else f"/hosts/{_seg(host)}/cmd/del_downtime"
     )
     return json.dumps(
         await client.post(endpoint, data={"downtime_id": str(downtime_id)}, backends=be),
@@ -1509,7 +1523,9 @@ async def thruk_delete_downtime(
 
 async def thruk_get_downtime(downtime_id: int, backends: str | None = None) -> str:
     """Get a single downtime by id."""
-    data = await _get_client().get(f"/downtimes/{downtime_id}", backends=_backends(backends))
+    data = await _get_client().get(
+        f"/downtimes/{_seg(str(downtime_id))}", backends=_backends(backends)
+    )
     return json.dumps(data, indent=2, default=str)
 
 
@@ -1529,7 +1545,7 @@ async def thruk_schedule_host_services_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/hosts/{host}/cmd/schedule_host_svc_downtime",
+            f"/hosts/{_seg(host)}/cmd/schedule_host_svc_downtime",
             data=payload,
             backends=_backends(backends),
         ),
@@ -1561,7 +1577,7 @@ async def thruk_schedule_propagated_host_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/hosts/{host}/cmd/{cmd}",
+            f"/hosts/{_seg(host)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
         ),
@@ -1591,7 +1607,7 @@ async def thruk_schedule_hostgroup_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/hostgroups/{hostgroup}/cmd/{cmd}",
+            f"/hostgroups/{_seg(hostgroup)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
         ),
@@ -1622,7 +1638,7 @@ async def thruk_schedule_servicegroup_downtime(
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return json.dumps(
         await _get_client().post(
-            f"/servicegroups/{servicegroup}/cmd/{cmd}",
+            f"/servicegroups/{_seg(servicegroup)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
         ),
@@ -1679,9 +1695,9 @@ async def thruk_delete_active_downtimes(
         # `del_host_downtime`) — the correct Nagios external command is inferred
         # from the resource path (issue #36).
         ep = (
-            f"/services/{host}/{service}/cmd/del_downtime"
+            f"/services/{_seg(host)}/{_seg(service)}/cmd/del_downtime"
             if service
-            else f"/hosts/{host}/cmd/del_downtime"
+            else f"/hosts/{_seg(host)}/cmd/del_downtime"
         )
         try:
             resp = await client.post(ep, data={"downtime_id": dt_id}, backends=be)
@@ -1768,7 +1784,7 @@ async def thruk_delete_downtimes_by_filter(
                 continue
             try:
                 resp = await client.post(
-                    f"/hosts/{host}/cmd/del_downtime",
+                    f"/hosts/{_seg(host)}/cmd/del_downtime",
                     data={"downtime_id": dt_id},
                     backends=be,
                 )
@@ -1789,19 +1805,19 @@ async def thruk_delete_downtimes_by_filter(
 
 async def _host_resource(name: str) -> str:
     """Single host as a JSON document, addressable as thruk://hosts/<name>."""
-    data = await _get_client().get(f"/hosts/{name}")
+    data = await _get_client().get(f"/hosts/{_seg(name)}")
     return json.dumps(data, indent=2, default=str)
 
 
 async def _service_resource(host: str, service: str) -> str:
     """Single service as a JSON document (thruk://services/<host>/<service>)."""
-    data = await _get_client().get(f"/services/{host}/{service}")
+    data = await _get_client().get(f"/services/{_seg(host)}/{_seg(service)}")
     return json.dumps(data, indent=2, default=str)
 
 
 async def _hostgroup_resource(name: str) -> str:
     """Host group config + members as JSON (thruk://hostgroups/<name>)."""
-    data = await _get_client().get(f"/hostgroups/{name}")
+    data = await _get_client().get(f"/hostgroups/{_seg(name)}")
     return json.dumps(data, indent=2, default=str)
 
 
