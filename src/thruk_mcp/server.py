@@ -525,6 +525,80 @@ async def _fetch_logs(
 _NOISY_MAX_ALERTS: int = 10_000
 
 
+async def _aggregate_alerts(
+    type_regex: str,
+    key_fields: tuple[str, ...],
+    state_map: dict[int, str],
+    extra_params: dict[str, Any],
+    backends: str | None,
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    """Fetch and aggregate alert log entries from the Thruk /logs endpoint.
+
+    Shared helper for :func:`thruk_top_noisy_hosts` and
+    :func:`thruk_top_noisy_services`.  Callers build ``extra_params``
+    (including ``type[~]`` / ``time[gte]`` / ``time[lte]``) and pass the
+    key fields that identify a unique entity (e.g. ``("host_name",)`` for
+    hosts, ``("host_name", "service_description")`` for services).
+
+    Returns a 3-tuple:
+    - **rows** - list of dicts with ``alert_count``, all key-field values,
+      ``last_state`` (human-readable via *state_map*), and ``last_alert_time``.
+      Already sorted by ``alert_count`` descending (not yet sliced to limit).
+    - **warnings** - pass-through from :meth:`ThrukClient.get_with_fallback`.
+    - **hit_hard_limit** - ``True`` when the raw data reached ``_NOISY_MAX_ALERTS``.
+    """
+    columns_set = {"host_name", "state", "time"} | set(key_fields)
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "-time",
+        "columns": ",".join(sorted(columns_set)),
+        **extra_params,
+        "type[~]": type_regex,  # always override: callers must not change the log type
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    counts: dict[tuple[str, ...], dict[str, Any]] = {}
+    for entry in data:
+        state = entry.get("state", -1)
+        if state == 0:
+            continue
+        key = tuple(str(entry.get(f) or "") for f in key_fields)
+        rec = counts.setdefault(
+            key,
+            {
+                "alert_count": 0,
+                "_last_ts": 0,
+                "last_state_int": state,
+                "last_alert_time": None,
+            },
+        )
+        rec["alert_count"] += 1
+        t = entry.get("time") or 0
+        if t > rec["_last_ts"]:
+            rec["_last_ts"] = t
+            rec["last_state_int"] = state
+            rec["last_alert_time"] = _ts(t)
+
+    rows = sorted(
+        [
+            {
+                **dict(zip(key_fields, k, strict=False)),
+                "alert_count": v["alert_count"],
+                "last_state": state_map.get(v["last_state_int"], str(v["last_state_int"])),
+                "last_alert_time": v["last_alert_time"],
+            }
+            for k, v in counts.items()
+        ],
+        key=lambda x: x["alert_count"],
+        reverse=True,
+    )
+    return rows, warnings, len(data) >= _NOISY_MAX_ALERTS
+
+
 async def thruk_top_noisy_hosts(
     since: str | None = "-24h",
     until: str | None = None,
@@ -553,58 +627,28 @@ async def thruk_top_noisy_hosts(
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
-    extra["type[~]"] = "^HOST ALERT"
     if since:
         extra["time[gte]"] = since
     if until:
         extra["time[lte]"] = until
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        "sort": "-time",
-        "columns": "host_name,state,time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+
+    rows, warnings, hit_limit = await _aggregate_alerts(
+        type_regex="^HOST ALERT",
+        key_fields=("host_name",),
+        state_map=HOST_STATES,
+        extra_params=extra,
+        backends=backends,
     )
-    if not isinstance(data, list):
-        data = []
-
-    # Aggregate — skip state=0 (UP = recovery for hosts)
-    counts: dict[str, dict[str, Any]] = {}
-    for entry in data:
-        state = entry.get("state", -1)
-        if state == 0:
-            continue
-        h = entry.get("host_name") or ""
-        if h not in counts:
-            counts[h] = {
-                "alert_count": 0,
-                "_last_ts": 0,
-                "last_state_int": state,
-                "last_alert_time": None,
-            }
-        counts[h]["alert_count"] += 1
-        t = entry.get("time") or 0
-        if t > counts[h]["_last_ts"]:
-            counts[h]["_last_ts"] = t
-            counts[h]["last_state_int"] = state
-            counts[h]["last_alert_time"] = _ts(t)
-
-    total = sum(v["alert_count"] for v in counts.values())
-    results = sorted(
-        [
-            {
-                "host": h,
-                "alert_count": v["alert_count"],
-                "last_state": HOST_STATES.get(v["last_state_int"], str(v["last_state_int"])),
-                "last_alert_time": v["last_alert_time"],
-            }
-            for h, v in counts.items()
-        ],
-        key=lambda x: x["alert_count"],
-        reverse=True,
-    )[:limit]
+    total = sum(r["alert_count"] for r in rows)
+    results = [
+        {
+            "host": r["host_name"],
+            "alert_count": r["alert_count"],
+            "last_state": r["last_state"],
+            "last_alert_time": r["last_alert_time"],
+        }
+        for r in rows[:limit]
+    ]
 
     payload: dict[str, Any] = {
         "since": since,
@@ -612,7 +656,7 @@ async def thruk_top_noisy_hosts(
         "total_alerts_in_window": total,
         "results": results,
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -650,61 +694,29 @@ async def thruk_top_noisy_services(
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
-    extra["type[~]"] = "^SERVICE ALERT"
     if since:
         extra["time[gte]"] = since
     if until:
         extra["time[lte]"] = until
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        "sort": "-time",
-        "columns": "host_name,service_description,state,time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+
+    rows, warnings, hit_limit = await _aggregate_alerts(
+        type_regex="^SERVICE ALERT",
+        key_fields=("host_name", "service_description"),
+        state_map=SERVICE_STATES,
+        extra_params=extra,
+        backends=backends,
     )
-    if not isinstance(data, list):
-        data = []
-
-    # Aggregate — skip state=0 (OK = recovery for services)
-    counts: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in data:
-        state = entry.get("state", -1)
-        if state == 0:
-            continue
-        h = entry.get("host_name") or ""
-        svc = entry.get("service_description") or ""
-        key = (h, svc)
-        if key not in counts:
-            counts[key] = {
-                "alert_count": 0,
-                "_last_ts": 0,
-                "last_state_int": state,
-                "last_alert_time": None,
-            }
-        counts[key]["alert_count"] += 1
-        t = entry.get("time") or 0
-        if t > counts[key]["_last_ts"]:
-            counts[key]["_last_ts"] = t
-            counts[key]["last_state_int"] = state
-            counts[key]["last_alert_time"] = _ts(t)
-
-    total = sum(v["alert_count"] for v in counts.values())
-    results = sorted(
-        [
-            {
-                "host": h,
-                "service": svc,
-                "alert_count": v["alert_count"],
-                "last_state": SERVICE_STATES.get(v["last_state_int"], str(v["last_state_int"])),
-                "last_alert_time": v["last_alert_time"],
-            }
-            for (h, svc), v in counts.items()
-        ],
-        key=lambda x: x["alert_count"],
-        reverse=True,
-    )[:limit]
+    total = sum(r["alert_count"] for r in rows)
+    results = [
+        {
+            "host": r["host_name"],
+            "service": r["service_description"],
+            "alert_count": r["alert_count"],
+            "last_state": r["last_state"],
+            "last_alert_time": r["last_alert_time"],
+        }
+        for r in rows[:limit]
+    ]
 
     payload: dict[str, Any] = {
         "since": since,
@@ -712,7 +724,7 @@ async def thruk_top_noisy_services(
         "total_alerts_in_window": total,
         "results": results,
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
