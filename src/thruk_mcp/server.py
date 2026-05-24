@@ -22,6 +22,8 @@ import fnmatch
 import json
 import logging
 import re
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote as _urlquote
@@ -53,25 +55,12 @@ from .filters import (
 
 log = logging.getLogger("thruk_mcp.server")
 
-# Tools that mutate the monitoring state. Used by:
-# - read_only mode: removed entirely from the registry
-# - audit log: wrapped to emit a JSON line per invocation
-WRITE_TOOLS: frozenset[str] = frozenset(
-    {
-        "thruk_schedule_downtime",
-        "thruk_schedule_host_services_downtime",
-        "thruk_schedule_propagated_host_downtime",
-        "thruk_schedule_hostgroup_downtime",
-        "thruk_schedule_servicegroup_downtime",
-        "thruk_delete_downtime",
-        "thruk_delete_active_downtimes",
-        "thruk_delete_downtimes_by_filter",
-        "thruk_acknowledge",
-        "thruk_remove_acknowledgement",
-        "thruk_recheck",
-        "thruk_run_background_query",
-    }
-)
+# WRITE_TOOLS is derived from TOOL_REGISTRY below (see end of module).
+# Tools that mutate monitoring state — used by read_only mode and the audit log.
+# Do NOT define it here; it is auto-generated as:
+#   WRITE_TOOLS = frozenset(spec.name for spec in TOOL_REGISTRY if spec.is_write)
+# This forward-reference is safe because _is_auditable_write() only reads
+# WRITE_TOOLS at call-time, never at import-time.
 
 
 def _is_auditable_write(name: str, arguments: dict[str, Any]) -> bool:
@@ -2398,388 +2387,552 @@ _BACKENDS = {
 }
 
 
-_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
-    "thruk_list_hosts": build_tool_schema(
-        FIELDS_HOSTS,
-        filter=filter_schema_property(FIELDS_HOSTS),
-        limit=_int(default=50),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_get_host": _s("host", host=_str("Host name"), backends=_BACKENDS),
-    "thruk_list_services": build_tool_schema(
-        FIELDS_SERVICES,
-        filter=filter_schema_property(FIELDS_SERVICES),
-        limit=_int(default=50),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_get_service": _s(
-        "host",
-        "service",
-        host=_str("Host name"),
-        service=_str("Service description"),
-        backends=_BACKENDS,
-    ),
-    "thruk_list_hostgroups": _s(
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_list_servicegroups": _s(
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_problems": build_tool_schema(
-        FIELDS_PROBLEMS,
-        filter=filter_schema_property(FIELDS_PROBLEMS),
-        limit=_int(default=100),
-        offset=_int(default=0),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_stats": _s(backends=_BACKENDS),
-    "thruk_list_downtimes": _s(
-        host=_OPT_STR,
-        active_only=_bool(default=True),
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_get_downtime": _s("downtime_id", downtime_id=_int(), backends=_BACKENDS),
-    "thruk_list_comments": _s(
-        host=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_sites": _s(),
-    "thruk_top_noisy_hosts": build_tool_schema(
-        FIELDS_NOISY_HOSTS,
-        filter=filter_schema_property(FIELDS_NOISY_HOSTS),
-        hours=_int(default=24),
-        limit=_int(default=10),
-        backends=_BACKENDS,
-    ),
-    "thruk_top_noisy_services": build_tool_schema(
-        FIELDS_NOISY_SERVICES,
-        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-        hours=_int(default=24),
-        limit=_int(default=10),
-        backends=_BACKENDS,
-    ),
-    "thruk_flap_summary": build_tool_schema(
-        FIELDS_NOISY_SERVICES,
-        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-        hours=_int(default=24),
-        limit=_int(default=10),
-        min_transitions=_int(default=3),
-        backends=_BACKENDS,
-    ),
-    "thruk_concurrent_failures": build_tool_schema(
-        FIELDS_NOISY_HOSTS,
-        filter=filter_schema_property(FIELDS_NOISY_HOSTS),
-        since={
-            "anyOf": [{"type": "string"}, {"type": "null"}],
-            "default": "-1h",
-            "description": (
-                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
-                'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
-            ),
-        },
-        until=_OPT_STR,
-        window_minutes=_int("Sliding window width in minutes.", default=5),
-        min_hosts=_int(
-            "Minimum number of distinct hosts failing in a window to be reported.",
-            default=3,
-        ),
-        backends=_BACKENDS,
-    ),
-    "thruk_alert_heatmap": build_tool_schema(
-        FIELDS_NOISY_SERVICES,
-        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-        since={
-            "anyOf": [{"type": "string"}, {"type": "null"}],
-            "default": "-24h",
-            "description": (
-                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
-                'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
-            ),
-        },
-        until=_OPT_STR,
-        bucket={
-            "type": "string",
-            "default": "1h",
-            "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
-            "enum": ["15m", "30m", "1h", "6h", "1d"],
-        },
-        backends=_BACKENDS,
-    ),
-    "thruk_recurring_problems": build_tool_schema(
-        FIELDS_NOISY_SERVICES,
-        filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-        since={
-            "anyOf": [{"type": "string"}, {"type": "null"}],
-            "default": "-24h",
-            "description": (
-                'Start of analysis window. Thruk relative time ("-2h", "-7d") '
-                'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
-            ),
-        },
-        until=_OPT_STR,
-        min_alerts=_int(
-            "Minimum number of non-recovery alert events to be included (default 5).",
-            default=5,
-        ),
-        limit=_int("Maximum number of results (default 10).", default=10),
-        backends=_BACKENDS,
-    ),
-    "thruk_list_logs": build_tool_schema(
-        FIELDS_LOGS,
-        filter=filter_schema_property(FIELDS_LOGS),
-        since=_OPT_STR,
-        until=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_list_alerts": build_tool_schema(
-        FIELDS_ALERTS,
-        filter=filter_schema_property(FIELDS_ALERTS),
-        since=_OPT_STR,
-        until=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_list_notifications": build_tool_schema(
-        FIELDS_NOTIFICATIONS,
-        filter=filter_schema_property(FIELDS_NOTIFICATIONS),
-        since=_OPT_STR,
-        until=_OPT_STR,
-        limit=_int(default=100),
-        offset=_int(default=0),
-        sort=_str(),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_recent_events": build_tool_schema(
-        FIELDS_LOGS,
-        filter=filter_schema_property(FIELDS_LOGS),
-        hours=_int(default=1),
-        only_alerts=_bool(default=False),
-        limit=_int(default=100),
-        offset=_int(default=0),
-        columns=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_query": _s(
-        "path",
-        path=_str("Path after /thruk/r, e.g. /hosts/srv01/services"),
-        method=_str(),
-        params=_OPT_OBJ,
-        data=_OPT_OBJ,
-        backends=_BACKENDS,
-    ),
-    "thruk_run_background_query": _s(
-        "path",
-        path=_str("Path after /thruk/r"),
-        method=_str(),
-        params=_OPT_OBJ,
-        data=_OPT_OBJ,
-        backends=_BACKENDS,
-        poll_timeout={"type": "number", "default": 300.0},
-    ),
-    # write tools
-    "thruk_schedule_downtime": _s(
-        "host",
-        host=_str("Host name"),
-        service=_OPT_STR,
-        comment=_str(),
-        author=_str(),
-        start_time=_str(),
-        end_time=_str(),
-        duration_minutes=_OPT_INT,
-        fixed=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    "thruk_schedule_host_services_downtime": _s(
-        "host",
-        host=_str("Host name"),
-        comment=_str(),
-        author=_str(),
-        start_time=_str(),
-        end_time=_str(),
-        duration_minutes=_OPT_INT,
-        fixed=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    "thruk_schedule_propagated_host_downtime": _s(
-        "host",
-        host=_str("Host name"),
-        triggered=_bool(default=False),
-        comment=_str(),
-        author=_str(),
-        start_time=_str(),
-        end_time=_str(),
-        duration_minutes=_OPT_INT,
-        fixed=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    "thruk_schedule_hostgroup_downtime": _s(
-        "hostgroup",
-        hostgroup=_str("Hostgroup name"),
-        target=_str(),
-        comment=_str(),
-        author=_str(),
-        start_time=_str(),
-        end_time=_str(),
-        duration_minutes=_OPT_INT,
-        fixed=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    "thruk_schedule_servicegroup_downtime": _s(
-        "servicegroup",
-        servicegroup=_str("Servicegroup name"),
-        target=_str(),
-        comment=_str(),
-        author=_str(),
-        start_time=_str(),
-        end_time=_str(),
-        duration_minutes=_OPT_INT,
-        fixed=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    "thruk_delete_downtime": _s(
-        "downtime_id",
-        "host",
-        downtime_id=_int(),
-        host=_str(),
-        service=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_delete_active_downtimes": _s(
-        "host",
-        host=_str(),
-        service=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_delete_downtimes_by_filter": _s(
-        host=_OPT_STR,
-        hostgroup=_OPT_STR,
-        service=_OPT_STR,
-        start_time=_OPT_STR,
-        comment=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_acknowledge": _s(
-        "host",
-        host=_str("Host name"),
-        service=_OPT_STR,
-        comment=_str(),
-        author=_str(),
-        sticky=_bool(default=True),
-        notify=_bool(default=True),
-        persistent=_bool(default=False),
-        backends=_BACKENDS,
-    ),
-    "thruk_remove_acknowledgement": _s(
-        "host",
-        host=_str(),
-        service=_OPT_STR,
-        backends=_BACKENDS,
-    ),
-    "thruk_recheck": _s(
-        "host",
-        host=_str("Host name"),
-        service=_OPT_STR,
-        forced=_bool(default=True),
-        backends=_BACKENDS,
-    ),
-    # semantic problem tools (issue #52)
-    "thruk_oldest_problems": _s(
-        limit=_int("Maximum number of results (default 20).", default=20),
-        backends=_BACKENDS,
-    ),
-    "thruk_unacked_critical": _s(
-        threshold_minutes=_int(
-            "Minimum unacknowledged duration in minutes (default 60).", default=60
-        ),
-        backends=_BACKENDS,
-    ),
-    "thruk_stale_acks": _s(
-        min_days=_int("Minimum acknowledgement age in days (default 7).", default=7),
-        limit=_int("Maximum number of results (default 100).", default=100),
-        backends=_BACKENDS,
-    ),
-    "thruk_problems_by_hostgroup": _s(backends=_BACKENDS),
-}
-
 # ---------------------------------------------------------------------------
-# Dispatch table: tool name → implementation coroutine
+# ToolSpec: unified tool registration (issue #85)
 # ---------------------------------------------------------------------------
 
-_TOOL_DISPATCH: dict[str, Any] = {
-    "thruk_top_noisy_hosts": thruk_top_noisy_hosts,
-    "thruk_top_noisy_services": thruk_top_noisy_services,
-    "thruk_flap_summary": thruk_flap_summary,
-    # trends & history tools (issue #57)
-    "thruk_alert_heatmap": thruk_alert_heatmap,
-    "thruk_recurring_problems": thruk_recurring_problems,
-    "thruk_list_hosts": thruk_list_hosts,
-    "thruk_get_host": thruk_get_host,
-    "thruk_list_services": thruk_list_services,
-    "thruk_get_service": thruk_get_service,
-    "thruk_list_hostgroups": thruk_list_hostgroups,
-    "thruk_list_servicegroups": thruk_list_servicegroups,
-    "thruk_problems": thruk_problems,
-    "thruk_stats": thruk_stats,
-    "thruk_list_downtimes": thruk_list_downtimes,
-    "thruk_get_downtime": thruk_get_downtime,
-    "thruk_list_comments": thruk_list_comments,
-    "thruk_sites": thruk_sites,
-    "thruk_list_logs": thruk_list_logs,
-    "thruk_list_alerts": thruk_list_alerts,
-    "thruk_list_notifications": thruk_list_notifications,
-    "thruk_recent_events": thruk_recent_events,
-    "thruk_query": thruk_query,
-    "thruk_run_background_query": thruk_run_background_query,
-    "thruk_schedule_downtime": thruk_schedule_downtime,
-    "thruk_schedule_host_services_downtime": thruk_schedule_host_services_downtime,
-    "thruk_schedule_propagated_host_downtime": thruk_schedule_propagated_host_downtime,
-    "thruk_schedule_hostgroup_downtime": thruk_schedule_hostgroup_downtime,
-    "thruk_schedule_servicegroup_downtime": thruk_schedule_servicegroup_downtime,
-    "thruk_delete_downtime": thruk_delete_downtime,
-    "thruk_delete_active_downtimes": thruk_delete_active_downtimes,
-    "thruk_delete_downtimes_by_filter": thruk_delete_downtimes_by_filter,
-    "thruk_acknowledge": thruk_acknowledge,
-    "thruk_remove_acknowledgement": thruk_remove_acknowledgement,
-    "thruk_recheck": thruk_recheck,
-    # semantic problem tools (issue #52)
-    "thruk_oldest_problems": thruk_oldest_problems,
-    "thruk_unacked_critical": thruk_unacked_critical,
-    "thruk_stale_acks": thruk_stale_acks,
-    "thruk_problems_by_hostgroup": thruk_problems_by_hostgroup,
-    # concurrent failure detection (issue #54)
-    "thruk_concurrent_failures": thruk_concurrent_failures,
-}
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Single source of truth for a registered MCP tool.
+
+    Ties together the tool name, its async implementation, the explicit JSON
+    Schema for its input, and whether it mutates monitoring state (``is_write``).
+
+    Downstream structures are auto-derived — never edit them by hand:
+    - ``_TOOL_DISPATCH``  = {spec.name: spec.fn   for spec in TOOL_REGISTRY}
+    - ``_TOOL_SCHEMAS``   = {spec.name: spec.schema for spec in TOOL_REGISTRY}
+    - ``WRITE_TOOLS``     = frozenset(spec.name for spec in TOOL_REGISTRY if spec.is_write)
+
+    Adding a new tool requires exactly one entry here; ``WRITE_TOOLS`` cannot
+    fall out of sync with the schema or dispatch table.
+    """
+
+    name: str
+    fn: Callable[..., Coroutine[Any, Any, str]]
+    schema: dict[str, Any]
+    is_write: bool = False
+
+
+# ---------------------------------------------------------------------------
+# TOOL_REGISTRY: one entry per tool (issue #85)
+# ---------------------------------------------------------------------------
+
+TOOL_REGISTRY: list[ToolSpec] = [
+    # ---------------------------------------------------------------- noisy / flap
+    ToolSpec(
+        name="thruk_top_noisy_hosts",
+        fn=thruk_top_noisy_hosts,
+        schema=build_tool_schema(
+            FIELDS_NOISY_HOSTS,
+            filter=filter_schema_property(FIELDS_NOISY_HOSTS),
+            hours=_int(default=24),
+            limit=_int(default=10),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_top_noisy_services",
+        fn=thruk_top_noisy_services,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+            hours=_int(default=24),
+            limit=_int(default=10),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_flap_summary",
+        fn=thruk_flap_summary,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+            hours=_int(default=24),
+            limit=_int(default=10),
+            min_transitions=_int(default=3),
+            backends=_BACKENDS,
+        ),
+    ),
+    # ---------------------------------------------------------------- trends & history (issue #57)
+    ToolSpec(
+        name="thruk_alert_heatmap",
+        fn=thruk_alert_heatmap,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-24h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+                ),
+            },
+            until=_OPT_STR,
+            bucket={
+                "type": "string",
+                "default": "1h",
+                "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
+                "enum": ["15m", "30m", "1h", "6h", "1d"],
+            },
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_recurring_problems",
+        fn=thruk_recurring_problems,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-24h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+                ),
+            },
+            until=_OPT_STR,
+            min_alerts=_int(
+                "Minimum number of non-recovery alert events to be included (default 5).",
+                default=5,
+            ),
+            limit=_int("Maximum number of results (default 10).", default=10),
+            backends=_BACKENDS,
+        ),
+    ),
+    # ---------------------------------------------------------------- host / service listing
+    ToolSpec(
+        name="thruk_list_hosts",
+        fn=thruk_list_hosts,
+        schema=build_tool_schema(
+            FIELDS_HOSTS,
+            filter=filter_schema_property(FIELDS_HOSTS),
+            limit=_int(default=50),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_get_host",
+        fn=thruk_get_host,
+        schema=_s("host", host=_str("Host name"), backends=_BACKENDS),
+    ),
+    ToolSpec(
+        name="thruk_list_services",
+        fn=thruk_list_services,
+        schema=build_tool_schema(
+            FIELDS_SERVICES,
+            filter=filter_schema_property(FIELDS_SERVICES),
+            limit=_int(default=50),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_get_service",
+        fn=thruk_get_service,
+        schema=_s(
+            "host",
+            "service",
+            host=_str("Host name"),
+            service=_str("Service description"),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_list_hostgroups",
+        fn=thruk_list_hostgroups,
+        schema=_s(
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_list_servicegroups",
+        fn=thruk_list_servicegroups,
+        schema=_s(
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_problems",
+        fn=thruk_problems,
+        schema=build_tool_schema(
+            FIELDS_PROBLEMS,
+            filter=filter_schema_property(FIELDS_PROBLEMS),
+            limit=_int(default=100),
+            offset=_int(default=0),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(name="thruk_stats", fn=thruk_stats, schema=_s(backends=_BACKENDS)),
+    # ---------------------------------------------------------------- downtime / comment
+    ToolSpec(
+        name="thruk_list_downtimes",
+        fn=thruk_list_downtimes,
+        schema=_s(
+            host=_OPT_STR,
+            active_only=_bool(default=True),
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_get_downtime",
+        fn=thruk_get_downtime,
+        schema=_s("downtime_id", downtime_id=_int(), backends=_BACKENDS),
+    ),
+    ToolSpec(
+        name="thruk_list_comments",
+        fn=thruk_list_comments,
+        schema=_s(
+            host=_OPT_STR,
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(name="thruk_sites", fn=thruk_sites, schema=_s()),
+    # ---------------------------------------------------------------- log / alert / notification
+    ToolSpec(
+        name="thruk_list_logs",
+        fn=thruk_list_logs,
+        schema=build_tool_schema(
+            FIELDS_LOGS,
+            filter=filter_schema_property(FIELDS_LOGS),
+            since=_OPT_STR,
+            until=_OPT_STR,
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_list_alerts",
+        fn=thruk_list_alerts,
+        schema=build_tool_schema(
+            FIELDS_ALERTS,
+            filter=filter_schema_property(FIELDS_ALERTS),
+            since=_OPT_STR,
+            until=_OPT_STR,
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_list_notifications",
+        fn=thruk_list_notifications,
+        schema=build_tool_schema(
+            FIELDS_NOTIFICATIONS,
+            filter=filter_schema_property(FIELDS_NOTIFICATIONS),
+            since=_OPT_STR,
+            until=_OPT_STR,
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_recent_events",
+        fn=thruk_recent_events,
+        schema=build_tool_schema(
+            FIELDS_LOGS,
+            filter=filter_schema_property(FIELDS_LOGS),
+            hours=_int(default=1),
+            only_alerts=_bool(default=False),
+            limit=_int(default=100),
+            offset=_int(default=0),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    # ---------------------------------------------------------------- raw query (read + write)
+    ToolSpec(
+        name="thruk_query",
+        fn=thruk_query,
+        schema=_s(
+            "path",
+            path=_str("Path after /thruk/r, e.g. /hosts/srv01/services"),
+            method=_str(),
+            params=_OPT_OBJ,
+            data=_OPT_OBJ,
+            backends=_BACKENDS,
+        ),
+        # thruk_query serves both reads (GET/HEAD) and writes (POST/PUT/DELETE).
+        # It is intentionally NOT marked is_write=True here so it is never
+        # stripped in read_only mode; _is_auditable_write() handles write-method
+        # auditing at call-time by inspecting the `method` argument.
+    ),
+    ToolSpec(
+        name="thruk_run_background_query",
+        fn=thruk_run_background_query,
+        schema=_s(
+            "path",
+            path=_str("Path after /thruk/r"),
+            method=_str(),
+            params=_OPT_OBJ,
+            data=_OPT_OBJ,
+            backends=_BACKENDS,
+            poll_timeout={"type": "number", "default": 300.0},
+        ),
+        is_write=True,
+    ),
+    # ---------------------------------------------------------------- write: downtime scheduling
+    ToolSpec(
+        name="thruk_schedule_downtime",
+        fn=thruk_schedule_downtime,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            service=_OPT_STR,
+            comment=_str(),
+            author=_str(),
+            start_time=_str(),
+            end_time=_str(),
+            duration_minutes=_OPT_INT,
+            fixed=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_schedule_host_services_downtime",
+        fn=thruk_schedule_host_services_downtime,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            comment=_str(),
+            author=_str(),
+            start_time=_str(),
+            end_time=_str(),
+            duration_minutes=_OPT_INT,
+            fixed=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_schedule_propagated_host_downtime",
+        fn=thruk_schedule_propagated_host_downtime,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            triggered=_bool(default=False),
+            comment=_str(),
+            author=_str(),
+            start_time=_str(),
+            end_time=_str(),
+            duration_minutes=_OPT_INT,
+            fixed=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_schedule_hostgroup_downtime",
+        fn=thruk_schedule_hostgroup_downtime,
+        schema=_s(
+            "hostgroup",
+            hostgroup=_str("Hostgroup name"),
+            target=_str(),
+            comment=_str(),
+            author=_str(),
+            start_time=_str(),
+            end_time=_str(),
+            duration_minutes=_OPT_INT,
+            fixed=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_schedule_servicegroup_downtime",
+        fn=thruk_schedule_servicegroup_downtime,
+        schema=_s(
+            "servicegroup",
+            servicegroup=_str("Servicegroup name"),
+            target=_str(),
+            comment=_str(),
+            author=_str(),
+            start_time=_str(),
+            end_time=_str(),
+            duration_minutes=_OPT_INT,
+            fixed=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    # ---------------------------------------------------------------- write: downtime deletion
+    ToolSpec(
+        name="thruk_delete_downtime",
+        fn=thruk_delete_downtime,
+        schema=_s(
+            "downtime_id",
+            "host",
+            downtime_id=_int(),
+            host=_str(),
+            service=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_delete_active_downtimes",
+        fn=thruk_delete_active_downtimes,
+        schema=_s(
+            "host",
+            host=_str(),
+            service=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_delete_downtimes_by_filter",
+        fn=thruk_delete_downtimes_by_filter,
+        schema=_s(
+            host=_OPT_STR,
+            hostgroup=_OPT_STR,
+            service=_OPT_STR,
+            start_time=_OPT_STR,
+            comment=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    # ---------------------------------------------------------------- write: ack / recheck
+    ToolSpec(
+        name="thruk_acknowledge",
+        fn=thruk_acknowledge,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            service=_OPT_STR,
+            comment=_str(),
+            author=_str(),
+            sticky=_bool(default=True),
+            notify=_bool(default=True),
+            persistent=_bool(default=False),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_remove_acknowledgement",
+        fn=thruk_remove_acknowledgement,
+        schema=_s(
+            "host",
+            host=_str(),
+            service=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_recheck",
+        fn=thruk_recheck,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            service=_OPT_STR,
+            forced=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    # -------------------------------------------------------- semantic problem tools (issue #52)
+    ToolSpec(
+        name="thruk_oldest_problems",
+        fn=thruk_oldest_problems,
+        schema=_s(
+            limit=_int("Maximum number of results (default 20).", default=20),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_unacked_critical",
+        fn=thruk_unacked_critical,
+        schema=_s(
+            threshold_minutes=_int(
+                "Minimum unacknowledged duration in minutes (default 60).", default=60
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_stale_acks",
+        fn=thruk_stale_acks,
+        schema=_s(
+            min_days=_int("Minimum acknowledgement age in days (default 7).", default=7),
+            limit=_int("Maximum number of results (default 100).", default=100),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_problems_by_hostgroup",
+        fn=thruk_problems_by_hostgroup,
+        schema=_s(backends=_BACKENDS),
+    ),
+    # -------------------------------------------------- concurrent failure detection (issue #54)
+    ToolSpec(
+        name="thruk_concurrent_failures",
+        fn=thruk_concurrent_failures,
+        schema=build_tool_schema(
+            FIELDS_NOISY_HOSTS,
+            filter=filter_schema_property(FIELDS_NOISY_HOSTS),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-1h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
+                ),
+            },
+            until=_OPT_STR,
+            window_minutes=_int("Sliding window width in minutes.", default=5),
+            min_hosts=_int(
+                "Minimum number of distinct hosts failing in a window to be reported.",
+                default=3,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Derived structures — auto-generated from TOOL_REGISTRY; never edit manually
+# ---------------------------------------------------------------------------
+
+_TOOL_DISPATCH: dict[str, Any] = {spec.name: spec.fn for spec in TOOL_REGISTRY}
+_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {spec.name: spec.schema for spec in TOOL_REGISTRY}
+# Tools that mutate monitoring state — used by read_only mode and the audit log.
+WRITE_TOOLS: frozenset[str] = frozenset(spec.name for spec in TOOL_REGISTRY if spec.is_write)
 
 
 # ---------------------------------------------------------------------------
