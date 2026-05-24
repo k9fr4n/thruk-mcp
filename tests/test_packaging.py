@@ -449,3 +449,103 @@ class TestConsolidatedStateMaps:
         assert server.SVC_STATE_MAP is SVC_STATE_INT, (
             "server.SVC_STATE_MAP must be the same object as constants.SVC_STATE_INT (issue #81)"
         )
+
+
+class TestNoMiscOverride:
+    """Regression tests for issue #82: stale mypy override must not silence misc errors.
+
+    Bug before fix (issue #82):
+        # pyproject.toml contained:
+        # [[tool.mypy.overrides]]
+        # module = "thruk_mcp.server"
+        # disable_error_code = ["misc"]  # FastMCP decorators confuse type-checker
+        #
+        # The comment referenced FastMCP decorators, but the project had already
+        # migrated to ``mcp.server.Server`` directly.  The override silently hid
+        # real type errors across the largest file in the project (2 496 lines).
+
+    Fix (issue #82):
+        - Remove the ``[[tool.mypy.overrides]]`` block.
+        - Verify mypy's ``warn_unused_ignores = true`` is set to catch future stale suppressions.
+        - Add these regression tests to prevent the override from coming back.
+    """
+
+    PYPROJECT = Path(__file__).parent.parent / "pyproject.toml"
+    SRC_DIR = Path(__file__).parent.parent / "src" / "thruk_mcp"
+
+    def _pyproject_text(self) -> str:
+        return self.PYPROJECT.read_text(encoding="utf-8")
+
+    def _server_source(self) -> str:
+        return (self.SRC_DIR / "server.py").read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # pyproject.toml must NOT suppress misc for server
+    # ------------------------------------------------------------------
+
+    def test_no_misc_override_for_server(self) -> None:
+        """pyproject.toml must not contain a [[tool.mypy.overrides]] block that disables
+        misc errors for thruk_mcp.server (issue #82).
+
+        The override was added when the project used FastMCP decorators.  After migrating
+        to ``mcp.server.Server`` directly it became stale and masked real type errors.
+        """
+        import re
+
+        text = self._pyproject_text()
+        # Look for any overrides block that mentions thruk_mcp.server AND misc together
+        # (within a reasonable proximity - 5 lines of each other).
+        overrides_blocks = re.findall(
+            r"\[\[tool\.mypy\.overrides\]\].*?(?=\[\[|\Z)", text, re.DOTALL
+        )
+        for block in overrides_blocks:
+            if "thruk_mcp.server" in block and "misc" in block:
+                raise AssertionError(
+                    "pyproject.toml still contains a [[tool.mypy.overrides]] block that disables "
+                    "'misc' for thruk_mcp.server (issue #82). Remove it and fix the underlying "
+                    "type errors instead."
+                )
+
+    def test_warn_unused_ignores_is_enabled(self) -> None:
+        """mypy must have ``warn_unused_ignores = true`` to catch stale type suppressions.
+
+        This setting causes mypy to flag ``# type: ignore`` comments that are no longer
+        needed, preventing the accumulation of stale suppressions like the one removed
+        in issue #82.
+        """
+        text = self._pyproject_text()
+        assert "warn_unused_ignores = true" in text, (
+            "pyproject.toml is missing `warn_unused_ignores = true` in [tool.mypy] (issue #82). "
+            "Without this, stale `# type: ignore` comments accumulate silently."
+        )
+
+    # ------------------------------------------------------------------
+    # server.py must not have bare (codeless) type: ignore comments
+    # ------------------------------------------------------------------
+
+    def test_no_bare_type_ignore_in_server(self) -> None:
+        """server.py must not contain bare ``# type: ignore`` without an error code.
+
+        Narrow per-error-code suppression (e.g. ``# type: ignore[misc]``) is acceptable
+        when strictly necessary, but bare ``# type: ignore`` silences ALL mypy errors on
+        a line and is too broad.  Existing suppressed lines must include a code and an
+        inline explanation comment (``# why: ...``).
+        """
+        import re
+
+        source = self._server_source()
+        # Match `# type: ignore` NOT followed by `[` (i.e. no error-code qualifier).
+        # Exclude lines that are themselves pure-comment lines (unlikely, but safe).
+        bad_lines = []
+        for i, line in enumerate(source.splitlines(), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue  # skip pure comment lines
+            if re.search(r"#\s*type:\s*ignore\s*(?!\[)", line):
+                bad_lines.append((i, line.strip()))
+
+        assert not bad_lines, (
+            "server.py contains bare `# type: ignore` without an error code (issue #82).\n"
+            "Use narrow suppressions like `# type: ignore[misc]  # why: <reason>` instead.\n"
+            "Offending lines:\n" + "\n".join(f"  L{no}: {txt}" for no, txt in bad_lines)
+        )
