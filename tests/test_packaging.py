@@ -300,3 +300,152 @@ class TestParametrisedTypeHints:
             assert re.search(pattern, source), (
                 f"Helper `{fn}` in server.py does not declare `-> dict[str, Any]:` (issue #80)"
             )
+
+
+class TestConsolidatedStateMaps:
+    """Regression tests for issue #81: state maps must live only in constants.py.
+
+    Bug before fix (issue #81):
+        # server.py defined HOST_STATES, SERVICE_STATES, HOST_STATE_MAP, SVC_STATE_MAP
+        # filters.py defined _HOST_STATE_MAP, _SVC_STATE_MAP
+        # Both sets were duplicates with no shared source of truth.
+        # Editing one file but not the other would silently cause inconsistencies.
+
+    Fix: create constants.py as the single source of truth and import from there
+    in both server.py and filters.py.
+    """
+
+    SRC_DIR = Path(__file__).parent.parent / "src" / "thruk_mcp"
+
+    def _read(self, name: str) -> str:
+        return (self.SRC_DIR / name).read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # constants.py exports
+    # ------------------------------------------------------------------
+
+    def test_constants_module_exists(self) -> None:
+        """src/thruk_mcp/constants.py must exist (issue #81)."""
+        assert (self.SRC_DIR / "constants.py").exists(), (
+            "constants.py not found in src/thruk_mcp/ (issue #81)"
+        )
+
+    def test_constants_exports_all_four_maps(self) -> None:
+        """constants.py must export HOST_STATE_STR, HOST_STATE_INT, SVC_STATE_STR, SVC_STATE_INT."""
+        from thruk_mcp import constants
+
+        for name in ("HOST_STATE_STR", "HOST_STATE_INT", "SVC_STATE_STR", "SVC_STATE_INT"):
+            assert hasattr(constants, name), f"constants.py is missing {name!r} (issue #81)"
+
+    def test_host_state_str_values(self) -> None:
+        """HOST_STATE_STR must map 0->UP, 1->DOWN, 2->UNREACHABLE."""
+        from thruk_mcp.constants import HOST_STATE_STR
+
+        assert HOST_STATE_STR[0] == "UP"
+        assert HOST_STATE_STR[1] == "DOWN"
+        assert HOST_STATE_STR[2] == "UNREACHABLE"
+
+    def test_svc_state_str_values(self) -> None:
+        """SVC_STATE_STR must map 0->OK, 1->WARNING, 2->CRITICAL, 3->UNKNOWN."""
+        from thruk_mcp.constants import SVC_STATE_STR
+
+        assert SVC_STATE_STR[0] == "OK"
+        assert SVC_STATE_STR[1] == "WARNING"
+        assert SVC_STATE_STR[2] == "CRITICAL"
+        assert SVC_STATE_STR[3] == "UNKNOWN"
+
+    def test_host_state_int_roundtrip(self) -> None:
+        """HOST_STATE_INT must accept both lowercase names and numeric strings."""
+        from thruk_mcp.constants import HOST_STATE_INT
+
+        assert HOST_STATE_INT["up"] == 0
+        assert HOST_STATE_INT["down"] == 1
+        assert HOST_STATE_INT["unreachable"] == 2
+        assert HOST_STATE_INT["0"] == 0
+        assert HOST_STATE_INT["2"] == 2
+
+    def test_svc_state_int_roundtrip(self) -> None:
+        """SVC_STATE_INT must accept both lowercase names and numeric strings."""
+        from thruk_mcp.constants import SVC_STATE_INT
+
+        assert SVC_STATE_INT["ok"] == 0
+        assert SVC_STATE_INT["warning"] == 1
+        assert SVC_STATE_INT["critical"] == 2
+        assert SVC_STATE_INT["unknown"] == 3
+        assert SVC_STATE_INT["3"] == 3
+
+    # ------------------------------------------------------------------
+    # server.py must NOT define its own copies
+    # ------------------------------------------------------------------
+
+    def test_server_does_not_define_host_states_inline(self) -> None:
+        """server.py must not have an inline dict literal for HOST_STATES (issue #81)."""
+        import re
+
+        source = self._read("server.py")
+        # Match only literal dict assignments like: HOST_STATES = {0: "UP", ...}
+        # An alias like: HOST_STATES: dict[int, str] = HOST_STATE_STR is fine.
+        m = re.search(r"^HOST_STATES\s*=\s*\{", source, re.MULTILINE)
+        assert not m, (
+            "server.py defines HOST_STATES as an inline dict -- should import from constants.py "
+            "(issue #81)"
+        )
+
+    def test_server_does_not_define_service_states_inline(self) -> None:
+        """server.py must not have an inline dict literal for SERVICE_STATES (issue #81)."""
+        import re
+
+        source = self._read("server.py")
+        m = re.search(r"^SERVICE_STATES\s*=\s*\{", source, re.MULTILINE)
+        assert not m, (
+            "server.py defines SERVICE_STATES as an inline dict -- should import from constants.py "
+            "(issue #81)"
+        )
+
+    # ------------------------------------------------------------------
+    # filters.py must NOT define its own copies
+    # ------------------------------------------------------------------
+
+    def test_filters_does_not_define_host_state_map_inline(self) -> None:
+        """filters.py must not have an inline dict literal for _HOST_STATE_MAP (issue #81)."""
+        import re
+
+        source = self._read("filters.py")
+        m = re.search(r"^_HOST_STATE_MAP\s*:\s*dict.*=\s*\{", source, re.MULTILINE)
+        assert not m, (
+            "filters.py defines _HOST_STATE_MAP as an inline dict -- "
+            "should alias from constants.py (issue #81)"
+        )
+
+    def test_filters_does_not_define_svc_state_map_inline(self) -> None:
+        """filters.py must not have an inline dict literal for _SVC_STATE_MAP (issue #81)."""
+        import re
+
+        source = self._read("filters.py")
+        m = re.search(r"^_SVC_STATE_MAP\s*:\s*dict.*=\s*\{", source, re.MULTILINE)
+        assert not m, (
+            "filters.py defines _SVC_STATE_MAP as an inline dict -- "
+            "should alias from constants.py (issue #81)"
+        )
+
+    # ------------------------------------------------------------------
+    # Runtime consistency: server aliases must point to the same objects
+    # ------------------------------------------------------------------
+
+    def test_server_aliases_are_identity(self) -> None:
+        """server.HOST_STATES and server.HOST_STATE_MAP must be the same objects as in constants."""
+        from thruk_mcp import server
+        from thruk_mcp.constants import HOST_STATE_INT, HOST_STATE_STR, SVC_STATE_INT, SVC_STATE_STR
+
+        assert server.HOST_STATES is HOST_STATE_STR, (
+            "server.HOST_STATES must be the same object as constants.HOST_STATE_STR (issue #81)"
+        )
+        assert server.SERVICE_STATES is SVC_STATE_STR, (
+            "server.SERVICE_STATES must be the same object as constants.SVC_STATE_STR (issue #81)"
+        )
+        assert server.HOST_STATE_MAP is HOST_STATE_INT, (
+            "server.HOST_STATE_MAP must be the same object as constants.HOST_STATE_INT (issue #81)"
+        )
+        assert server.SVC_STATE_MAP is SVC_STATE_INT, (
+            "server.SVC_STATE_MAP must be the same object as constants.SVC_STATE_INT (issue #81)"
+        )
