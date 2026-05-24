@@ -19,10 +19,10 @@ classifiers = [
   "Topic :: System :: Monitoring",
 ]
 dependencies = [
-  "mcp[cli]>=1.2.0",
-  "httpx>=0.27",
-  "pydantic>=2.5",
-  "uvicorn>=0.30",
+  "mcp[cli]>=1.2.0,<2.0",  # MCP SDK breaks at every minor; cap at major boundary
+  "httpx>=0.27,<1.0",       # httpx 0.28 had transport API breaks; cap before 1.0
+  "pydantic>=2.5",           # pydantic v3 not imminent; revisit when announced
+  "uvicorn>=0.30",           # low-risk transitive dep
 ]
 
 [project.optional-dependencies]
