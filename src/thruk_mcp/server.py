@@ -22,6 +22,7 @@ import fnmatch
 import json
 import logging
 import re
+from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
@@ -2268,21 +2269,43 @@ async def thruk_concurrent_failures(
     )
 
     window_secs = window_minutes * 60
-    n = len(events)
 
-    # Sliding window: anchor at each event i, collect distinct hosts in [T_i, T_i + W].
-    # O(n^2) -- acceptable for typical alert volumes over a few hours.
+    # Sliding-window scan — O(n log n) overall, O(n) window pass.
+    #
+    # Previous implementation (O(n²), issue #86):
+    #   for i in range(n):
+    #       t_anchor = events[i][0]
+    #       t_end = t_anchor + window_secs
+    #       hosts_in_window: set[str] = set()
+    #       for j in range(i, n):           # ← inner O(n) scan per anchor
+    #           if events[j][0] > t_end:
+    #               break
+    #           hosts_in_window.add(events[j][1])
+    #
+    # New implementation:
+    #   - A right-anchored deque tracks events in [ts - window_secs, ts].
+    #     Each event enters/leaves the deque at most once → O(n) pointer moves.
+    #   - A Counter tracks distinct hosts so that len(host_counts) is O(1)
+    #     instead of recomputing a set comprehension over the whole deque on
+    #     every iteration (which would re-introduce O(n²) behaviour when all
+    #     events fall in the same window).
+    #   - Capturing the host snapshot for hit_windows is O(k) where k is the
+    #     number of *distinct* hosts in the window — bounded by min(n, num_hosts).
     hit_windows: list[dict[str, Any]] = []
-    for i in range(n):
-        t_anchor = events[i][0]
-        t_end = t_anchor + window_secs
-        hosts_in_window: set[str] = set()
-        for j in range(i, n):
-            if events[j][0] > t_end:
-                break
-            hosts_in_window.add(events[j][1])
-        if len(hosts_in_window) >= min_hosts:
-            hit_windows.append({"start": t_anchor, "end": t_end, "hosts": hosts_in_window})
+    window_dq: deque[tuple[int, str]] = deque()
+    host_counts: Counter[str] = Counter()
+
+    for ts, host in events:
+        window_dq.append((ts, host))
+        host_counts[host] += 1
+        # Evict events that have fallen outside the left edge of the window
+        while window_dq and window_dq[0][0] < ts - window_secs:
+            old_host = window_dq.popleft()[1]
+            host_counts[old_host] -= 1
+            if host_counts[old_host] == 0:
+                del host_counts[old_host]
+        if len(host_counts) >= min_hosts:
+            hit_windows.append({"start": window_dq[0][0], "end": ts, "hosts": set(host_counts)})
 
     # Merge overlapping hit windows into bursts
     merged: list[dict[str, Any]] = []
