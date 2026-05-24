@@ -202,3 +202,101 @@ class TestFutureAnnotations:
         assert future_pos < asyncio_pos, (
             "`from __future__ import annotations` must appear before `import asyncio` in server.py"
         )
+
+
+class TestParametrisedTypeHints:
+    """Ensure bare ``dict`` / ``list[dict]`` annotations are gone from server.py (issue #80).
+
+    Un-parametrised ``dict`` and ``list[dict]`` give mypy no structural
+    information.  All occurrences should be ``dict[str, Any]`` (or a more
+    specific parametrised form) and ``list[dict[str, Any]]``.
+
+    Bug before fix (issue #80):
+        # server.py had >20 bare occurrences, e.g.:
+        # filter: dict | None = None
+        # rows: list[dict] = []
+        # params: dict = { ... }
+        # def _s(...) -> dict:
+
+    Fix: replace every occurrence with the properly parametrised equivalent.
+    """
+
+    SRC_DIR = Path(__file__).parent.parent / "src" / "thruk_mcp"
+
+    def _server_source(self) -> str:
+        return (self.SRC_DIR / "server.py").read_text(encoding="utf-8")
+
+    def test_no_bare_dict_or_none_annotation(self) -> None:
+        """``dict | None`` must not appear anywhere in server.py (use ``dict[str, Any] | None``)."""
+        import re
+
+        source = self._server_source()
+        # Exclude comments and docstrings (lines starting with # or inside triple-quotes)
+        code_lines = [
+            (i + 1, line)
+            for i, line in enumerate(source.splitlines())
+            if not line.lstrip().startswith("#")
+        ]
+        bad = [
+            (lineno, ln.strip()) for lineno, ln in code_lines if re.search(r"\bdict \| None\b", ln)
+        ]
+        assert not bad, (
+            "Bare `dict | None` found in server.py (issue #80); use `dict[str, Any] | None`:\n"
+            + "\n".join(f"  L{no}: {txt}" for no, txt in bad)
+        )
+
+    def test_no_bare_list_dict_annotation(self) -> None:
+        """``list[dict]`` must not appear in server.py (use ``list[dict[str, Any]]``)."""
+        import re
+
+        source = self._server_source()
+        bad = [
+            (i + 1, ln.strip())
+            for i, ln in enumerate(source.splitlines())
+            if re.search(r"list\[dict\](?!\[)", ln) and not ln.lstrip().startswith("#")
+        ]
+        assert not bad, (
+            "Bare `list[dict]` found in server.py (issue #80); use `list[dict[str, Any]]`:\n"
+            + "\n".join(f"  L{no}: {txt}" for no, txt in bad)
+        )
+
+    def test_no_bare_dict_variable_annotation(self) -> None:
+        """Local ``var: dict = {`` must not appear in server.py (use ``dict[str, Any]``)."""
+        import re
+
+        source = self._server_source()
+        bad = [
+            (i + 1, ln.strip())
+            for i, ln in enumerate(source.splitlines())
+            if re.search(r": dict\s*=\s*\{", ln) and not ln.lstrip().startswith("#")
+        ]
+        assert not bad, (
+            "Bare `: dict = {` annotation found in server.py (issue #80); use `dict[str, Any]`:\n"
+            + "\n".join(f"  L{no}: {txt}" for no, txt in bad)
+        )
+
+    def test_no_bare_dict_return_annotation(self) -> None:
+        """Function return type ``-> dict:`` must not appear in server.py."""
+        import re
+
+        source = self._server_source()
+        bad = [
+            (i + 1, ln.strip())
+            for i, ln in enumerate(source.splitlines())
+            if re.search(r"-> dict:", ln) and not ln.lstrip().startswith("#")
+        ]
+        assert not bad, (
+            "Bare `-> dict:` return annotation found in server.py (issue #80);"
+            " use `-> dict[str, Any]:`:\n" + "\n".join(f"  L{no}: {txt}" for no, txt in bad)
+        )
+
+    def test_schema_helpers_return_parametrised_dict(self) -> None:
+        """_s, _str, _int, _bool must declare ``-> dict[str, Any]`` return type in source."""
+        import re
+
+        source = self._server_source()
+        for fn in ("_s", "_str", "_int", "_bool"):
+            pattern = rf"def {re.escape(fn)}\(.*\) -> dict\[str, Any\]:"
+            assert re.search(pattern, source), (
+                f"Helper `{fn}` in server.py does not declare `-> dict[str, Any]:` (issue #80)"
+            )

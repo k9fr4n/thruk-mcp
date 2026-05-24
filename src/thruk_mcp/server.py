@@ -193,7 +193,7 @@ def _seg(value: str) -> str:
 
 
 def _build_cv_params(
-    custom_vars: dict | None,
+    custom_vars: dict[str, Any] | None,
     *,
     host_prefix: bool = False,
 ) -> dict[str, str]:
@@ -232,7 +232,7 @@ def _get_client() -> ThrukClient:
 
 
 async def thruk_list_hosts(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "name",
@@ -269,7 +269,7 @@ async def thruk_get_host(host: str, backends: str | None = None) -> str:
 
 
 async def thruk_list_services(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     limit: int = 50,
     offset: int = 0,
     sort: str = "host_name,description",
@@ -336,7 +336,7 @@ async def thruk_list_servicegroups(
 
 
 async def thruk_problems(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     limit: int = 100,
     offset: int = 0,
     columns: str | None = None,
@@ -436,7 +436,7 @@ async def thruk_sites() -> str:
 async def _resolve_hosts_to_regex(
     backends: str | None,
     hostgroup: str | None = None,
-    custom_vars: dict | None = None,
+    custom_vars: dict[str, Any] | None = None,
 ) -> str | None:
     """Resolve a hostgroup / custom-variable filter to a ``host_name[regex]`` pattern.
 
@@ -477,7 +477,7 @@ async def _fetch_logs(
     extra: dict[str, Any] | None = None,
     hostgroup: str | None = None,
     default_columns: str = DEFAULT_LOG_COLUMNS,
-    custom_vars: dict | None = None,
+    custom_vars: dict[str, Any] | None = None,
 ) -> tuple[Any, list[str]]:
     """Fetch log-family data with graceful per-backend fallback.
 
@@ -526,7 +526,7 @@ async def thruk_top_noisy_hosts(
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 10,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Return the top N hosts ranked by HOST ALERT count over a time window.
@@ -622,7 +622,7 @@ async def thruk_top_noisy_services(
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 10,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Return the top N services ranked by SERVICE ALERT count over a time window.
@@ -723,7 +723,7 @@ async def thruk_flap_summary(
     until: str | None = None,
     limit: int = 10,
     min_transitions: int = 3,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Return hosts and services with the most state transitions (flapping) over a time window.
@@ -872,7 +872,7 @@ async def thruk_alert_heatmap(
     since: str | None = "-24h",
     until: str | None = None,
     bucket: str = "1h",
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Return alert counts grouped by time bucket over a window.
@@ -983,7 +983,7 @@ async def thruk_recurring_problems(
     until: str | None = None,
     min_alerts: int = 5,
     limit: int = 10,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Return hosts/services that generated repeated alerts over a time window.
@@ -1090,7 +1090,7 @@ async def thruk_recurring_problems(
 
 
 async def _resolve_log_filter(
-    filter_node: dict | None,
+    filter_node: dict[str, Any] | None,
     allowed_fields: frozenset,
     backends: str | None,
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1133,7 +1133,7 @@ async def _resolve_hosts_to_regex_from_params(
 
 
 async def thruk_list_logs(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -1179,7 +1179,7 @@ async def thruk_list_logs(
 
 
 async def thruk_list_alerts(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -1225,7 +1225,7 @@ async def thruk_list_alerts(
 
 
 async def thruk_list_notifications(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     since: str | None = "-24h",
     until: str | None = None,
     limit: int = 100,
@@ -1271,7 +1271,7 @@ async def thruk_list_notifications(
 
 
 async def thruk_recent_events(
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     hours: int = 1,
     only_alerts: bool = False,
     limit: int = 100,
@@ -2020,7 +2020,7 @@ async def thruk_oldest_problems(
         _get_client().get("/services", params=svc_params, backends=be),
     )
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for h in hosts or []:
         lsc = int(h.get("last_state_change") or 0)
         rows.append(
@@ -2088,7 +2088,7 @@ async def thruk_unacked_critical(
         _get_client().get("/services", params=svc_params, backends=be),
     )
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for h in hosts or []:
         lsc = int(h.get("last_state_change") or 0)
         rows.append(
@@ -2132,7 +2132,7 @@ async def thruk_stale_acks(
     now = int(datetime.now().timestamp())
     threshold_ts = now - min_days * 86400
 
-    params: dict = {
+    params: dict[str, Any] = {
         "entry_type": 4,
         "entry_time[lte]": threshold_ts,
         "columns": "host_name,service_description,author,comment,entry_time,peer_name",
@@ -2141,7 +2141,7 @@ async def thruk_stale_acks(
     }
     data = await _get_client().get("/comments", params=params, backends=_backends(backends))
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for c in data or []:
         et = int(c.get("entry_time") or 0)
         rows.append(
@@ -2167,7 +2167,7 @@ async def thruk_problems_by_hostgroup(
     services_unknown}]`` sorted by severity (DOWN > CRIT > WARN). Only groups
     with at least one problem are included.
     """
-    params: dict = {
+    params: dict[str, Any] = {
         "columns": (
             "name,alias,"
             "num_hosts_down,num_hosts_unreachable,"
@@ -2176,7 +2176,7 @@ async def thruk_problems_by_hostgroup(
     }
     data = await _get_client().get("/hostgroups", params=params, backends=_backends(backends))
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for hg in data or []:
         hosts_down = int(hg.get("num_hosts_down") or 0) + int(hg.get("num_hosts_unreachable") or 0)
         services_crit = int(hg.get("num_services_crit") or 0)
@@ -2208,7 +2208,7 @@ async def thruk_concurrent_failures(
     until: str | None = None,
     window_minutes: int = 5,
     min_hosts: int = 3,
-    filter: dict | None = None,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Detect time windows where multiple hosts failed concurrently.
@@ -2325,21 +2325,21 @@ async def thruk_concurrent_failures(
 # ---------------------------------------------------------------------------
 
 
-def _s(*required: str, **props: Any) -> dict:
+def _s(*required: str, **props: Any) -> dict[str, Any]:
     """Shorthand to build a JSON-Schema object."""
     properties = {k: (v if isinstance(v, dict) else {"type": v}) for k, v in props.items()}
-    schema: dict = {"type": "object", "properties": properties}
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
         schema["required"] = list(required)
     return schema
 
 
-def _str(desc: str = "") -> dict:
+def _str(desc: str = "") -> dict[str, Any]:
     return {"type": "string", "description": desc} if desc else {"type": "string"}
 
 
-def _int(desc: str = "", default: int | None = None) -> dict:
-    d: dict = {"type": "integer"}
+def _int(desc: str = "", default: int | None = None) -> dict[str, Any]:
+    d: dict[str, Any] = {"type": "integer"}
     if desc:
         d["description"] = desc
     if default is not None:
@@ -2347,8 +2347,8 @@ def _int(desc: str = "", default: int | None = None) -> dict:
     return d
 
 
-def _bool(desc: str = "", default: bool | None = None) -> dict:
-    d: dict = {"type": "boolean"}
+def _bool(desc: str = "", default: bool | None = None) -> dict[str, Any]:
+    d: dict[str, Any] = {"type": "boolean"}
     if desc:
         d["description"] = desc
     if default is not None:
@@ -2383,7 +2383,7 @@ _BACKENDS = {
 }
 
 
-_TOOL_SCHEMAS: dict[str, dict] = {
+_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "thruk_list_hosts": build_tool_schema(
         FIELDS_HOSTS,
         filter=filter_schema_property(FIELDS_HOSTS),
@@ -2809,7 +2809,7 @@ class ThrukMCPServer:
             )
         return tools
 
-    async def call_tool(self, name: str, arguments: dict) -> list[TextContent]:
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> list[TextContent]:
         fn = self._enabled.get(name)
         if fn is None:
             raise ValueError(f"Unknown or disabled tool: {name!r}")
@@ -2875,7 +2875,7 @@ def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
         return await wrapper.list_tools()
 
     @wrapper._server.call_tool()
-    async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await wrapper.call_tool(name, arguments)
 
     return wrapper
