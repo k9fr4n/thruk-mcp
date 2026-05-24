@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from thruk_mcp.server import _list_params
+from thruk_mcp.helpers import _list_params
 
 DEFAULT = "name,state"
 

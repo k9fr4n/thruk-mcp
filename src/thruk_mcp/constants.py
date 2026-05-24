@@ -41,3 +41,43 @@ SVC_STATE_INT: dict[str, int] = {
     "2": 2,
     "3": 3,
 }
+
+# ---------------------------------------------------------------------------
+# Default columns for list endpoints
+# ---------------------------------------------------------------------------
+# Tight by design to minimise LLM token usage.  A typical Thruk host row has
+# ~80 attributes; returning all would blow the context for no reason.  Callers
+# can always override via the ``columns`` argument or use ``thruk_query``.
+
+DEFAULT_HOST_COLUMNS = (
+    "name,state,plugin_output,last_check,last_state_change,"
+    "acknowledged,scheduled_downtime_depth,notifications_enabled,"
+    "current_attempt,max_check_attempts,peer_name"
+)
+DEFAULT_SERVICE_COLUMNS = (
+    "host_name,description,state,plugin_output,last_check,last_state_change,"
+    "acknowledged,scheduled_downtime_depth,notifications_enabled,"
+    "current_attempt,max_check_attempts,peer_name"
+)
+DEFAULT_GROUP_COLUMNS = "name,alias,num_hosts,num_services,worst_host_state,worst_service_state"
+DEFAULT_LOG_COLUMNS = "time,type,class,host_name,service_description,state,state_type,message"
+# Notification-specific columns: contact_name and command_name are populated for class=3
+# log entries; state_type is alert-only and always null for notifications.
+DEFAULT_NOTIFICATION_COLUMNS = (
+    "time,type,class,host_name,service_description,state,contact_name,command_name,message"
+)
+DEFAULT_DOWNTIME_COLUMNS = (
+    "id,host_name,service_description,author,comment,"
+    "start_time,end_time,fixed,duration,triggered_by,peer_name"
+)
+DEFAULT_COMMENT_COLUMNS = (
+    "id,host_name,service_description,author,comment,entry_time,entry_type,persistent,peer_name"
+)
+
+# ---------------------------------------------------------------------------
+# Analysis constants
+# ---------------------------------------------------------------------------
+
+# Maximum number of raw log entries fetched for noisy-* aggregation queries.
+# Beyond this cap the aggregation may be incomplete; a _warning key is added.
+_NOISY_MAX_ALERTS: int = 10_000
