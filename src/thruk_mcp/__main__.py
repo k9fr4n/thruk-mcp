@@ -11,9 +11,19 @@ from mcp.server.stdio import stdio_server
 
 from .server import build_server
 
+log = logging.getLogger(__name__)
+
+_SSL_WARNING = (
+    "SECURITY WARNING: THRUK_VERIFY_SSL=false — TLS certificate verification is DISABLED. "
+    "All HTTPS connections to Thruk are vulnerable to MITM attacks. "
+    "Set THRUK_VERIFY_SSL=true (or remove the variable) for production use."
+)
+
 
 async def _run_stdio(log_level: str) -> None:
     server = build_server()
+    if not server._cfg.verify_ssl:
+        log.warning(_SSL_WARNING)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
@@ -31,6 +41,8 @@ async def _run_http(port: int, host: str, log_level: str) -> None:
     from starlette.routing import Mount, Route
 
     server = build_server()
+    if not server._cfg.verify_ssl:
+        log.warning(_SSL_WARNING)
     sse = SseServerTransport("/messages/")
 
     async def handle_sse(request):  # starlette Request type not imported in local scope

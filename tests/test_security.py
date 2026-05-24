@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import respx
 
 from thruk_mcp import audit
+from thruk_mcp.__main__ import _run_stdio
 from thruk_mcp.client import ThrukClient
 from thruk_mcp.config import ThrukConfig
 from thruk_mcp.server import WRITE_TOOLS, _is_auditable_write, build_server
@@ -487,3 +489,86 @@ async def test_audit_log_fires_for_thruk_query_post_error(caplog) -> None:
         assert payload["error"]
     finally:
         await _close(mcp)
+
+
+# ---------------------------------------------------------------------------
+# Issue #74 — No warning emitted at startup when THRUK_VERIFY_SSL=false
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (documented as a reminder of the vulnerability):
+#   build_server() would silently create an httpx.AsyncClient with verify=False
+#   when THRUK_VERIFY_SSL=false. Neither _run_stdio() nor _run_http() emitted
+#   any warning, making this dangerous configuration invisible to operators.
+#
+# The fix: both entry points call log.warning(_SSL_WARNING) immediately after
+# build_server() when server._cfg.verify_ssl is False.
+
+
+@pytest.mark.asyncio
+async def test_ssl_warning_emitted_in_stdio_when_verify_ssl_false(caplog) -> None:
+    """_run_stdio must log a security warning when verify_ssl=False.
+
+    Without the fix the warning was never emitted and operators had no
+    indication that TLS verification had been silently disabled.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", verify_ssl=False)
+
+    # Patch build_server to inject our insecure config, and stdio_server to
+    # avoid blocking on actual stdio streams.
+    read_mock = AsyncMock()
+    write_mock = AsyncMock()
+
+    class _FakeCtx:
+        async def __aenter__(self):
+            return (read_mock, write_mock)
+
+        async def __aexit__(self, *_):
+            pass
+
+    fake_server = build_server(cfg)
+    fake_server.run = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch("thruk_mcp.__main__.build_server", return_value=fake_server),
+        patch("thruk_mcp.__main__.stdio_server", return_value=_FakeCtx()),
+        caplog.at_level(logging.WARNING, logger="thruk_mcp.__main__"),
+    ):
+        await _run_stdio("INFO")
+
+    warning_records = [
+        r for r in caplog.records if r.name == "thruk_mcp.__main__" and r.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 1
+    assert "THRUK_VERIFY_SSL=false" in warning_records[0].message
+    assert "MITM" in warning_records[0].message
+
+
+@pytest.mark.asyncio
+async def test_no_ssl_warning_in_stdio_when_verify_ssl_true(caplog) -> None:
+    """_run_stdio must NOT log a security warning when verify_ssl=True (default)."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", verify_ssl=True)
+
+    read_mock = AsyncMock()
+    write_mock = AsyncMock()
+
+    class _FakeCtx:
+        async def __aenter__(self):
+            return (read_mock, write_mock)
+
+        async def __aexit__(self, *_):
+            pass
+
+    fake_server = build_server(cfg)
+    fake_server.run = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch("thruk_mcp.__main__.build_server", return_value=fake_server),
+        patch("thruk_mcp.__main__.stdio_server", return_value=_FakeCtx()),
+        caplog.at_level(logging.WARNING, logger="thruk_mcp.__main__"),
+    ):
+        await _run_stdio("INFO")
+
+    warning_records = [
+        r for r in caplog.records if r.name == "thruk_mcp.__main__" and r.levelno == logging.WARNING
+    ]
+    assert len(warning_records) == 0, "No SSL warning expected when verify_ssl=True"
