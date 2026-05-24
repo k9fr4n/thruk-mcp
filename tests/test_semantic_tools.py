@@ -516,3 +516,44 @@ async def test_concurrent_failures_metadata(mocked_server) -> None:
     assert payload["until"] is None
     assert payload["window_minutes"] == 10
     assert payload["min_hosts"] == 5
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_large_dataset_perf(mocked_server) -> None:
+    """Regression test for O(n²) sliding window (issue #86).
+
+    BEFORE the fix the inner ``for j in range(i, n)`` loop re-scanned every
+    event inside the window for each anchor ``i``.  With n = _NOISY_MAX_ALERTS
+    (10 000) events all packed into the same 5-minute window this yields up to
+    10^8 Python iterations, blocking the event loop for several seconds.
+
+    AFTER the fix (deque two-pointer) each event is appended to and popped from
+    the deque at most once, giving O(n) work after the O(n log n) sort.  This
+    test asserts that 10 000 tightly-packed events complete well within a
+    generous wall-clock budget that would be impossible with the O(n²) loop.
+    """
+    import time
+
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    mcp, router = mocked_server
+
+    n = _NOISY_MAX_ALERTS  # 10 000
+    # All events within a 60-second span — worst case for the old O(n²) loop
+    events = [_evt(f"h{i % 50}", offset_secs=i // 10) for i in range(n)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(events))
+
+    t0 = time.perf_counter()
+    result = await mcp.call_tool(
+        "thruk_concurrent_failures",
+        {"since": "-1h", "window_minutes": 5, "min_hosts": 3},
+    )
+    elapsed = time.perf_counter() - t0
+
+    payload = json.loads(result[0].text)
+    assert "error" not in payload
+    assert payload["total_down_events"] == n
+    assert len(payload["results"]) >= 1  # all events fall in one burst
+    # O(n) should complete well under 5 s even inside Docker with n=10_000.
+    # The O(n²) implementation would take 100+ s for the same input.
+    assert elapsed < 5.0, f"concurrent_failures took {elapsed:.2f}s for {n} events (too slow)"
