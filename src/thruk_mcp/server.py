@@ -69,6 +69,23 @@ WRITE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+
+def _is_auditable_write(name: str, arguments: dict[str, Any]) -> bool:
+    """Return True when this tool call should be recorded in the audit log.
+
+    ``WRITE_TOOLS`` covers all explicitly-listed mutating tools. ``thruk_query``
+    is intentionally absent from that set (it also serves read/GET requests and
+    must NOT be stripped in read-only mode), but its non-GET/HEAD invocations
+    are still writes and must be audited.  We inspect ``method`` at call time.
+    """
+    if name in WRITE_TOOLS:
+        return True
+    if name == "thruk_query":
+        method = str(arguments.get("method", "GET")).upper()
+        return method not in {"GET", "HEAD"}
+    return False
+
+
 HOST_STATES = {0: "UP", 1: "DOWN", 2: "UNREACHABLE"}
 SERVICE_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
 HOST_STATE_MAP = {"up": 0, "down": 1, "unreachable": 2, "0": 0, "1": 1, "2": 2}
@@ -2783,13 +2800,13 @@ class ThrukMCPServer:
         try:
             result = await fn(**arguments)
         except TypeError as exc:
-            if self._cfg.audit_log and name in WRITE_TOOLS:
+            if self._cfg.audit_log and _is_auditable_write(name, arguments):
                 audit.log_call(
                     name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
                 )
             raise ValueError(f"Invalid arguments for {name!r}: {exc}") from exc
         except ThrukError as exc:
-            if self._cfg.audit_log and name in WRITE_TOOLS:
+            if self._cfg.audit_log and _is_auditable_write(name, arguments):
                 audit.log_call(
                     name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
                 )
@@ -2798,7 +2815,7 @@ class ThrukMCPServer:
             # McpError(-32603) which the client shows as the generic
             # "tool execution failed" message, discarding the actual Thruk error.
             return [TextContent(type="text", text=f"Error: {exc}")]
-        if self._cfg.audit_log and name in WRITE_TOOLS:
+        if self._cfg.audit_log and _is_auditable_write(name, arguments):
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
 
