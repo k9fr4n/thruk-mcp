@@ -743,6 +743,44 @@ async def test_delete_active_downtimes_partial_failure(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_no_args_returns_graceful_error(
+    mocked_server,
+) -> None:
+    """Regression test for issue #71.
+
+    Before the fix, calling thruk_delete_downtimes_by_filter with no filter
+    arguments raised a bare ValueError that escaped call_tool and reached the
+    MCP SDK as a -32603 Internal Error.
+
+    Fix part 1: the tool function now raises ThrukError (not ValueError).
+    Fix part 2: ThrukMCPServer.call_tool catches (ThrukError, ValueError) and
+    returns a graceful 'Error: …' TextContent instead of re-raising.
+
+    The _ServerProxy used by most tests bypasses ThrukMCPServer.call_tool, so
+    this test calls wrapper.call_tool() directly to exercise the real handler.
+    """
+    from thruk_mcp.client import ThrukError
+
+    _proxy, _router = mocked_server
+    # Access the real ThrukMCPServer (not the _ServerProxy shim).
+    wrapper = _proxy._server
+
+    # Part 1: the tool itself must raise ThrukError, not ValueError.
+    import pytest
+
+    with pytest.raises(ThrukError, match="Provide at least one"):
+        await _proxy.call_tool("thruk_delete_downtimes_by_filter", {})
+
+    # Part 2: ThrukMCPServer.call_tool must catch ThrukError and return
+    # a graceful error TextContent — NOT raise to the MCP layer.
+    result = await wrapper.call_tool("thruk_delete_downtimes_by_filter", {})
+    assert len(result) == 1
+    text = result[0].text
+    assert text.startswith("Error:")
+    assert "provide" in text.lower()
+
+
+@pytest.mark.asyncio
 async def test_delete_downtimes_by_filter_picks_hostgroup_cmd(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/system/cmd/del_downtime_by_hostgroup_name").mock(
