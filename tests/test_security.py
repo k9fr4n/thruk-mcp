@@ -13,7 +13,7 @@ import respx
 from thruk_mcp import audit
 from thruk_mcp.client import ThrukClient
 from thruk_mcp.config import ThrukConfig
-from thruk_mcp.server import WRITE_TOOLS, build_server
+from thruk_mcp.server import WRITE_TOOLS, _is_auditable_write, build_server
 
 BASE = "https://thruk.test"
 
@@ -352,5 +352,138 @@ async def test_thruk_run_background_query_rejects_dotdot_traversal() -> None:
         assert "error" in payload
         assert ".." in payload["error"]
         assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+# ---------------------------------------------------------------------------
+# Issue #73 — thruk_query POST/DELETE bypasses the audit log
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (documented as a reminder of the vulnerability):
+#   thruk_query(path="/downtimes/42", method="DELETE") would execute the
+#   deletion successfully but emit NO audit record, silently bypassing
+#   the compliance mechanism. The audit gate checked `name in WRITE_TOOLS`
+#   and "thruk_query" was absent from that set.
+#
+# The fix: _is_auditable_write() additionally checks the `method` argument
+# when name == "thruk_query", treating any non-GET/HEAD method as a write.
+
+
+def test_is_auditable_write_returns_false_for_get_thruk_query() -> None:
+    """GET calls via thruk_query must NOT trigger the audit log."""
+    assert not _is_auditable_write("thruk_query", {"method": "GET", "path": "/hosts"})
+    assert not _is_auditable_write("thruk_query", {"path": "/hosts"})  # default GET
+    assert not _is_auditable_write("thruk_query", {"method": "get", "path": "/hosts"})  # ci
+
+
+def test_is_auditable_write_returns_true_for_post_delete_thruk_query() -> None:
+    """POST/PUT/DELETE/PATCH calls via thruk_query must be flagged as writes."""
+    for method in ("POST", "PUT", "DELETE", "PATCH", "post", "delete"):
+        assert _is_auditable_write("thruk_query", {"method": method, "path": "/x"}), method
+    assert not _is_auditable_write("thruk_query", {"method": "HEAD", "path": "/x"})
+
+
+def test_is_auditable_write_returns_true_for_write_tools() -> None:
+    """Existing WRITE_TOOLS must still be flagged regardless of arguments."""
+    for tool in WRITE_TOOLS:
+        assert _is_auditable_write(tool, {}), tool
+
+
+def test_is_auditable_write_returns_false_for_read_tools() -> None:
+    """Read-only tools must never be flagged."""
+    assert not _is_auditable_write("thruk_list_hosts", {})
+    assert not _is_auditable_write("thruk_get_host", {"host": "srv01"})
+    assert not _is_auditable_write("thruk_stats", {})
+
+
+@pytest.mark.asyncio
+async def test_audit_log_fires_for_thruk_query_post(caplog) -> None:
+    """A POST via thruk_query must be recorded in the audit log.
+
+    Without the fix, `name in WRITE_TOOLS` was False for thruk_query and
+    audit.log_call() was never reached — the write left no trace.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", auth_user="bob")
+    mcp = build_server(cfg)
+    try:
+        with caplog.at_level(logging.INFO, logger="thruk_mcp.audit"), respx.mock() as router:
+            router.post(f"{BASE}/r/downtimes/42").mock(
+                return_value=httpx.Response(200, json={"rc": 0})
+            )
+            await mcp.call_tool(
+                "thruk_query", {"path": "/downtimes/42", "method": "POST", "data": {"x": "y"}}
+            )
+        audit_records = [r for r in caplog.records if r.name == "thruk_mcp.audit"]
+        assert len(audit_records) == 1, "Expected exactly one audit record for POST thruk_query"
+        payload = json.loads(audit_records[0].message)
+        assert payload["tool"] == "thruk_query"
+        assert payload["user"] == "bob"
+        assert payload["status"] == "ok"
+        assert "ts" in payload
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_audit_log_fires_for_thruk_query_delete(caplog) -> None:
+    """A DELETE via thruk_query must be recorded in the audit log."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", auth_user="carol")
+    mcp = build_server(cfg)
+    try:
+        with caplog.at_level(logging.INFO, logger="thruk_mcp.audit"), respx.mock() as router:
+            router.delete(f"{BASE}/r/downtimes/99").mock(
+                return_value=httpx.Response(200, json={"rc": 0})
+            )
+            await mcp.call_tool("thruk_query", {"path": "/downtimes/99", "method": "DELETE"})
+        audit_records = [r for r in caplog.records if r.name == "thruk_mcp.audit"]
+        assert len(audit_records) == 1, "Expected exactly one audit record for DELETE thruk_query"
+        payload = json.loads(audit_records[0].message)
+        assert payload["tool"] == "thruk_query"
+        assert payload["user"] == "carol"
+        assert payload["status"] == "ok"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_audit_log_not_fired_for_thruk_query_get(caplog) -> None:
+    """A GET via thruk_query must NOT appear in the audit log."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", auth_user="dave")
+    mcp = build_server(cfg)
+    try:
+        with caplog.at_level(logging.INFO, logger="thruk_mcp.audit"), respx.mock() as router:
+            router.get(f"{BASE}/r/hosts").mock(
+                return_value=httpx.Response(200, json=[{"name": "srv01"}])
+            )
+            await mcp.call_tool("thruk_query", {"path": "/hosts"})
+        audit_records = [r for r in caplog.records if r.name == "thruk_mcp.audit"]
+        assert len(audit_records) == 0, "GET thruk_query must not produce an audit record"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_audit_log_fires_for_thruk_query_post_error(caplog) -> None:
+    """A failed POST via thruk_query must still be recorded with status=error."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", auth_user="eve")
+    mcp = build_server(cfg)
+    mcp._thruk_client.max_retries = 0  # type: ignore[attr-defined]
+    try:
+        with caplog.at_level(logging.INFO, logger="thruk_mcp.audit"), respx.mock() as router:
+            router.post(f"{BASE}/r/hosts/srv01/cmd/do_something").mock(
+                return_value=httpx.Response(500, text="server error")
+            )
+            result = await mcp.call_tool(
+                "thruk_query",
+                {"path": "/hosts/srv01/cmd/do_something", "method": "POST"},
+            )
+        assert result[0].text.startswith("Error:")
+        audit_records = [r for r in caplog.records if r.name == "thruk_mcp.audit"]
+        assert len(audit_records) == 1, "Expected error audit record for failed POST thruk_query"
+        payload = json.loads(audit_records[0].message)
+        assert payload["status"] == "error"
+        assert payload["tool"] == "thruk_query"
+        assert payload["error"]
     finally:
         await _close(mcp)
