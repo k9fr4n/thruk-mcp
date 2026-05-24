@@ -1122,6 +1122,98 @@ async def test_top_noisy_services_since_until(mocked_server) -> None:
     assert payload["until"] == "2026-05-20 23:59:59"
 
 
+# ---- _aggregate_alerts helper (issue #84) ----
+# Tests verifying that the shared aggregation helper used by both
+# thruk_top_noisy_hosts and thruk_top_noisy_services produces equivalent
+# behaviour to the former inline implementations.
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_host_type_regex(mocked_server) -> None:
+    """_aggregate_alerts (via noisy_hosts) must always send type[~]=^HOST ALERT.
+
+    Before the refactor this was set inline; after extraction the helper
+    enforces the type regex regardless of what extra_params contains.
+    """
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-1h"})
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^HOST ALERT", "helper must enforce HOST ALERT type regex"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_service_type_regex(mocked_server) -> None:
+    """_aggregate_alerts (via noisy_services) must always send type[~]=^SERVICE ALERT."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_top_noisy_services", {"since": "-1h"})
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^SERVICE ALERT", "helper must enforce SERVICE ALERT type regex"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_hit_limit_warning(mocked_server) -> None:
+    """_aggregate_alerts sets _warning when data reaches _NOISY_MAX_ALERTS entries.
+
+    Regression: before the refactor the cap check used ``len(data) >= _NOISY_MAX_ALERTS``
+    inline. The helper must preserve this behaviour.
+    """
+    import json as _json
+
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    mcp, router = mocked_server
+    # Produce exactly _NOISY_MAX_ALERTS entries, all non-recovery (state=1).
+    raw = [_make_log_entry(f"h{i % 10}", 1, i) for i in range(_NOISY_MAX_ALERTS)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {})
+    payload = _json.loads(result[0].text)
+    assert "_warning" in payload, "_warning must appear when data hits the hard cap"
+    assert str(_NOISY_MAX_ALERTS) in payload["_warning"]
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_below_limit_no_warning(mocked_server) -> None:
+    """No _warning key when data is below the hard cap."""
+    import json as _json
+
+    mcp, router = mocked_server
+    raw = [_make_log_entry("alpha", 1, i) for i in range(5)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {})
+    payload = _json.loads(result[0].text)
+    assert "_warning" not in payload, "_warning must not appear below the hard cap"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_state_map_host(mocked_server) -> None:
+    """last_state uses HOST_STATES for noisy_hosts (DOWN/UNREACHABLE)."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([_make_log_entry("srv", 1)])  # state 1 = DOWN
+    )
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {})
+    payload = _json.loads(result[0].text)
+    assert payload["results"][0]["last_state"] == "DOWN"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_alerts_helper_state_map_service(mocked_server) -> None:
+    """last_state uses SERVICE_STATES for noisy_services (WARNING/CRITICAL/UNKNOWN)."""
+    import json as _json
+
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok([_make_log_entry("srv", 2, service="HTTP")])  # state 2 = CRITICAL
+    )
+    result = await mcp.call_tool("thruk_top_noisy_services", {})
+    payload = _json.loads(result[0].text)
+    assert payload["results"][0]["last_state"] == "CRITICAL"
+
+
 # ---------------------------------------------------------------- Flap summary
 
 
