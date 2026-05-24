@@ -15,6 +15,7 @@ functions defined as closures inside ``build_server()``, yielding
      any catalog label gymnastics.
 """
 
+import asyncio
 import fnmatch
 import json
 import logging
@@ -379,8 +380,11 @@ async def thruk_problems(
 
 async def thruk_stats(backends: str | None = None) -> str:
     """Aggregated host/service statistics."""
-    hosts = await _get_client().get("/hosts/stats", backends=_backends(backends))
-    services = await _get_client().get("/services/stats", backends=_backends(backends))
+    be = _backends(backends)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts/stats", backends=be),
+        _get_client().get("/services/stats", backends=be),
+    )
     return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
 
 
@@ -1886,15 +1890,19 @@ async def _problems_resource() -> str:
         "columns": DEFAULT_SERVICE_COLUMNS,
         "limit": 500,
     }
-    hosts = await _get_client().get("/hosts", params=host_params)
-    services = await _get_client().get("/services", params=svc_params)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts", params=host_params),
+        _get_client().get("/services", params=svc_params),
+    )
     return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
 
 
 async def _stats_resource() -> str:
     """Aggregated host/service stats (cached ~15s)."""
-    hosts = await _get_client().get("/hosts/stats")
-    services = await _get_client().get("/services/stats")
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts/stats"),
+        _get_client().get("/services/stats"),
+    )
     return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
 
 
@@ -2004,8 +2012,11 @@ async def thruk_oldest_problems(
         "columns": "host_name,description,state,last_state_change,peer_name",
         "limit": limit,
     }
-    hosts = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
-    services = await _get_client().get("/services", params=svc_params, backends=_backends(backends))
+    be = _backends(backends)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts", params=host_params, backends=be),
+        _get_client().get("/services", params=svc_params, backends=be),
+    )
 
     rows: list[dict] = []
     for h in hosts or []:
@@ -2069,8 +2080,11 @@ async def thruk_unacked_critical(
         "columns": "host_name,description,state,last_state_change,peer_name",
         "limit": 500,
     }
-    hosts = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
-    services = await _get_client().get("/services", params=svc_params, backends=_backends(backends))
+    be = _backends(backends)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts", params=host_params, backends=be),
+        _get_client().get("/services", params=svc_params, backends=be),
+    )
 
     rows: list[dict] = []
     for h in hosts or []:
