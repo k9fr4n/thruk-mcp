@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep GitHub Actions SHA pins up to date automatically.
+  # Dependabot will open PRs whenever a new patch/minor/major release
+  # is available and update both the SHA and the inline version comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "ci/cd"
+      - "security"
