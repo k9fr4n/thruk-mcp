@@ -312,11 +312,12 @@ class ThrukClient:
         full_url = self._url(result_path, backends=())
         log.info("Thruk job %s submitted, polling %s", job_id, full_url)
 
-        deadline = asyncio.get_event_loop().time() + poll_timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + poll_timeout
         while True:
             resp = await self._client.get(full_url, follow_redirects=False)
             if resp.status_code in (301, 302, 303, 307, 308):
-                if asyncio.get_event_loop().time() >= deadline:
+                if loop.time() >= deadline:
                     raise ThrukError(f"Thruk job {job_id} did not complete in {poll_timeout}s")
                 await asyncio.sleep(poll_interval)
                 continue

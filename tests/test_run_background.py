@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -69,6 +71,35 @@ async def test_run_background_poll_url_uses_rest_prefix() -> None:
         assert "/r/thruk/jobs/" in str(poll_req.url), (
             f"Poll URL {poll_req.url!r} does not go through the REST prefix /r/"
         )
+
+
+@pytest.mark.asyncio
+async def test_run_background_uses_running_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """run_background() must not call asyncio.get_event_loop() (deprecated in 3.10+,
+    RuntimeError in 3.14). get_running_loop() must be used instead."""
+
+    def fail_get_event_loop() -> object:
+        raise AssertionError("asyncio.get_event_loop() must not be called — use get_running_loop()")
+
+    monkeypatch.setattr(asyncio, "get_event_loop", fail_get_event_loop)
+
+    async with respx.mock() as router:
+        router.post("https://thruk.test/r/config/check").mock(
+            return_value=httpx.Response(
+                200,
+                json={"job_id": "xyz", "result_url": "/thruk/jobs/xyz/output"},
+            )
+        )
+        router.get(POLL_URL.replace("abc", "xyz")).mock(
+            side_effect=[
+                httpx.Response(302, headers={"Location": POLL_URL.replace("abc", "xyz")}),
+                httpx.Response(200, json={"rc": 0, "output": "ok"}),
+            ]
+        )
+        async with ThrukClient(CFG, max_retries=0) as client:
+            data = await client.run_background("/config/check", poll_interval=0.0)
+
+    assert data == {"rc": 0, "output": "ok"}
 
 
 @pytest.mark.asyncio
