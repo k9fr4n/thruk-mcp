@@ -1290,6 +1290,30 @@ async def thruk_recent_events(
     return json.dumps(data, indent=2, default=str)
 
 
+def _validate_rest_path(path: str) -> str | None:
+    """Return an error JSON string if *path* is unsafe, or ``None`` when valid.
+
+    Rules enforced:
+    - Must start with ``/`` (not a relative reference).
+    - Must not contain ``..`` (path-traversal segment) which could escape the
+      ``/thruk/r/`` REST prefix and reach internal CGI endpoints.
+
+    Callers should return the error string immediately without making any
+    HTTP request.
+    """
+    if not path.startswith("/"):
+        return json.dumps(
+            {"error": (f"Invalid path: must start with '/'. Got: {path!r}")},
+            indent=2,
+        )
+    if ".." in path:
+        return json.dumps(
+            {"error": (f"Invalid path: must not contain '..'. Got: {path!r}")},
+            indent=2,
+        )
+    return None
+
+
 async def thruk_query(
     path: str,
     method: str = "GET",
@@ -1309,6 +1333,10 @@ async def thruk_query(
     Prefer ``thruk_list_hosts``/``thruk_list_services`` with ``custom_vars={}`` which
     handle this automatically.
     """
+    path_err = _validate_rest_path(path)
+    if path_err is not None:
+        return path_err
+
     _CV_Q_WARNING = (
         "q= filter contains 'custom_variables' which is silently ignored by Thruk's REST "
         "q= parser — results likely include ALL objects (filter not applied). "
@@ -1346,6 +1374,10 @@ async def thruk_run_background_query(
     Use this for expensive queries: full config dumps, large availability
     reports, recursive config checks. Same `path` semantics as
     `thruk_query`."""
+    path_err = _validate_rest_path(path)
+    if path_err is not None:
+        return path_err
+
     result = await _get_client().run_background(
         path,
         method=method.upper(),
