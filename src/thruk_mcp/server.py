@@ -15,6 +15,8 @@ functions defined as closures inside ``build_server()``, yielding
      any catalog label gymnastics.
 """
 
+from __future__ import annotations
+
 import asyncio
 import fnmatch
 import json

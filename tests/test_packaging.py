@@ -145,3 +145,60 @@ class TestDependencyBounds:
         dep = self._find_dep("uvicorn")
         assert dep is not None, "uvicorn dependency not found in pyproject.toml"
         assert "<" not in dep, f"uvicorn dependency '{dep}' unexpectedly gained an upper bound."
+
+
+class TestFutureAnnotations:
+    """Ensure every source file has `from __future__ import annotations` (issue #79).
+
+    Without this import, union syntax like ``X | None`` and ``dict[str, Any]``
+    used throughout the package are runtime expressions evaluated at import
+    time on Python 3.10.  With it they become lazy strings — consistent with
+    the rest of the codebase and slightly faster at module load.
+
+    Bug before fix (issue #79):
+        # server.py was the only file missing the import:
+        # import asyncio
+        # import fnmatch
+        # ...
+        # Union types such as `str | None` were runtime-evaluated.
+
+    Fix: add `from __future__ import annotations` after the module docstring
+    in server.py so every source file is consistent.
+    """
+
+    SRC_DIR = Path(__file__).parent.parent / "src" / "thruk_mcp"
+
+    def _source_files(self) -> list[Path]:
+        return sorted(self.SRC_DIR.glob("*.py"))
+
+    def test_all_source_files_have_future_annotations(self) -> None:
+        """Every .py file under src/thruk_mcp must carry `from __future__ import annotations`."""
+        missing: list[str] = []
+        for path in self._source_files():
+            source = path.read_text(encoding="utf-8")
+            if "from __future__ import annotations" not in source:
+                missing.append(path.name)
+        assert not missing, (
+            f"Files missing `from __future__ import annotations` (issue #79): {missing}"
+        )
+
+    def test_server_py_has_future_annotations(self) -> None:
+        """Regression: server.py specifically must have the future-annotations import."""
+        server_py = self.SRC_DIR / "server.py"
+        assert server_py.exists(), "src/thruk_mcp/server.py not found"
+        source = server_py.read_text(encoding="utf-8")
+        assert "from __future__ import annotations" in source, (
+            "server.py is missing `from __future__ import annotations` (issue #79)"
+        )
+
+    def test_server_py_future_import_before_stdlib(self) -> None:
+        """The future import must appear before any stdlib import in server.py."""
+        server_py = self.SRC_DIR / "server.py"
+        source = server_py.read_text(encoding="utf-8")
+        future_pos = source.find("from __future__ import annotations")
+        asyncio_pos = source.find("import asyncio")
+        assert future_pos != -1, "server.py missing future annotations import"
+        assert asyncio_pos != -1, "server.py missing `import asyncio`"
+        assert future_pos < asyncio_pos, (
+            "`from __future__ import annotations` must appear before `import asyncio` in server.py"
+        )

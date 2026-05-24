@@ -86,6 +86,4 @@ no_implicit_optional = true
 check_untyped_defs = true
 disallow_untyped_defs = false  # relaxed for now; flip to true in v0.5
 
-[[tool.mypy.overrides]]
-module = "thruk_mcp.server"
-disable_error_code = ["misc"]  # FastMCP decorators confuse type-checker
+
