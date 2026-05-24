@@ -32,6 +32,7 @@ from mcp.types import TextContent, Tool
 from . import audit
 from .client import ThrukClient, ThrukError
 from .config import ThrukConfig
+from .constants import HOST_STATE_INT, HOST_STATE_STR, SVC_STATE_INT, SVC_STATE_STR
 from .filters import (
     FIELDS_ALERTS,
     FIELDS_HOSTS,
@@ -89,10 +90,12 @@ def _is_auditable_write(name: str, arguments: dict[str, Any]) -> bool:
     return False
 
 
-HOST_STATES = {0: "UP", 1: "DOWN", 2: "UNREACHABLE"}
-SERVICE_STATES = {0: "OK", 1: "WARNING", 2: "CRITICAL", 3: "UNKNOWN"}
-HOST_STATE_MAP = {"up": 0, "down": 1, "unreachable": 2, "0": 0, "1": 1, "2": 2}
-SVC_STATE_MAP = {"ok": 0, "warning": 1, "critical": 2, "unknown": 3, "0": 0, "1": 1, "2": 2, "3": 3}
+# State maps -- sourced from constants.py (single source of truth, issue #81).
+# Module-level aliases preserve any external import of these names unchanged.
+HOST_STATES: dict[int, str] = HOST_STATE_STR
+SERVICE_STATES: dict[int, str] = SVC_STATE_STR
+HOST_STATE_MAP: dict[str, int] = HOST_STATE_INT
+SVC_STATE_MAP: dict[str, int] = SVC_STATE_INT
 
 # Default columns: tight by design to minimize LLM token usage. A typical
 # Thruk host row has ~80 attributes (custom vars, perf_data expansions, ...);

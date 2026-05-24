@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .constants import HOST_STATE_INT, SVC_STATE_INT
+
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
@@ -71,27 +73,11 @@ _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})
 LOG_LOOKUP_FIELDS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 
 # ---------------------------------------------------------------------------
-# State maps
+# State maps  (imported from constants — single source of truth)
 # ---------------------------------------------------------------------------
 
-_HOST_STATE_MAP: dict[str, int] = {
-    "up": 0,
-    "down": 1,
-    "unreachable": 2,
-    "0": 0,
-    "1": 1,
-    "2": 2,
-}
-_SVC_STATE_MAP: dict[str, int] = {
-    "ok": 0,
-    "warning": 1,
-    "critical": 2,
-    "unknown": 3,
-    "0": 0,
-    "1": 1,
-    "2": 2,
-    "3": 3,
-}
+_HOST_STATE_MAP: dict[str, int] = HOST_STATE_INT
+_SVC_STATE_MAP: dict[str, int] = SVC_STATE_INT
 
 # ---------------------------------------------------------------------------
 # Errors
