@@ -1797,7 +1797,7 @@ async def thruk_delete_downtimes_by_filter(
     if comment:
         payload["comment"] = comment
     if not payload:
-        raise ValueError("Provide at least one of host, hostgroup, service, start_time, comment.")
+        raise ThrukError("Provide at least one of host, hostgroup, service, start_time, comment.")
     if hostgroup:
         cmd = "del_downtime_by_hostgroup_name"
     elif host:
@@ -2805,7 +2805,7 @@ class ThrukMCPServer:
                     name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
                 )
             raise ValueError(f"Invalid arguments for {name!r}: {exc}") from exc
-        except ThrukError as exc:
+        except (ThrukError, ValueError) as exc:
             if self._cfg.audit_log and _is_auditable_write(name, arguments):
                 audit.log_call(
                     name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
@@ -2814,6 +2814,9 @@ class ThrukMCPServer:
             # Raising here causes the low-level MCP SDK to emit a protocol-level
             # McpError(-32603) which the client shows as the generic
             # "tool execution failed" message, discarding the actual Thruk error.
+            # ValueError is included as a defensive catch: tools that raise it
+            # (e.g. validation guards before the fix for issue #71) must not
+            # escape to the MCP protocol layer as an unhandled exception.
             return [TextContent(type="text", text=f"Error: {exc}")]
         if self._cfg.audit_log and _is_auditable_write(name, arguments):
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
