@@ -25,7 +25,7 @@ import re
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from mcp.server import Server
@@ -313,7 +313,7 @@ async def thruk_list_downtimes(
     if host:
         params["host_name"] = host
     if active_only:
-        now = int(datetime.now().timestamp())
+        now = _now_utc_epoch()
         params["start_time[lte]"] = now
         params["end_time[gte]"] = now
     data = await _get_client().get("/downtimes", params=params, backends=_backends(backends))
@@ -758,6 +758,11 @@ _THRUK_REL_RE = re.compile(r"^-(\d+)([smhdw])$")
 _THRUK_REL_MULT: dict[str, int] = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
+def _now_utc_epoch() -> int:
+    """Current Unix epoch as Thruk expects it (always UTC, TZ-independent)."""
+    return int(datetime.now(timezone.utc).timestamp())
+
+
 def _parse_thruk_time(value: str | None) -> int | None:
     """Parse a Thruk relative ('-2h', '-30m', '-7d') or absolute time to a Unix timestamp.
 
@@ -771,14 +776,16 @@ def _parse_thruk_time(value: str | None) -> int | None:
     m = _THRUK_REL_RE.match(value)
     if m:
         n, unit = int(m.group(1)), m.group(2)
-        return int(datetime.now().timestamp()) - n * _THRUK_REL_MULT[unit]
+        return _now_utc_epoch() - n * _THRUK_REL_MULT[unit]
     try:
         return int(value)
     except ValueError:
         pass
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
         try:
-            return int(datetime.strptime(value, fmt).timestamp())
+            # Bare ISO strings from callers have no TZ offset; Thruk stores times in UTC,
+            # so we interpret them as UTC (not local TZ) to avoid off-by-1h DST errors.
+            return int(datetime.strptime(value, fmt).replace(tzinfo=timezone.utc).timestamp())
         except ValueError:
             continue
     return None
@@ -853,7 +860,7 @@ async def thruk_alert_heatmap(
 
     # Build continuous timeline — fill empty buckets between window boundaries
     ts_since = _parse_thruk_time(since)
-    ts_until = _parse_thruk_time(until) if until else int(datetime.now().timestamp())
+    ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
 
     results: list[dict[str, Any]] = []
     if ts_since is not None and ts_until is not None:
@@ -863,7 +870,9 @@ async def thruk_alert_heatmap(
         while b <= last_b:
             results.append(
                 {
-                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
                     "count": raw_counts.get(b, 0),
                 }
             )
@@ -873,7 +882,9 @@ async def thruk_alert_heatmap(
         for b in sorted(raw_counts):
             results.append(
                 {
-                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
                     "count": raw_counts[b],
                 }
             )
@@ -1685,7 +1696,7 @@ async def thruk_delete_active_downtimes(
     be = _backends(backends)
 
     # Query active downtimes: started and not yet ended (same logic as thruk_list_downtimes).
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     params: dict[str, Any] = {
         "host_name": host,
         "start_time[lte]": now,
@@ -1967,7 +1978,7 @@ async def thruk_oldest_problems(
     Returns a flat list of ``{host, service, state, since, duration_human}``
     (at most ``limit`` items, default 20).
     """
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     host_params = {
         "state[gte]": 1,
         "acknowledged": 0,
@@ -2033,7 +2044,7 @@ async def thruk_unacked_critical(
     Returns ``[{host, service, state, duration_minutes}]`` sorted by
     ``duration_minutes`` descending (longest-unacked first).
     """
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     threshold_ts = now - threshold_minutes * 60
 
     host_params = {
@@ -2099,7 +2110,7 @@ async def thruk_stale_acks(
     Returns ``[{host, service, ack_author, ack_comment, ack_since_days}]``
     sorted by age descending (stalest first).
     """
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     threshold_ts = now - min_days * 86400
 
     params: dict[str, Any] = {
