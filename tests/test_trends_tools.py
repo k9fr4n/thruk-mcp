@@ -224,6 +224,75 @@ async def test_heatmap_invalid_filter(mocked_server) -> None:
     assert "error" in payload
 
 
+@pytest.mark.asyncio
+async def test_heatmap_bucket_start_is_utc_aware_iso(mocked_server) -> None:
+    """Regression test for issue #140: bucket_start must be a UTC-aware ISO-8601 string.
+
+    OLD (broken, deprecated since Python 3.12, removed in future):
+        datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Returns a naive datetime; the trailing 'Z' is a lie — if ever compared
+        # to an aware datetime the comparison raises TypeError.
+
+    FIXED (current implementation):
+        datetime.fromtimestamp(b, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Returns an aware datetime in UTC; the 'Z' suffix is accurate.
+
+    Both produce the same string representation, but only the fixed version is
+    correct — this test guards against a silent revert of the fix.
+
+    Specifically verified:
+    - Every bucket_start ends with 'Z'.
+    - Every bucket_start round-trips through datetime.fromisoformat() (Python 3.11+
+      accepts trailing 'Z' as UTC; a naive string would still parse, so we also
+      check .tzinfo is not None after parsing via datetime.strptime + replace).
+    - The first bucket_start matches the expected UTC string for BASE_TS exactly.
+    """
+    mcp, router = mocked_server
+
+    # Place one alert in each of two consecutive 1-hour buckets.
+    hour = 3600
+    entries = [_log(BASE_TS + 10), _log(BASE_TS + hour + 10)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+
+    since = str(BASE_TS)
+    until = str(BASE_TS + 2 * hour)
+
+    result = await mcp.call_tool(
+        "thruk_alert_heatmap",
+        {"since": since, "until": until, "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["results"], "Expected non-empty results list"
+
+    # Expected string for BASE_TS (1_748_822_400) in UTC:
+    #   datetime.fromtimestamp(1_748_822_400, tz=timezone.utc)
+    #   => 2025-06-02 00:00:00+00:00  => "2025-06-02T00:00:00Z"
+    expected_first = datetime.fromtimestamp(BASE_TS, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert payload["results"][0]["bucket_start"] == expected_first, (
+        f"First bucket_start mismatch: {payload['results'][0]['bucket_start']!r} "
+        f"!= {expected_first!r}"
+    )
+
+    for bucket in payload["results"]:
+        bs: str = bucket["bucket_start"]
+
+        # Must end with 'Z' (UTC marker).
+        assert bs.endswith("Z"), f"bucket_start {bs!r} does not end with 'Z'"
+
+        # Must be a valid ISO-8601 datetime string of the expected format.
+        try:
+            dt = datetime.strptime(bs, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"bucket_start {bs!r} is not valid ISO-8601: {exc}") from exc
+
+        # The reconstructed datetime must be timezone-aware.
+        assert dt.tzinfo is not None, (
+            f"Reconstructed datetime for {bs!r} has no tzinfo — "
+            "indicates the source used a naive utcfromtimestamp() path"
+        )
+
+
 # ---------------------------------------------------------------------------
 # thruk_recurring_problems
 # ---------------------------------------------------------------------------
