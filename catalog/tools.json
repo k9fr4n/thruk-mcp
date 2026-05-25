@@ -284,6 +284,144 @@
     }
   },
   {
+    "name": "thruk_host_availability",
+    "description": "Compute availability (uptime / SLA %) for a host over a configurable time window. Returns time_up_percent, time_down_percent, time_unreachable_percent and scheduled_* equivalents. since/until accept Thruk relative times or ISO datetimes. timeperiod (e.g. lastmonth, last24hours) overrides since/until.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-7d"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeperiod": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "with_downtimes": {
+          "type": "boolean",
+          "default": false
+        },
+        "include_soft_states": {
+          "type": "boolean",
+          "default": false
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_service_availability",
+    "description": "Compute availability (uptime / SLA %) for a service over a configurable time window. Returns time_ok_percent, time_warning_percent, time_critical_percent, time_unknown_percent and scheduled_* equivalents. since/until accept Thruk relative times or ISO datetimes. timeperiod (e.g. lastmonth, last24hours) overrides since/until.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "host",
+        "service"
+      ],
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-7d"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeperiod": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "with_downtimes": {
+          "type": "boolean",
+          "default": false
+        },
+        "include_soft_states": {
+          "type": "boolean",
+          "default": false
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_list_hostgroups",
     "description": "List host groups. Default columns return name/alias and host/service counts only.",
     "inputSchema": {
@@ -1887,6 +2025,56 @@
     }
   },
   {
+    "name": "thruk_notifications",
+    "description": "Enable or disable notifications for a host or service. Set enabled=true to enable, enabled=false to disable. When service is omitted the command targets the host itself. Set cascade=true to also apply to all services of the host (ignored when service is specified).",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "host",
+        "enabled"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Host name"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "True to enable notifications, False to disable."
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Service description. Omit to target the host only (use cascade=true to also cover all its services)."
+        },
+        "cascade": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true and no service is specified, also apply to all services of the host. Ignored when service is set."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_top_noisy_hosts",
     "description": "Return the top N hosts ranked by HOST ALERT count over a time window.",
     "inputSchema": {
@@ -2365,7 +2553,7 @@
   },
   {
     "name": "thruk_oldest_problems",
-    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending — oldest first. Returns [{host, service, state, since, duration_human}].",
+    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending \u2014 oldest first. Returns [{host, service, state, since, duration_human}].",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2375,7 +2563,14 @@
           "description": "Maximum number of results (default 20)."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2394,7 +2589,14 @@
           "description": "Minimum unacknowledged duration in minutes (default 60)."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2418,7 +2620,14 @@
           "description": "Maximum number of results (default 100)."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2432,7 +2641,14 @@
       "type": "object",
       "properties": {
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2446,12 +2662,26 @@
       "type": "object",
       "properties": {
         "since": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": "-24h",
           "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
         },
         "until": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "End of analysis window. Omit for now."
         },
@@ -2459,15 +2689,35 @@
           "type": "string",
           "default": "1h",
           "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
-          "enum": ["15m", "30m", "1h", "6h", "1d"]
+          "enum": [
+            "15m",
+            "30m",
+            "1h",
+            "6h",
+            "1d"
+          ]
         },
         "filter": {
-          "anyOf": [{"type": "object"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: host, service, hostgroup, custom_var."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2481,12 +2731,26 @@
       "type": "object",
       "properties": {
         "since": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": "-1h",
           "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime. Default: last 1 h."
         },
         "until": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "End of analysis window. Omit for now."
         },
@@ -2501,12 +2765,26 @@
           "description": "Minimum number of distinct failing hosts to constitute a burst (default 3)."
         },
         "filter": {
-          "anyOf": [{"type": "object"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: host, hostgroup, custom_var."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }
@@ -2520,12 +2798,26 @@
       "type": "object",
       "properties": {
         "since": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": "-24h",
           "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
         },
         "until": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "End of analysis window. Omit for now."
         },
@@ -2540,12 +2832,26 @@
           "description": "Maximum number of results (default 10)."
         },
         "filter": {
-          "anyOf": [{"type": "object"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: host, service, hostgroup, custom_var."
         },
         "backends": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
         }

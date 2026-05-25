@@ -95,6 +95,7 @@ class TestWriteTools:
         "thruk_remove_acknowledgement",
         "thruk_recheck",
         "thruk_run_background_query",
+        "thruk_notifications",  # added: enable/disable notifications
     }
 
     def test_all_known_write_tools_present(self) -> None:
@@ -110,9 +111,15 @@ class TestWriteTools:
 
 
 def test_registry_tool_count() -> None:
-    """Registry must contain exactly 39 tools (sentinel for accidental removals)."""
-    assert len(TOOL_REGISTRY) == 39, (
-        f"Expected 39 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    """Registry must contain exactly 42 tools (sentinel for accidental removals).
+
+    Count history:
+      39 → +1 thruk_notifications (enable/disable host+service notifications)
+         → +2 thruk_host_availability, thruk_service_availability (issue #171)
+      = 42
+    """
+    assert len(TOOL_REGISTRY) == 42, (
+        f"Expected 42 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 

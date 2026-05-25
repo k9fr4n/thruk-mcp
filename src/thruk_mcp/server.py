@@ -256,6 +256,127 @@ async def thruk_get_service(host: str, service: str, backends: str | None = None
     return _tool_response(data)
 
 
+async def thruk_host_availability(
+    host: str,
+    since: str | None = "-7d",
+    until: str | None = None,
+    timeperiod: str | None = None,
+    with_downtimes: bool = False,
+    include_soft_states: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Compute availability (uptime / SLA %) for a host over a configurable time window.
+
+    Returns ``time_up_percent``, ``time_down_percent``, ``time_unreachable_percent``
+    and their ``scheduled_*`` equivalents (time spent in that state *during* a
+    scheduled downtime), plus indeterminate buckets (``time_indeterminate_nodata``,
+    ``time_indeterminate_notrunning``, ``time_indeterminate_outside_timeperiod``).
+
+    ``since`` / ``until`` accept Thruk relative times (``"-7d"``, ``"-1m"``) or
+    ISO datetimes (``"2026-05-01 00:00:00"``). Default window: last 7 days.
+
+    ``timeperiod`` (e.g. ``"lastmonth"``, ``"thismonth"``, ``"last24hours"``,
+    ``"lastweek"``) is a Thruk-native shortcut that overrides ``since``/``until``
+    when provided.
+
+    ``with_downtimes=True`` makes scheduled downtimes count as outages in the
+    percentage calculations (``withdowntimes=1``).
+    ``include_soft_states=True`` includes soft state changes (``includesoftstates=1``).
+    """
+    params: dict[str, Any] = {}
+    if timeperiod:
+        params["timeperiod"] = timeperiod
+    else:
+        ts_since = _parse_thruk_time(since)
+        ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
+        if ts_since is not None:
+            params["start"] = ts_since
+        if ts_until is not None:
+            params["end"] = ts_until
+    if with_downtimes:
+        params["withdowntimes"] = 1
+    if include_soft_states:
+        params["includesoftstates"] = 1
+
+    data = await _get_client().get(
+        f"/hosts/{_seg(host)}/availability",
+        params=params,
+        backends=_backends(backends),
+    )
+    result: dict[str, Any] = {"host": host}
+    if timeperiod:
+        result["timeperiod"] = timeperiod
+    else:
+        result["since"] = since
+        result["until"] = until
+    if isinstance(data, dict):
+        result.update(data)
+    elif isinstance(data, list) and data:
+        result.update(data[0])
+    return _tool_response(result)
+
+
+async def thruk_service_availability(
+    host: str,
+    service: str,
+    since: str | None = "-7d",
+    until: str | None = None,
+    timeperiod: str | None = None,
+    with_downtimes: bool = False,
+    include_soft_states: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Compute availability (uptime / SLA %) for a service over a configurable time window.
+
+    Returns ``time_ok_percent``, ``time_warning_percent``, ``time_critical_percent``,
+    ``time_unknown_percent`` and their ``scheduled_*`` equivalents, plus indeterminate
+    buckets (``time_indeterminate_nodata``, ``time_indeterminate_notrunning``,
+    ``time_indeterminate_outside_timeperiod``).
+
+    ``since`` / ``until`` accept Thruk relative times (``"-7d"``, ``"-1m"``) or
+    ISO datetimes (``"2026-05-01 00:00:00"``). Default window: last 7 days.
+
+    ``timeperiod`` (e.g. ``"lastmonth"``, ``"thismonth"``, ``"last24hours"``,
+    ``"lastweek"``) is a Thruk-native shortcut that overrides ``since``/``until``
+    when provided.
+
+    ``with_downtimes=True`` makes scheduled downtimes count as outages in the
+    percentage calculations (``withdowntimes=1``).
+    ``include_soft_states=True`` includes soft state changes (``includesoftstates=1``).
+    """
+    params: dict[str, Any] = {}
+    if timeperiod:
+        params["timeperiod"] = timeperiod
+    else:
+        ts_since = _parse_thruk_time(since)
+        ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
+        if ts_since is not None:
+            params["start"] = ts_since
+        if ts_until is not None:
+            params["end"] = ts_until
+    if with_downtimes:
+        params["withdowntimes"] = 1
+    if include_soft_states:
+        params["includesoftstates"] = 1
+
+    data = await _get_client().get(
+        f"/services/{_seg(host)}/{_seg(service)}/availability",
+        params=params,
+        backends=_backends(backends),
+    )
+    result: dict[str, Any] = {"host": host, "service": service}
+    if timeperiod:
+        result["timeperiod"] = timeperiod
+    else:
+        result["since"] = since
+        result["until"] = until
+    if isinstance(data, dict):
+        result.update(data)
+    elif isinstance(data, list) and data:
+        result.update(data[0])
+    return _tool_response(result)
+
+
 async def thruk_list_hostgroups(
     limit: int = 100,
     offset: int = 0,
@@ -1464,6 +1585,73 @@ async def thruk_recheck(
     )
 
 
+async def thruk_notifications(
+    host: str,
+    enabled: bool,
+    service: str | None = None,
+    cascade: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Enable or disable notifications for a host or service.
+
+    ``enabled=True``  → enable notifications.
+    ``enabled=False`` → disable notifications.
+
+    When ``service`` is omitted the command targets the host itself.
+    Set ``cascade=True`` to also apply the same command to **all services**
+    of the host (ignored when ``service`` is specified).
+
+    Thruk commands used:
+    - host:    ``enable_host_notifications`` / ``disable_host_notifications``
+    - service: ``enable_svc_notifications``  / ``disable_svc_notifications``
+
+    This tool does **not** schedule a downtime and does **not** acknowledge
+    any problem — it only controls whether Thruk sends out alerts.
+    """
+    client = _get_client()
+    be = _backends(backends)
+    results: list[Any] = []
+
+    if service:
+        # Single service — cascade is irrelevant
+        verb = "enable_svc_notifications" if enabled else "disable_svc_notifications"
+        endpoint = f"/services/{_seg(host)}/{_seg(service)}/cmd/{verb}"
+        results.append(await client.post(endpoint, backends=be))
+    else:
+        # Host-level command
+        verb_host = "enable_host_notifications" if enabled else "disable_host_notifications"
+        results.append(await client.post(f"/hosts/{_seg(host)}/cmd/{verb_host}", backends=be))
+
+        if cascade:
+            # Apply to every service of this host
+            verb_svc = "enable_svc_notifications" if enabled else "disable_svc_notifications"
+            svc_data = await client.get(
+                f"/hosts/{_seg(host)}/services",
+                params={"columns": "description"},
+                backends=be,
+            )
+            services: list[str] = []
+            if isinstance(svc_data, list):
+                services = [
+                    s["description"] for s in svc_data if isinstance(s, dict) and s.get("description")
+                ]
+            svc_results = await asyncio.gather(
+                *(
+                    client.post(
+                        f"/services/{_seg(host)}/{_seg(svc)}/cmd/{verb_svc}", backends=be
+                    )
+                    for svc in services
+                )
+            )
+            results.extend(svc_results)
+
+    action = "enabled" if enabled else "disabled"
+    target = f"{host}/{service}" if service else host
+    if cascade and not service:
+        target = f"{host} (host + all services)"
+    return _tool_response({"action": action, "target": target, "results": results})
+
+
 async def thruk_delete_downtime(
     downtime_id: int, host: str, service: str | None = None, backends: str | None = None
 ) -> str:
@@ -2373,6 +2561,91 @@ TOOL_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    # ---------------------------------------------------------------- availability / SLA
+    ToolSpec(
+        name="thruk_host_availability",
+        fn=thruk_host_availability,
+        schema=_s(
+            "host",
+            host=_str("Host name"),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-7d",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-7d", "-1m") '
+                    'or ISO datetime ("2026-05-01 00:00:00"). Default: last 7 days. '
+                    "Ignored when ``timeperiod`` is set."
+                ),
+            },
+            until={
+                **_OPT_STR,
+                "description": (
+                    "End of analysis window (same formats as ``since``). "
+                    "Defaults to now. Ignored when ``timeperiod`` is set."
+                ),
+            },
+            timeperiod={
+                **_OPT_STR,
+                "description": (
+                    "Thruk-native time period shortcut: "
+                    '"last24hours", "lastweek", "lastmonth", "thismonth", etc. '
+                    "Overrides ``since``/``until`` when provided."
+                ),
+            },
+            with_downtimes=_bool(
+                "Count scheduled downtime periods as outages (withdowntimes=1).",
+                default=False,
+            ),
+            include_soft_states=_bool(
+                "Include soft state changes in calculations (includesoftstates=1).",
+                default=False,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_service_availability",
+        fn=thruk_service_availability,
+        schema=_s(
+            "host",
+            "service",
+            host=_str("Host name"),
+            service=_str("Service description"),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-7d",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-7d", "-1m") '
+                    'or ISO datetime ("2026-05-01 00:00:00"). Default: last 7 days. '
+                    "Ignored when ``timeperiod`` is set."
+                ),
+            },
+            until={
+                **_OPT_STR,
+                "description": (
+                    "End of analysis window (same formats as ``since``). "
+                    "Defaults to now. Ignored when ``timeperiod`` is set."
+                ),
+            },
+            timeperiod={
+                **_OPT_STR,
+                "description": (
+                    "Thruk-native time period shortcut: "
+                    '"last24hours", "lastweek", "lastmonth", "thismonth", etc. '
+                    "Overrides ``since``/``until`` when provided."
+                ),
+            },
+            with_downtimes=_bool(
+                "Count scheduled downtime periods as outages (withdowntimes=1).",
+                default=False,
+            ),
+            include_soft_states=_bool(
+                "Include soft state changes in calculations (includesoftstates=1).",
+                default=False,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
     ToolSpec(
         name="thruk_list_hostgroups",
         fn=thruk_list_hostgroups,
@@ -2690,6 +2963,32 @@ TOOL_REGISTRY: list[ToolSpec] = [
             host=_str("Host name"),
             service=_OPT_STR,
             forced=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_notifications",
+        fn=thruk_notifications,
+        schema=_s(
+            "host",
+            "enabled",
+            host=_str("Host name"),
+            enabled=_bool(
+                "True to enable notifications, False to disable.",
+            ),
+            service={
+                **_OPT_STR,
+                "description": (
+                    "Service description. Omit to target the host only "
+                    "(use cascade=true to also cover all its services)."
+                ),
+            },
+            cascade=_bool(
+                "When true and no service is specified, also apply to all services "
+                "of the host. Ignored when service is set.",
+                default=False,
+            ),
             backends=_BACKENDS,
         ),
         is_write=True,
