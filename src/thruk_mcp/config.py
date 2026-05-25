@@ -106,6 +106,31 @@ class ThrukConfig:
             max_concurrent=_int_env("THRUK_MAX_CONCURRENT", 0),
         )
 
+    def __repr__(self) -> str:
+        """Return a safe representation that never exposes the api_key value.
+
+        The auto-generated dataclass __repr__ would include api_key verbatim,
+        which risks leaking credentials into log aggregators, tracebacks, and
+        debug output.  We override it here to redact the key unconditionally.
+        """
+        return (
+            f"ThrukConfig("
+            f"base_url={self.base_url!r}, "
+            f"api_key='***', "
+            f"auth_user={self.auth_user!r}, "
+            f"verify_ssl={self.verify_ssl!r}, "
+            f"timeout={self.timeout!r}, "
+            f"default_backends={self.default_backends!r}, "
+            f"read_only={self.read_only!r}, "
+            f"enabled_tools={self.enabled_tools!r}, "
+            f"audit_log={self.audit_log!r}, "
+            f"max_concurrent={self.max_concurrent!r})"
+        )
+
+    def __str__(self) -> str:
+        """Delegate to __repr__ so f-string interpolation is equally safe."""
+        return self.__repr__()
+
     def headers(self) -> dict[str, str]:
         h = {"X-Thruk-Auth-Key": self.api_key}
         if self.auth_user:
