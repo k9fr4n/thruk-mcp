@@ -1721,25 +1721,32 @@ async def thruk_delete_active_downtimes(
             indent=2,
         )
 
-    deleted: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-    for dt in downtimes:
-        dt_id = dt.get("id")
-        if dt_id is None:
-            continue
-        # Thruk REST exposes only `del_downtime` (not `del_svc_downtime` /
-        # `del_host_downtime`) — the correct Nagios external command is inferred
-        # from the resource path (issue #36).
-        ep = (
-            f"/services/{_seg(host)}/{_seg(service)}/cmd/del_downtime"
-            if service
-            else f"/hosts/{_seg(host)}/cmd/del_downtime"
-        )
+    # Thruk REST exposes only `del_downtime` (not `del_svc_downtime` /
+    # `del_host_downtime`) — the correct Nagios external command is inferred
+    # from the resource path (issue #36).
+    ep = (
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/del_downtime"
+        if service
+        else f"/hosts/{_seg(host)}/cmd/del_downtime"
+    )
+
+    # Issue #141: parallelise all per-id DEL requests via asyncio.gather so that
+    # N downtimes complete in ~1 RTT instead of N RTTs.  Error isolation is
+    # preserved: each coroutine catches ThrukError and returns it as a value so
+    # that a failure on one id never aborts the rest.
+    async def _del_one(dt_id: int) -> tuple[int, Any, ThrukError | None]:
         try:
             resp = await client.post(ep, data={"downtime_id": dt_id}, backends=be)
-            deleted.append({"downtime_id": dt_id, "result": resp})
+            return dt_id, resp, None
         except ThrukError as exc:
-            errors.append({"downtime_id": dt_id, "error": str(exc)})
+            return dt_id, None, exc
+
+    ids = [d["id"] for d in downtimes if d.get("id") is not None]
+    _gather_results: list[tuple[int, Any, ThrukError | None]] = list(
+        await asyncio.gather(*(_del_one(i) for i in ids))
+    )
+    deleted = [{"downtime_id": i, "result": r} for i, r, e in _gather_results if e is None]
+    errors = [{"downtime_id": i, "error": str(e)} for i, _, e in _gather_results if e is not None]
 
     return json.dumps(
         {"deleted": deleted, "errors": errors, "count": len(deleted)},
@@ -1812,21 +1819,27 @@ async def thruk_delete_downtimes_by_filter(
         # Host-level downtimes have an empty service_description.
         host_dts = [d for d in all_dts if not d.get("service_description")]
 
-        host_deleted: list[dict[str, Any]] = []
-        host_errors: list[dict[str, Any]] = []
-        for dt in host_dts:
-            dt_id = dt.get("id")
-            if dt_id is None:
-                continue
+        # Issue #141: same gather pattern — all host-level DEL requests fire
+        # concurrently rather than being serialised.
+        async def _del_host_one(dt_id: int) -> tuple[int, Any, ThrukError | None]:
             try:
                 resp = await client.post(
                     f"/hosts/{_seg(host)}/cmd/del_downtime",
                     data={"downtime_id": dt_id},
                     backends=be,
                 )
-                host_deleted.append({"downtime_id": dt_id, "result": resp})
+                return dt_id, resp, None
             except ThrukError as exc:
-                host_errors.append({"downtime_id": dt_id, "error": str(exc)})
+                return dt_id, None, exc
+
+        host_ids = [d["id"] for d in host_dts if d.get("id") is not None]
+        _host_gather: list[tuple[int, Any, ThrukError | None]] = list(
+            await asyncio.gather(*(_del_host_one(i) for i in host_ids))
+        )
+        host_deleted = [{"downtime_id": i, "result": r} for i, r, e in _host_gather if e is None]
+        host_errors = [
+            {"downtime_id": i, "error": str(e)} for i, _, e in _host_gather if e is not None
+        ]
 
         result["host_downtimes_deleted"] = host_deleted
         result["host_downtimes_errors"] = host_errors
