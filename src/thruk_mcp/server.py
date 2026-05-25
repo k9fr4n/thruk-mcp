@@ -87,6 +87,12 @@ __all__ = ["WRITE_TOOLS", "ThrukMCPServer", "build_server"]
 
 log = logging.getLogger("thruk_mcp.server")
 
+# Hard limit for paginated /hosts lookups that build a host_name[regex].
+# 20 000 hosts is far above any realistic hostgroup size; it serves as a
+# safety net to prevent runaway memory growth while still covering all real
+# deployments. A _warning is surfaced in the tool payload when this cap is hit.
+_RESOLVE_HOSTS_HARD_LIMIT: int = 20_000
+
 # WRITE_TOOLS is derived from TOOL_REGISTRY below (see end of module).
 # Tools that mutate monitoring state — used by read_only mode and the audit log.
 # Do NOT define it here; it is auto-generated as:
@@ -346,7 +352,8 @@ async def _resolve_hosts_to_regex(
     backends: str | None,
     hostgroup: str | None = None,
     custom_vars: dict[str, Any] | None = None,
-) -> str | None:
+    hard_limit: int = _RESOLVE_HOSTS_HARD_LIMIT,
+) -> tuple[str | None, bool]:
     """Resolve a hostgroup / custom-variable filter to a ``host_name[regex]`` pattern.
 
     The Naemon Livestatus ``log`` table exposes neither ``current_host_groups``
@@ -357,18 +364,31 @@ async def _resolve_hosts_to_regex(
     *hostgroup* and *custom_vars* may be combined: the ``/hosts`` call applies
     both filters simultaneously (logical AND), so we issue only one request.
 
-    Returns ``None`` when no hosts match (caller should emit an empty result).
+    Uses ``get_all()`` to paginate through all matching hosts transparently.
+    Returns ``(None, False)`` when no hosts match (caller should emit an empty
+    result).  Returns ``(regex, True)`` when the hard_limit was reached and the
+    list may be incomplete — callers should surface a ``_warning`` in the payload.
     """
-    params: dict[str, str] = {"columns": "name", "limit": "1000"}
+    params: dict[str, str] = {"columns": "name"}
     if hostgroup:
         params["groups[gte]"] = hostgroup
     if custom_vars:
         params.update(_build_cv_params(custom_vars))
-    data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
-    names = [row["name"] for row in (data if isinstance(data, list) else []) if row.get("name")]
+    names: list[str] = []
+    async for row in _get_client().get_all(
+        "/hosts",
+        params=params,
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=hard_limit,
+    ):
+        n = row.get("name") if isinstance(row, dict) else None
+        if n:
+            names.append(n)
     if not names:
-        return None
-    return f"^({'|'.join(re.escape(n) for n in names)})$"
+        return None, False
+    truncated = len(names) >= hard_limit
+    return f"^({'|'.join(re.escape(n) for n in names)})$", truncated
 
 
 async def _fetch_logs(
@@ -409,8 +429,9 @@ async def _fetch_logs(
         params["time[lte]"] = until
     if message_regex:
         params["message[regex]"] = message_regex
+    host_truncated = False
     if hostgroup or custom_vars:
-        host_regex = await _resolve_hosts_to_regex(
+        host_regex, host_truncated = await _resolve_hosts_to_regex(
             backends, hostgroup=hostgroup, custom_vars=custom_vars
         )
         if host_regex:
@@ -421,9 +442,16 @@ async def _fetch_logs(
     # Always POST: log queries can carry large host_name[regex] alternations
     # (e.g. 976-host hostgroups) that would exceed Apache URI limits with GET.
     # Thruk REST accepts POST with form-encoded body on all /r/* endpoints.
-    return await _get_client().get_with_fallback(
+    data, warnings = await _get_client().get_with_fallback(
         path, params=params, backends=_backends(backends), method="POST"
     )
+    if host_truncated:
+        warnings = [
+            *warnings,
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete.",
+        ]
+    return data, warnings
 
 
 async def _aggregate_alerts(
@@ -524,7 +552,7 @@ async def thruk_top_noisy_hosts(
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -557,7 +585,12 @@ async def thruk_top_noisy_hosts(
         "total_alerts_in_window": total,
         "results": results,
     }
-    if hit_limit:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -591,7 +624,7 @@ async def thruk_top_noisy_services(
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``service``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -625,7 +658,12 @@ async def thruk_top_noisy_services(
         "total_alerts_in_window": total,
         "results": results,
     }
-    if hit_limit:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -666,7 +704,7 @@ async def thruk_flap_summary(
     ``states_seen`` (sorted unique set of state names), ``last_state``,
     ``last_alert_time``.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -733,7 +771,12 @@ async def thruk_flap_summary(
         "total_flapping_objects": len(results_raw),
         "results": results_raw[:limit],
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -825,7 +868,7 @@ async def thruk_alert_heatmap(
             indent=2,
         )
 
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -896,7 +939,12 @@ async def thruk_alert_heatmap(
         "total_alerts": total,
         "results": results,
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -937,7 +985,7 @@ async def thruk_recurring_problems(
     if min_alerts < 1:
         return json.dumps({"error": "min_alerts must be >= 1"}, indent=2)
 
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -1007,7 +1055,12 @@ async def thruk_recurring_problems(
         "total_objects_above_threshold": len(above),
         "results": above[:limit],
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
         )
@@ -1020,43 +1073,66 @@ async def _resolve_log_filter(
     filter_node: dict[str, Any] | None,
     allowed_fields: frozenset,
     backends: str | None,
-) -> tuple[dict[str, Any], list[str]]:
+) -> tuple[dict[str, Any], list[str], bool]:
     """Validate + compile a log-family filter.
 
-    Returns ``(extra_params, error_list)``. On error, ``error_list`` is
-    non-empty and ``extra_params`` is empty.  Hostgroup/custom_var fields
-    are resolved via a ``/hosts`` lookup.
+    Returns ``(extra_params, error_list, host_truncated)``. On error,
+    ``error_list`` is non-empty and ``extra_params`` is empty.
+    Hostgroup/custom_var fields are resolved via a paginated ``/hosts``
+    lookup.  ``host_truncated`` is ``True`` when the host list reached
+    ``_RESOLVE_HOSTS_HARD_LIMIT`` and may be incomplete — callers should
+    surface a ``_warning`` key in their payload.
     """
     if filter_node is None:
-        return {}, []
+        return {}, [], False
     try:
         validate_filter(filter_node, allowed_fields)
         direct_node, lookup_node = extract_log_lookup_fields(filter_node)
     except FilterError as exc:
-        return {}, [str(exc)]
+        return {}, [str(exc)], False
 
     extra: dict[str, Any] = {}
     if direct_node is not None:
         extra.update(compile_filter(direct_node, "logs"))
     if lookup_node is not None:
         lookup_params = compile_filter(lookup_node, "hosts")
-        host_regex = await _resolve_hosts_to_regex_from_params(lookup_params, backends)
+        host_regex, host_truncated = await _resolve_hosts_to_regex_from_params(
+            lookup_params, backends
+        )
         if host_regex is None:
-            return {}, ["No hosts matched the hostgroup/custom_var filter"]
+            return {}, ["No hosts matched the hostgroup/custom_var filter"], False
         extra["host_name[regex]"] = host_regex
-    return extra, []
+        return extra, [], host_truncated
+    return extra, [], False
 
 
 async def _resolve_hosts_to_regex_from_params(
-    params: dict[str, Any], backends: str | None
-) -> str | None:
-    """Like _resolve_hosts_to_regex but accepts a pre-built params dict."""
-    host_params: dict[str, Any] = {"columns": "name", "limit": "1000", **params}
-    data = await _get_client().get("/hosts", params=host_params, backends=_backends(backends))
-    names = [r["name"] for r in (data if isinstance(data, list) else []) if r.get("name")]
+    params: dict[str, Any],
+    backends: str | None,
+    hard_limit: int = _RESOLVE_HOSTS_HARD_LIMIT,
+) -> tuple[str | None, bool]:
+    """Like ``_resolve_hosts_to_regex`` but accepts a pre-built params dict.
+
+    Uses ``get_all()`` to paginate through all matching hosts transparently.
+    Returns ``(regex, truncated)`` — ``truncated`` is ``True`` when the
+    ``hard_limit`` was reached and the result may be incomplete.
+    """
+    host_params: dict[str, Any] = {"columns": "name", **params}
+    names: list[str] = []
+    async for row in _get_client().get_all(
+        "/hosts",
+        params=host_params,
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=hard_limit,
+    ):
+        n = row.get("name") if isinstance(row, dict) else None
+        if n:
+            names.append(n)
     if not names:
-        return None
-    return f"^({'|'.join(re.escape(n) for n in names)})$"
+        return None, False
+    truncated = len(names) >= hard_limit
+    return f"^({'|'.join(re.escape(n) for n in names)})$", truncated
 
 
 async def thruk_list_logs(
@@ -1078,7 +1154,7 @@ async def thruk_list_logs(
     Default window: last 24 h. Sort ``'-time'`` = newest first.
     Pagination via ``limit``/``offset``.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
     # since/until defaults only when not overridden by filter
@@ -1100,6 +1176,12 @@ async def thruk_list_logs(
         backends,
         extra=extra,
     )
+    if host_truncated:
+        warnings = [
+            *warnings,
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete.",
+        ]
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
@@ -1124,7 +1206,7 @@ async def thruk_list_alerts(
     (up/down/unreachable for hosts, ok/warning/critical/unknown for services),
     ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_ALERTS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_ALERTS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
@@ -1146,6 +1228,12 @@ async def thruk_list_alerts(
         backends,
         extra=extra,
     )
+    if host_truncated:
+        warnings = [
+            *warnings,
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete.",
+        ]
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
@@ -1169,7 +1257,7 @@ async def thruk_list_notifications(
     ``filter`` fields: ``host``, ``service``, ``contact``, ``state``,
     ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
     extra["class"] = "3"
@@ -1192,6 +1280,12 @@ async def thruk_list_notifications(
         extra=extra,
         default_columns=DEFAULT_NOTIFICATION_COLUMNS,
     )
+    if host_truncated:
+        warnings = [
+            *warnings,
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete.",
+        ]
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
@@ -1214,7 +1308,7 @@ async def thruk_recent_events(
     ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
     The ``since`` / ``until`` filter fields override the ``hours`` parameter.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
     if only_alerts:
@@ -1235,6 +1329,12 @@ async def thruk_recent_events(
         backends,
         extra=extra,
     )
+    if host_truncated:
+        warnings = [
+            *warnings,
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete.",
+        ]
     if warnings:
         return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
     return json.dumps(data, indent=2, default=str)
@@ -2224,7 +2324,7 @@ async def thruk_concurrent_failures(
     start time, each with ``window_start``, ``window_end``, ``hosts`` (sorted
     list of distinct host names), ``count``.
     """
-    extra, errs = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
         return json.dumps({"error": errs[0]}, indent=2)
 
@@ -2323,7 +2423,12 @@ async def thruk_concurrent_failures(
         "total_down_events": len(events),
         "results": results,
     }
-    if len(data) >= _NOISY_MAX_ALERTS:
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; detection may be incomplete."
         )

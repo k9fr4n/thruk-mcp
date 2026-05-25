@@ -1382,3 +1382,141 @@ async def test_flap_summary_since_until(mocked_server) -> None:
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
     assert payload["min_transitions"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Issue #142 — paginated /hosts lookup + truncation warning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_hosts_paginates_beyond_1000(mocked_server) -> None:
+    """_resolve_hosts_to_regex must paginate through all pages, not stop at 1000.
+
+    Bug (before fix): a hard-coded ``limit=1000`` silently truncated any
+    hostgroup with >1000 members, so the resulting regex missed those hosts.
+
+    After the fix: get_all() pages through all results and the regex includes
+    every returned host name.
+    """
+    import json as _json
+
+    mcp, router = mocked_server
+
+    # Simulate a hostgroup with 1500 hosts: first page returns 500 rows,
+    # second page returns 500 rows, third page returns 500 rows (full → keep
+    # paging), fourth page returns 0 rows → stop.
+    page_a = [{"name": f"host{i:04d}"} for i in range(500)]
+    page_b = [{"name": f"host{i:04d}"} for i in range(500, 1000)]
+    page_c = [{"name": f"host{i:04d}"} for i in range(1000, 1500)]
+
+    router.get("https://thruk.test/r/hosts").mock(
+        side_effect=[
+            ok(page_a),
+            ok(page_b),
+            ok(page_c),
+            ok([]),  # final empty page → stop
+        ]
+    )
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_list_alerts",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "hostgroup",
+                "op": "eq",
+                "value": "big-group",
+            }
+        },
+    )
+
+    # The logs POST must have carried a regex that includes all 1500 hosts
+    log_call = router.calls.last
+    body_params = {k: v[0] for k, v in parse_qs(log_call.request.content.decode()).items()}
+    regex = body_params.get("host_name[regex]", "")
+    assert "host0000" in regex, "First host should appear in regex"
+    assert "host1499" in regex, "Last host (page 3) should appear in regex"
+
+    # No truncation warning expected at 1500 hosts (well below 20_000)
+    payload = _json.loads(result[0].text)
+    if isinstance(payload, dict):
+        assert "_warning" not in payload or "truncated" not in payload.get("_warning", "")
+
+
+@pytest.mark.asyncio
+async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> None:
+    """When the host lookup is truncated a _warning is injected into the result.
+
+    Bug (before fix): no warning was ever emitted because the single-shot
+    ``limit=1000`` GET never signalled that results were cut off.
+
+    After the fix: ``_resolve_hosts_to_regex_from_params`` returns
+    ``(regex, True)`` when ``len(names) >= hard_limit``, and the caller wraps
+    the response in ``{"data": ..., "_warnings": [...]}``.
+
+    We mock ``_resolve_hosts_to_regex_from_params`` directly to return
+    ``truncated=True`` without having to generate 20 000 mock host rows.
+    """
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    mcp, router = mocked_server
+
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    with patch(
+        "thruk_mcp.server._resolve_hosts_to_regex_from_params",
+        new=AsyncMock(return_value=("^(h0|h1|h2)$", True)),
+    ):
+        result = await mcp.call_tool(
+            "thruk_list_alerts",
+            {
+                "filter": {
+                    "type": "leaf",
+                    "field": "hostgroup",
+                    "op": "eq",
+                    "value": "huge-group",
+                }
+            },
+        )
+
+    payload = _json.loads(result[0].text)
+    assert isinstance(payload, dict), "truncated result must be wrapped in a dict"
+    assert "_warnings" in payload, "truncation warning must appear in _warnings"
+    assert any("truncated" in w.lower() for w in payload["_warnings"]), (
+        f"no truncation warning found in {payload['_warnings']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_hosts_truncation_warning_top_noisy_hosts(mocked_server) -> None:
+    """Truncation warning propagates through _resolve_log_filter into payload-dict tools."""
+    import json as _json
+    from unittest.mock import AsyncMock, patch
+
+    mcp, router = mocked_server
+
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    with patch(
+        "thruk_mcp.server._resolve_hosts_to_regex_from_params",
+        new=AsyncMock(return_value=("^(h0|h1|h2)$", True)),
+    ):
+        result = await mcp.call_tool(
+            "thruk_top_noisy_hosts",
+            {
+                "filter": {
+                    "type": "leaf",
+                    "field": "hostgroup",
+                    "op": "eq",
+                    "value": "massive-hg",
+                },
+                "since": "-1h",
+            },
+        )
+
+    payload = _json.loads(result[0].text)
+    assert "_warning" in payload, "truncation warning must appear in _warning"
+    assert "truncated" in payload["_warning"].lower()
