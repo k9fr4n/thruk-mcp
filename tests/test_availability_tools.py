@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 import pytest
 
@@ -138,6 +137,8 @@ async def test_host_availability_include_soft_states(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_host_availability_iso_since(mocked_server) -> None:
     """ISO datetime since/until are converted to epoch integers (start < end, both > 0)."""
+    from datetime import datetime, timezone
+
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
         return_value=ok({})
@@ -149,7 +150,6 @@ async def test_host_availability_iso_since(mocked_server) -> None:
     params = route.calls.last.request.url.params
     start = int(params["start"])
     end = int(params["end"])
-    # Both must be valid positive epoch timestamps and start < end
     expected_start = int(datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp())
     expected_end = int(datetime(2026, 5, 25, tzinfo=timezone.utc).timestamp())
     assert start == expected_start
