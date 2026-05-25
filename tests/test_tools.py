@@ -1535,9 +1535,9 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
     payload = json.loads(result[0].text)
     assert isinstance(payload, dict), "truncated result must be wrapped in a dict"
     assert "_warnings" in payload, "truncation warning must appear in _warnings"
-    assert any(
-        "truncated" in w.lower() for w in payload["_warnings"]
-    ), f"no truncation warning found in {payload['_warnings']}"
+    assert any("truncated" in w.lower() for w in payload["_warnings"]), (
+        f"no truncation warning found in {payload['_warnings']}"
+    )
 
 
 @pytest.mark.asyncio
