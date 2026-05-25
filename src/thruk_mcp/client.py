@@ -17,6 +17,10 @@ __all__ = ["ThrukClient", "ThrukError"]
 
 log = logging.getLogger("thruk_mcp.client")
 
+# Fixed keepalive expiry (seconds). Longer than httpx default (5 s) so that
+# connections survive across the typical LLM tool-call cadence (15-30 s gaps).
+_KEEPALIVE_EXPIRY: float = 30.0
+
 # Paths whose responses change slowly enough to be safely cached for a few
 # seconds. Tweak as needed; this list is intentionally conservative.
 CACHEABLE_PATHS: frozenset[str] = frozenset(
@@ -36,6 +40,40 @@ CACHEABLE_PATHS: frozenset[str] = frozenset(
 
 # 5xx and 429 are retried. 4xx (except 429) are not — they are caller errors.
 RETRY_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+
+
+def _build_default_client(config: ThrukConfig, max_retries: int) -> httpx.AsyncClient:
+    """Build the default shared ``httpx.AsyncClient`` with explicit pool and timeout settings.
+
+    Splits the single ``config.timeout`` float into a structured
+    ``httpx.Timeout`` so that the connect phase has a tight cap (5 s or the
+    configured timeout, whichever is smaller) while read/write/pool use the
+    full configured value.
+
+    Pool size is read from ``config.max_connections`` /
+    ``config.max_keepalive_connections`` (env vars ``THRUK_MAX_CONNECTIONS`` /
+    ``THRUK_MAX_KEEPALIVE``).  The defaults (20 / 10) are far below the httpx
+    default of 100 to avoid saturating a single Thruk core under LLM fan-out.
+    """
+    limits = httpx.Limits(
+        max_connections=config.max_connections,
+        max_keepalive_connections=config.max_keepalive_connections,
+        keepalive_expiry=_KEEPALIVE_EXPIRY,
+    )
+    timeout = httpx.Timeout(
+        connect=min(5.0, config.timeout),
+        read=config.timeout,
+        write=config.timeout,
+        pool=config.timeout,
+    )
+    return httpx.AsyncClient(
+        transport=httpx.AsyncHTTPTransport(retries=max_retries),
+        verify=config.verify_ssl,
+        timeout=timeout,
+        limits=limits,
+        headers=config.headers(),
+        follow_redirects=True,
+    )
 
 
 class ThrukError(RuntimeError):
@@ -71,13 +109,7 @@ class ThrukClient:
         self._sem: asyncio.Semaphore | None = (
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent > 0 else None
         )
-        self._client = client or httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(retries=max_retries),
-            verify=config.verify_ssl,
-            timeout=config.timeout,
-            headers=config.headers(),
-            follow_redirects=True,
-        )
+        self._client = client or _build_default_client(config, max_retries)
 
     async def aclose(self) -> None:
         await self._client.aclose()
