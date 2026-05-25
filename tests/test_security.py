@@ -15,7 +15,13 @@ from thruk_mcp import audit
 from thruk_mcp.__main__ import _run_stdio
 from thruk_mcp.client import ThrukClient
 from thruk_mcp.config import ThrukConfig
-from thruk_mcp.server import WRITE_TOOLS, _is_auditable_write, build_server
+from thruk_mcp.server import (
+    _ALLOWED_METHODS,
+    _REST_PATH_PREFIXES,
+    WRITE_TOOLS,
+    _is_auditable_write,
+    build_server,
+)
 
 BASE = "https://thruk.test"
 
@@ -572,3 +578,186 @@ async def test_no_ssl_warning_in_stdio_when_verify_ssl_true(caplog) -> None:
         r for r in caplog.records if r.name == "thruk_mcp.__main__" and r.levelno == logging.WARNING
     ]
     assert len(warning_records) == 0, "No SSL warning expected when verify_ssl=True"
+
+
+# ---------------------------------------------------------------------------
+# Issue #123 — thruk_query: validate HTTP method and restrict path to prefix
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (documented as a reminder of the vulnerability):
+#   thruk_query(path="/cgi-bin/cmd.cgi", method="TRACE") would forward the
+#   request verbatim to httpx: TRACE can leak Authorization headers (HTTP TRACE
+#   attack) and /cgi-bin/cmd.cgi bypasses Thruk's REST authentication layer,
+#   potentially reaching CGI management endpoints directly.
+#
+# The fix:
+#   1. _ALLOWED_METHODS allowlist rejects any verb not in
+#      {GET, HEAD, POST, PUT, PATCH, DELETE} before any I/O.
+#   2. _validate_rest_path() gains a third guard: the path must start with one
+#      of the entries in _REST_PATH_PREFIXES (the known Thruk REST collections).
+
+
+def test_allowed_methods_constant_contains_standard_verbs() -> None:
+    """_ALLOWED_METHODS must include all standard REST verbs and exclude dangerous ones."""
+    assert {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"} == _ALLOWED_METHODS
+    assert "TRACE" not in _ALLOWED_METHODS
+    assert "CONNECT" not in _ALLOWED_METHODS
+    assert "OPTIONS" not in _ALLOWED_METHODS
+
+
+def test_rest_path_prefixes_includes_core_resources() -> None:
+    """_REST_PATH_PREFIXES must cover the core Thruk REST collections."""
+    for prefix in ("/hosts", "/services", "/downtimes", "/comments", "/logs", "/sites"):
+        assert prefix in _REST_PATH_PREFIXES, f"Missing expected prefix: {prefix}"
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_trace_method() -> None:
+    """thruk_query must return an error and make NO HTTP call for TRACE method.
+
+    Without the fix, method.upper() == 'TRACE' was forwarded to httpx, which
+    could leak Authorization headers to a Thruk endpoint (HTTP TRACE attack).
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool("thruk_query", {"path": "/hosts", "method": "TRACE"})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert "TRACE" in payload["error"]
+        assert "Allowed" in payload["error"]
+        assert len(router.calls) == 0, "No HTTP call must be made for a rejected method"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_connect_method() -> None:
+    """thruk_query must reject the CONNECT verb (proxy tunnelling, no REST use-case)."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool("thruk_query", {"path": "/hosts", "method": "CONNECT"})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_invented_method() -> None:
+    """thruk_query must reject completely invented HTTP method strings."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool("thruk_query", {"path": "/hosts", "method": "HAXVERB"})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_cgi_path() -> None:
+    """thruk_query must reject paths outside the known REST prefixes.
+
+    Without the fix, a path like /cgi-bin/cmd.cgi would be forwarded to httpx
+    after passing the only two guards (starts-with-/ and no-..), potentially
+    bypassing Thruk's REST authentication layer and reaching the CGI layer.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_query", {"path": "/cgi-bin/cmd.cgi", "method": "GET"}
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert "cgi-bin" in payload["error"] or "prefix" in payload["error"].lower()
+        assert len(router.calls) == 0, "No HTTP call must be made for a rejected path"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_rejects_unknown_path_prefix() -> None:
+    """Any path not starting with a known REST prefix must be rejected."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_query", {"path": "/internal/reset", "method": "POST"}
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_allows_all_valid_methods_on_valid_path() -> None:
+    """All methods in _ALLOWED_METHODS must be accepted on a valid path."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        for verb in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
+            with respx.mock() as router:
+                # Register a catch-all for the verb so respx does not raise NoMatchFound.
+                router.route(method=verb, url__regex=r".*/r/hosts.*").mock(
+                    return_value=httpx.Response(200, json=[])
+                )
+                result = await mcp.call_tool("thruk_query", {"path": "/hosts", "method": verb})
+            payload = json.loads(result[0].text)
+            assert "error" not in payload, f"Valid method {verb!r} was incorrectly rejected"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_run_background_query_rejects_trace_method() -> None:
+    """thruk_run_background_query must also reject disallowed HTTP methods."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_run_background_query", {"path": "/hosts", "method": "TRACE"}
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert "TRACE" in payload["error"]
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_run_background_query_rejects_unknown_path_prefix() -> None:
+    """thruk_run_background_query must also reject paths outside the REST prefix."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k")
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_run_background_query", {"path": "/admin/reset", "method": "POST"}
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)

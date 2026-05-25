@@ -1224,6 +1224,38 @@ async def thruk_recent_events(
     return json.dumps(data, indent=2, default=str)
 
 
+# ---------------------------------------------------------------------------
+# Security constants for thruk_query / thruk_run_background_query validation
+# ---------------------------------------------------------------------------
+
+# Allowed HTTP verbs for the escape-hatch tools.  TRACE and CONNECT are
+# omitted intentionally: TRACE can leak auth headers (HTTP TRACE attack) and
+# CONNECT is a proxy-tunnelling verb that has no valid Thruk REST use-case.
+_ALLOWED_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
+
+# Known Thruk REST resource prefixes.  Any path that does NOT start with one
+# of these is rejected before a request is attempted, preventing callers from
+# routing to CGI endpoints (e.g. /cgi-bin/cmd.cgi) that bypass the Thruk REST
+# authentication layer.
+_REST_PATH_PREFIXES: tuple[str, ...] = (
+    "/hosts",
+    "/services",
+    "/hostgroups",
+    "/servicegroups",
+    "/contacts",
+    "/contactgroups",
+    "/timeperiods",
+    "/commands",
+    "/downtimes",
+    "/comments",
+    "/logs",
+    "/sites",
+    "/processinfo",
+    "/system",
+    "/thruk",
+)
+
+
 def _validate_rest_path(path: str) -> str | None:
     """Return an error JSON string if *path* is unsafe, or ``None`` when valid.
 
@@ -1231,6 +1263,8 @@ def _validate_rest_path(path: str) -> str | None:
     - Must start with ``/`` (not a relative reference).
     - Must not contain ``..`` (path-traversal segment) which could escape the
       ``/thruk/r/`` REST prefix and reach internal CGI endpoints.
+    - Must start with a known Thruk REST resource prefix (see
+      ``_REST_PATH_PREFIXES``) to prevent routing to non-REST CGI endpoints.
 
     Callers should return the error string immediately without making any
     HTTP request.
@@ -1243,6 +1277,16 @@ def _validate_rest_path(path: str) -> str | None:
     if ".." in path:
         return json.dumps(
             {"error": (f"Invalid path: must not contain '..'. Got: {path!r}")},
+            indent=2,
+        )
+    if not any(path.startswith(p) for p in _REST_PATH_PREFIXES):
+        return json.dumps(
+            {
+                "error": (
+                    f"Path {path!r} does not start with a known Thruk REST prefix. "
+                    f"Allowed prefixes: {sorted(_REST_PATH_PREFIXES)}"
+                )
+            },
             indent=2,
         )
     return None
@@ -1267,6 +1311,12 @@ async def thruk_query(
     Prefer ``thruk_list_hosts``/``thruk_list_services`` with ``custom_vars={}`` which
     handle this automatically.
     """
+    method_upper = method.upper()
+    if method_upper not in _ALLOWED_METHODS:
+        return json.dumps(
+            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
+            indent=2,
+        )
     path_err = _validate_rest_path(path)
     if path_err is not None:
         return path_err
@@ -1282,7 +1332,7 @@ async def thruk_query(
     if "custom_variables" in q_val:
         log.warning("thruk_query: %s", _CV_Q_WARNING)
     result = await _get_client().request(
-        method.upper(),
+        method_upper,
         path,
         params=params,
         data=data,
@@ -1308,13 +1358,19 @@ async def thruk_run_background_query(
     Use this for expensive queries: full config dumps, large availability
     reports, recursive config checks. Same `path` semantics as
     `thruk_query`."""
+    method_upper = method.upper()
+    if method_upper not in _ALLOWED_METHODS:
+        return json.dumps(
+            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
+            indent=2,
+        )
     path_err = _validate_rest_path(path)
     if path_err is not None:
         return path_err
 
     result = await _get_client().run_background(
         path,
-        method=method.upper(),
+        method=method_upper,
         params=params,
         data=data,
         backends=_backends(backends),
