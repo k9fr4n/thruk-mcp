@@ -342,6 +342,35 @@ async def test_sites(mocked_server) -> None:
 # ----------------------------------------------------- Logs / history tools
 
 
+@pytest.mark.parametrize(
+    "tool_name, extra_params",
+    [
+        ("thruk_list_logs", {}),
+        ("thruk_list_alerts", {"type[~]": "^(HOST|SERVICE) ALERT"}),
+        ("thruk_list_notifications", {"class": "3"}),
+        ("thruk_recent_events", {}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_log_family_tool_posts_to_logs(
+    mocked_server, tool_name: str, extra_params: dict
+) -> None:
+    """Each log-family tool must POST to /logs, forward the limit param, and include
+    its tool-specific fixed params (e.g. type[~] for alerts, class for notifications).
+
+    Regression guard: a change to log-family routing or fixed-param injection only needs
+    to be updated in this single parametrized test rather than in four separate copies.
+    """
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(tool_name, {"limit": 10})
+    assert route.called, f"{tool_name} must POST to /logs"
+    body = parse_qs(route.calls.last.request.content.decode())
+    assert body.get("limit") == ["10"], f"{tool_name}: limit param not forwarded"
+    for key, val in extra_params.items():
+        assert body.get(key) == [val], f"{tool_name}: expected {key!r}={val!r} in POST body"
+
+
 @pytest.mark.asyncio
 async def test_list_logs(mocked_server) -> None:
     mcp, router = mocked_server
@@ -367,6 +396,8 @@ async def test_list_logs(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_list_alerts_with_state(mocked_server) -> None:
+    """state='warning' filter must be translated to state=1 on the /logs POST.
+    The type[~]=ALERT fixed param is covered by test_log_family_tool_posts_to_logs."""
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
@@ -374,12 +405,13 @@ async def test_list_alerts_with_state(mocked_server) -> None:
         {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "warning"}},
     )
     p = post_params(route.calls.last)
-    assert p["state"] == "1"  # service warning
-    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+    assert p["state"] == "1"  # service warning → numeric 1
 
 
 @pytest.mark.asyncio
 async def test_list_notifications_with_contact(mocked_server) -> None:
+    """contact filter must translate to contact_name= on the /logs POST.
+    The class=3 fixed param is covered by test_log_family_tool_posts_to_logs."""
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     await mcp.call_tool(
@@ -388,7 +420,6 @@ async def test_list_notifications_with_contact(mocked_server) -> None:
     )
     p = post_params(route.calls.last)
     assert p["contact_name"] == "oncall"
-    assert p["class"] == "3"
 
 
 @pytest.mark.asyncio
