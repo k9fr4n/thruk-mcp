@@ -18,6 +18,7 @@ functions defined as closures inside ``build_server()``, yielding
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import logging
 import re
@@ -436,10 +437,8 @@ async def thruk_hostgroup_availability(
     rows: list[Any] = data if isinstance(data, list) else ([data] if data else [])
     # Sort worst performers first so the LLM sees the outliers immediately
     sort_key = "time_ok_percent" if type == "services" else "time_up_percent"
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         rows = sorted(rows, key=lambda r: float(r.get(sort_key, 100.0)))
-    except (TypeError, ValueError):
-        pass  # non-numeric response — return as-is
 
     meta: dict[str, Any] = {"hostgroup": hostgroup, "type": type}
     if timeperiod:
@@ -1708,7 +1707,9 @@ async def thruk_notifications(
             services: list[str] = []
             if isinstance(svc_data, list):
                 services = [
-                    s["description"] for s in svc_data if isinstance(s, dict) and s.get("description")
+                    s["description"]
+                    for s in svc_data
+                    if isinstance(s, dict) and s.get("description")
                 ]
             svc_results = await asyncio.gather(
                 *(

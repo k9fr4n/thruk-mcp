@@ -6,8 +6,9 @@ import json
 
 import pytest
 
-from tests.conftest import ok
 from thruk_mcp.server import _parse_thruk_time
+
+from tests.conftest import ok
 
 
 # ---------------------------------------------------------------------------
