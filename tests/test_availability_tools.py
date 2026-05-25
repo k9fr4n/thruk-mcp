@@ -2,7 +2,7 @@
 
 from __future__ import (
     annotations,
-)  # noqa: I001 - ruff misclassifies section with single stdlib import
+)
 
 import json
 
