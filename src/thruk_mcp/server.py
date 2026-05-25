@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import fnmatch
-import json
 import logging
 import re
 from collections import Counter, deque
@@ -83,6 +82,7 @@ from .helpers import (
     _backends,
     _build_cv_params,
     _seg,
+    _tool_response,
     _ts,
 )
 from .helpers import (
@@ -191,16 +191,16 @@ async def thruk_list_hosts(
         try:
             validate_filter(filter, FIELDS_HOSTS)
         except FilterError as exc:
-            return json.dumps({"error": str(exc)}, indent=2)
+            return _tool_response({"error": str(exc)})
         params.update(compile_filter(filter, "hosts"))
     data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_get_host(host: str, backends: str | None = None) -> str:
     """Get a single host by name."""
     data = await _get_client().get(f"/hosts/{_seg(host)}", backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_list_services(
@@ -230,10 +230,10 @@ async def thruk_list_services(
         try:
             validate_filter(filter, FIELDS_SERVICES)
         except FilterError as exc:
-            return json.dumps({"error": str(exc)}, indent=2)
+            return _tool_response({"error": str(exc)})
         params.update(compile_filter(filter, "services"))
     data = await _get_client().get("/services", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_get_service(host: str, service: str, backends: str | None = None) -> str:
@@ -241,7 +241,7 @@ async def thruk_get_service(host: str, service: str, backends: str | None = None
     data = await _get_client().get(
         f"/services/{_seg(host)}/{_seg(service)}", backends=_backends(backends)
     )
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_list_hostgroups(
@@ -254,7 +254,7 @@ async def thruk_list_hostgroups(
     """List host groups. Default columns return name/alias and host/service counts only."""
     params = _list_params(limit, offset, sort, columns, DEFAULT_GROUP_COLUMNS)
     data = await _get_client().get("/hostgroups", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_list_servicegroups(
@@ -267,7 +267,7 @@ async def thruk_list_servicegroups(
     """List service groups. Default columns return name/alias and counts only."""
     params = _list_params(limit, offset, sort, columns, DEFAULT_GROUP_COLUMNS)
     data = await _get_client().get("/servicegroups", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_problems(
@@ -295,11 +295,11 @@ async def thruk_problems(
         try:
             validate_filter(filter, FIELDS_PROBLEMS)
         except FilterError as exc:
-            return json.dumps({"error": str(exc)}, indent=2)
+            return _tool_response({"error": str(exc)})
         try:
             extra_host, extra_svc = compile_filter_problems(filter)
         except FilterError as exc:
-            return json.dumps({"error": str(exc)}, indent=2)
+            return _tool_response({"error": str(exc)})
         host_params.update(extra_host)
         svc_params.update(extra_svc)
     hosts, host_warnings = await _get_client().get_with_fallback(
@@ -312,7 +312,7 @@ async def thruk_problems(
     all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
     if all_warnings:
         result["_warnings"] = all_warnings
-    return json.dumps(result, indent=2, default=str)
+    return _tool_response(result)
 
 
 async def thruk_stats(backends: str | None = None) -> str:
@@ -322,7 +322,7 @@ async def thruk_stats(backends: str | None = None) -> str:
         _get_client().get("/hosts/stats", backends=be),
         _get_client().get("/services/stats", backends=be),
     )
-    return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+    return _tool_response({"hosts": hosts, "services": services})
 
 
 async def thruk_list_downtimes(
@@ -343,7 +343,7 @@ async def thruk_list_downtimes(
         params["start_time[lte]"] = now
         params["end_time[gte]"] = now
     data = await _get_client().get("/downtimes", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_list_comments(
@@ -359,12 +359,12 @@ async def thruk_list_comments(
     if host:
         params["host_name"] = host
     data = await _get_client().get("/comments", params=params, backends=_backends(backends))
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_sites() -> str:
     """List configured Thruk backends (sites)."""
-    return json.dumps(await _get_client().get("/sites"), indent=2, default=str)
+    return _tool_response(await _get_client().get("/sites"))
 
 
 # ------------------------------------------------------ Logs / history helper
@@ -574,7 +574,7 @@ async def thruk_top_noisy_hosts(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     if since:
         extra["time[gte]"] = since
@@ -616,7 +616,7 @@ async def thruk_top_noisy_hosts(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 async def thruk_top_noisy_services(
@@ -646,7 +646,7 @@ async def thruk_top_noisy_services(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     if since:
         extra["time[gte]"] = since
@@ -689,7 +689,7 @@ async def thruk_top_noisy_services(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 async def thruk_flap_summary(
@@ -726,7 +726,7 @@ async def thruk_flap_summary(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
     if since:
@@ -802,7 +802,7 @@ async def thruk_flap_summary(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -883,14 +883,13 @@ async def thruk_alert_heatmap(
     """
     bucket_secs = _BUCKET_SIZES.get(bucket)
     if bucket_secs is None:
-        return json.dumps(
-            {"error": f"Invalid bucket {bucket!r}. Allowed: {', '.join(_BUCKET_SIZES)}"},
-            indent=2,
+        return _tool_response(
+            {"error": f"Invalid bucket {bucket!r}. Allowed: {', '.join(_BUCKET_SIZES)}"}
         )
 
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
     if since:
@@ -970,7 +969,7 @@ async def thruk_alert_heatmap(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 async def thruk_recurring_problems(
@@ -1003,11 +1002,11 @@ async def thruk_recurring_problems(
     sorted by ``alert_count`` descending.
     """
     if min_alerts < 1:
-        return json.dumps({"error": "min_alerts must be >= 1"}, indent=2)
+        return _tool_response({"error": "min_alerts must be >= 1"})
 
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
     if since:
@@ -1086,7 +1085,7 @@ async def thruk_recurring_problems(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 async def _resolve_log_filter(
@@ -1176,7 +1175,7 @@ async def thruk_list_logs(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
     # since/until defaults only when not overridden by filter
     if "time[gte]" not in extra and since:
         extra["time[gte]"] = since
@@ -1202,9 +1201,7 @@ async def thruk_list_logs(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete.",
         ]
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data, warnings)
 
 
 async def thruk_list_alerts(
@@ -1228,7 +1225,7 @@ async def thruk_list_alerts(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_ALERTS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
     if "time[gte]" not in extra and since:
         extra["time[gte]"] = since
@@ -1254,9 +1251,7 @@ async def thruk_list_alerts(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete.",
         ]
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data, warnings)
 
 
 async def thruk_list_notifications(
@@ -1279,7 +1274,7 @@ async def thruk_list_notifications(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
     extra["class"] = "3"
     if "time[gte]" not in extra and since:
         extra["time[gte]"] = since
@@ -1306,9 +1301,7 @@ async def thruk_list_notifications(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete.",
         ]
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data, warnings)
 
 
 async def thruk_recent_events(
@@ -1330,7 +1323,7 @@ async def thruk_recent_events(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_LOGS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
     if only_alerts:
         extra["type[~]"] = "^(HOST|SERVICE) ALERT"
     if "time[gte]" not in extra:
@@ -1355,9 +1348,7 @@ async def thruk_recent_events(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete.",
         ]
-    if warnings:
-        return json.dumps({"data": data, "_warnings": warnings}, indent=2, default=str)
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data, warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -1406,24 +1397,17 @@ def _validate_rest_path(path: str) -> str | None:
     HTTP request.
     """
     if not path.startswith("/"):
-        return json.dumps(
-            {"error": (f"Invalid path: must start with '/'. Got: {path!r}")},
-            indent=2,
-        )
+        return _tool_response({"error": (f"Invalid path: must start with '/'. Got: {path!r}")})
     if ".." in path:
-        return json.dumps(
-            {"error": (f"Invalid path: must not contain '..'. Got: {path!r}")},
-            indent=2,
-        )
+        return _tool_response({"error": (f"Invalid path: must not contain '..'. Got: {path!r}")})
     if not any(path.startswith(p) for p in _REST_PATH_PREFIXES):
-        return json.dumps(
+        return _tool_response(
             {
                 "error": (
                     f"Path {path!r} does not start with a known Thruk REST prefix. "
                     f"Allowed prefixes: {sorted(_REST_PATH_PREFIXES)}"
                 )
-            },
-            indent=2,
+            }
         )
     return None
 
@@ -1449,19 +1433,17 @@ async def thruk_query(
     """
     method_upper = method.upper()
     if method_upper not in _ALLOWED_METHODS:
-        return json.dumps(
-            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
-            indent=2,
+        return _tool_response(
+            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")}
         )
     if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
-        return json.dumps(
+        return _tool_response(
             {
                 "error": (
                     f"thruk_query: method {method_upper!r} blocked by THRUK_READ_ONLY=true. "
                     "Only GET and HEAD are permitted in read-only mode."
                 )
-            },
-            indent=2,
+            }
         )
     path_err = _validate_rest_path(path)
     if path_err is not None:
@@ -1485,8 +1467,8 @@ async def thruk_query(
         backends=_backends(backends),
     )
     if "custom_variables" in q_val:
-        return json.dumps({"_warning": _CV_Q_WARNING, "data": result}, indent=2, default=str)
-    return json.dumps(result, indent=2, default=str)
+        return _tool_response({"_warning": _CV_Q_WARNING, "data": result})
+    return _tool_response(result)
 
 
 async def thruk_run_background_query(
@@ -1506,23 +1488,21 @@ async def thruk_run_background_query(
     `thruk_query`."""
     method_upper = method.upper()
     if method_upper not in _ALLOWED_METHODS:
-        return json.dumps(
-            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
-            indent=2,
+        return _tool_response(
+            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")}
         )
     # Defense-in-depth: thruk_run_background_query is already removed from the
     # registry when read_only=True (is_write=True in ToolSpec), but guard the
     # function body as well to prevent bypasses via direct calls or future
     # refactors that re-expose the tool.
     if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
-        return json.dumps(
+        return _tool_response(
             {
                 "error": (
                     f"thruk_run_background_query: method {method_upper!r} blocked by "
                     "THRUK_READ_ONLY=true. Only GET and HEAD are permitted in read-only mode."
                 )
-            },
-            indent=2,
+            }
         )
     path_err = _validate_rest_path(path)
     if path_err is not None:
@@ -1536,7 +1516,7 @@ async def thruk_run_background_query(
         backends=_backends(backends),
         poll_timeout=poll_timeout,
     )
-    return json.dumps(result, indent=2, default=str)
+    return _tool_response(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1571,10 +1551,8 @@ async def thruk_schedule_downtime(
         "comment_author": author,
         "fixed": "1" if fixed else "0",
     }
-    return json.dumps(
-        await _get_client().post(endpoint, data=payload, backends=_backends(backends)),
-        indent=2,
-        default=str,
+    return _tool_response(
+        await _get_client().post(endpoint, data=payload, backends=_backends(backends))
     )
 
 
@@ -1601,10 +1579,8 @@ async def thruk_acknowledge(
         "send_notification": "1" if notify else "0",
         "persistent_comment": "1" if persistent else "0",
     }
-    return json.dumps(
-        await _get_client().post(endpoint, data=payload, backends=_backends(backends)),
-        indent=2,
-        default=str,
+    return _tool_response(
+        await _get_client().post(endpoint, data=payload, backends=_backends(backends))
     )
 
 
@@ -1617,11 +1593,7 @@ async def thruk_remove_acknowledgement(
         if service
         else f"/hosts/{_seg(host)}/cmd/remove_host_acknowledgement"
     )
-    return json.dumps(
-        await _get_client().post(endpoint, backends=_backends(backends)),
-        indent=2,
-        default=str,
-    )
+    return _tool_response(await _get_client().post(endpoint, backends=_backends(backends)))
 
 
 async def thruk_recheck(
@@ -1634,12 +1606,8 @@ async def thruk_recheck(
     else:
         cmd = "schedule_forced_host_check" if forced else "schedule_host_check"
         endpoint = f"/hosts/{_seg(host)}/cmd/{cmd}"
-    return json.dumps(
-        await _get_client().post(
-            endpoint, data={"start_time": "now"}, backends=_backends(backends)
-        ),
-        indent=2,
-        default=str,
+    return _tool_response(
+        await _get_client().post(endpoint, data={"start_time": "now"}, backends=_backends(backends))
     )
 
 
@@ -1670,10 +1638,8 @@ async def thruk_delete_downtime(
         if service
         else f"/hosts/{_seg(host)}/cmd/del_downtime"
     )
-    return json.dumps(
-        await client.post(endpoint, data={"downtime_id": str(downtime_id)}, backends=be),
-        indent=2,
-        default=str,
+    return _tool_response(
+        await client.post(endpoint, data={"downtime_id": str(downtime_id)}, backends=be)
     )
 
 
@@ -1682,7 +1648,7 @@ async def thruk_get_downtime(downtime_id: int, backends: str | None = None) -> s
     data = await _get_client().get(
         f"/downtimes/{_seg(str(downtime_id))}", backends=_backends(backends)
     )
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def thruk_schedule_host_services_downtime(
@@ -1699,14 +1665,12 @@ async def thruk_schedule_host_services_downtime(
     (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host
     itself or for one specific service."""
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
-    return json.dumps(
+    return _tool_response(
         await _get_client().post(
             f"/hosts/{_seg(host)}/cmd/schedule_host_svc_downtime",
             data=payload,
             backends=_backends(backends),
-        ),
-        indent=2,
-        default=str,
+        )
     )
 
 
@@ -1731,14 +1695,12 @@ async def thruk_schedule_propagated_host_downtime(
         else "schedule_and_propagate_host_downtime"
     )
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
-    return json.dumps(
+    return _tool_response(
         await _get_client().post(
             f"/hosts/{_seg(host)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
-        ),
-        indent=2,
-        default=str,
+        )
     )
 
 
@@ -1761,14 +1723,12 @@ async def thruk_schedule_hostgroup_downtime(
         else "schedule_hostgroup_host_downtime"
     )
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
-    return json.dumps(
+    return _tool_response(
         await _get_client().post(
             f"/hostgroups/{_seg(hostgroup)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
-        ),
-        indent=2,
-        default=str,
+        )
     )
 
 
@@ -1792,14 +1752,12 @@ async def thruk_schedule_servicegroup_downtime(
         else "schedule_servicegroup_svc_downtime"
     )
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
-    return json.dumps(
+    return _tool_response(
         await _get_client().post(
             f"/servicegroups/{_seg(servicegroup)}/cmd/{cmd}",
             data=payload,
             backends=_backends(backends),
-        ),
-        indent=2,
-        default=str,
+        )
     )
 
 
@@ -1836,9 +1794,8 @@ async def thruk_delete_active_downtimes(
         downtimes = [d for d in all_dts if not d.get("service_description")]
 
     if not downtimes:
-        return json.dumps(
-            {"deleted": [], "errors": [], "count": 0, "message": "No active downtimes found."},
-            indent=2,
+        return _tool_response(
+            {"deleted": [], "errors": [], "count": 0, "message": "No active downtimes found."}
         )
 
     # Thruk REST exposes only `del_downtime` (not `del_svc_downtime` /
@@ -1868,11 +1825,7 @@ async def thruk_delete_active_downtimes(
     deleted = [{"downtime_id": i, "result": r} for i, r, e in _gather_results if e is None]
     errors = [{"downtime_id": i, "error": str(e)} for i, _, e in _gather_results if e is not None]
 
-    return json.dumps(
-        {"deleted": deleted, "errors": errors, "count": len(deleted)},
-        indent=2,
-        default=str,
-    )
+    return _tool_response({"deleted": deleted, "errors": errors, "count": len(deleted)})
 
 
 async def thruk_delete_downtimes_by_filter(
@@ -1964,7 +1917,7 @@ async def thruk_delete_downtimes_by_filter(
         result["host_downtimes_deleted"] = host_deleted
         result["host_downtimes_errors"] = host_errors
 
-    return json.dumps(result, indent=2, default=str)
+    return _tool_response(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1975,19 +1928,19 @@ async def thruk_delete_downtimes_by_filter(
 async def _host_resource(name: str) -> str:
     """Single host as a JSON document, addressable as thruk://hosts/<name>."""
     data = await _get_client().get(f"/hosts/{_seg(name)}")
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def _service_resource(host: str, service: str) -> str:
     """Single service as a JSON document (thruk://services/<host>/<service>)."""
     data = await _get_client().get(f"/services/{_seg(host)}/{_seg(service)}")
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def _hostgroup_resource(name: str) -> str:
     """Host group config + members as JSON (thruk://hostgroups/<name>)."""
     data = await _get_client().get(f"/hostgroups/{_seg(name)}")
-    return json.dumps(data, indent=2, default=str)
+    return _tool_response(data)
 
 
 async def _problems_resource() -> str:
@@ -2010,7 +1963,7 @@ async def _problems_resource() -> str:
         _get_client().get("/hosts", params=host_params),
         _get_client().get("/services", params=svc_params),
     )
-    return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+    return _tool_response({"hosts": hosts, "services": services})
 
 
 async def _stats_resource() -> str:
@@ -2019,7 +1972,7 @@ async def _stats_resource() -> str:
         _get_client().get("/hosts/stats"),
         _get_client().get("/services/stats"),
     )
-    return json.dumps({"hosts": hosts, "services": services}, indent=2, default=str)
+    return _tool_response({"hosts": hosts, "services": services})
 
 
 # ---------------------------------------------------------------------------
@@ -2162,7 +2115,7 @@ async def thruk_oldest_problems(
 
     rows.sort(key=lambda r: r["_lsc"])
     trimmed = [{k: v for k, v in r.items() if k != "_lsc"} for r in rows[:limit]]
-    return json.dumps(trimmed, indent=2, default=str)
+    return _tool_response(trimmed)
 
 
 async def thruk_unacked_critical(
@@ -2225,7 +2178,7 @@ async def thruk_unacked_critical(
         )
 
     rows.sort(key=lambda r: r["duration_minutes"], reverse=True)
-    return json.dumps(rows, indent=2, default=str)
+    return _tool_response(rows)
 
 
 async def thruk_stale_acks(
@@ -2269,7 +2222,7 @@ async def thruk_stale_acks(
         )
 
     rows.sort(key=lambda r: r["ack_since_days"], reverse=True)
-    return json.dumps(rows, indent=2, default=str)
+    return _tool_response(rows)
 
 
 async def thruk_problems_by_hostgroup(
@@ -2314,7 +2267,7 @@ async def thruk_problems_by_hostgroup(
         key=lambda r: r["hosts_down"] * 10000 + r["services_crit"] * 100 + r["services_warn"],
         reverse=True,
     )
-    return json.dumps(rows, indent=2, default=str)
+    return _tool_response(rows)
 
 
 async def thruk_concurrent_failures(
@@ -2346,7 +2299,7 @@ async def thruk_concurrent_failures(
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
-        return json.dumps({"error": errs[0]}, indent=2)
+        return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^HOST ALERT"
     extra["state[gte]"] = "1"  # exclude state 0 (UP / recovery)
@@ -2454,7 +2407,7 @@ async def thruk_concurrent_failures(
         )
     if warnings:
         payload["_warnings"] = warnings
-    return json.dumps(payload, indent=2, default=str)
+    return _tool_response(payload)
 
 
 # ---------------------------------------------------------------------------
