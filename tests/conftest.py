@@ -36,37 +36,8 @@ class _ServerProxy:
         return [TextContent(type="text", text=result)]
 
     async def read_resource(self, uri) -> list:
-        """Call the appropriate resource function directly."""
-        from thruk_mcp.server import (
-            _host_resource,
-            _hostgroup_resource,
-            _problems_resource,
-            _service_resource,
-            _stats_resource,
-        )
-
-        s = str(uri)
-        if s.startswith("thruk://hosts/"):
-            name = s.split("/hosts/", 1)[1]
-            content = await _host_resource(name)
-        elif s.startswith("thruk://services/"):
-            parts = s.split("/services/", 1)[1].split("/", 1)
-            content = await _service_resource(parts[0], parts[1])
-        elif s.startswith("thruk://hostgroups/"):
-            name = s.split("/hostgroups/", 1)[1]
-            content = await _hostgroup_resource(name)
-        elif s == "thruk://problems":
-            content = await _problems_resource()
-        elif s == "thruk://stats":
-            content = await _stats_resource()
-        else:
-            raise ValueError(f"Unknown resource URI: {uri}")
-
-        class _Content:
-            def __init__(self, text: str) -> None:
-                self.content = text
-
-        return [_Content(content)]
+        """Delegate to ThrukMCPServer.read_resource (issue #145: tests the real path)."""
+        return await self._server.read_resource(uri)
 
 
 @pytest_asyncio.fixture
