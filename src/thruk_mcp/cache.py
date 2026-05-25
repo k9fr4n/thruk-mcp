@@ -3,13 +3,14 @@
 Intended for use inside a single ThrukClient instance to absorb the burst of
 identical calls an LLM agent typically issues (e.g. /sites, /hosts/stats called
 from 5 different tools in one turn). Not a replacement for a real cache like
-Redis — process-local, bounded by ``maxsize`` with LRU-by-expiry eviction.
+Redis — process-local, bounded by ``maxsize`` with O(1) FIFO/LRU-style eviction.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict
 from typing import Any
 
 __all__ = ["TTLCache"]
@@ -18,10 +19,13 @@ __all__ = ["TTLCache"]
 class TTLCache:
     """Async-safe TTL cache keyed by an arbitrary hashable.
 
-    When the number of stored entries reaches ``maxsize``, inserting a new key
-    evicts the entry whose expiry timestamp is the earliest (i.e. the one that
-    would expire first). Updating an existing key is always allowed without
-    triggering eviction.
+    Backed by an :class:`~collections.OrderedDict` so eviction is O(1). When the
+    number of stored entries reaches ``maxsize``, inserting a new key evicts the
+    least-recently-used entry (the head of the order). Successful ``get`` calls
+    and updates of an existing key move the entry to the tail, so frequently
+    accessed keys are retained. Since insertions happen in monotonic time and
+    typical workloads use a uniform TTL, FIFO order also tracks expiry order in
+    practice.
     """
 
     def __init__(
@@ -34,7 +38,7 @@ class TTLCache:
         self.maxsize = maxsize
         self._clock = clock
         self._lock = asyncio.Lock()
-        self._store: dict[Any, tuple[float, Any]] = {}
+        self._store: OrderedDict[Any, tuple[float, Any]] = OrderedDict()
 
     async def get(self, key: Any) -> Any | None:
         async with self._lock:
@@ -45,15 +49,19 @@ class TTLCache:
             if self._clock() >= expires_at:
                 self._store.pop(key, None)
                 return None
+            # Mark as most-recently-used so it survives subsequent evictions.
+            self._store.move_to_end(key)
             return value
 
     async def set(self, key: Any, value: Any, ttl: float | None = None) -> None:
         ttl = self.default_ttl if ttl is None else ttl
         async with self._lock:
-            if key not in self._store and len(self._store) >= self.maxsize:
-                # Evict the entry with the earliest expiry timestamp.
-                oldest = min(self._store, key=lambda k: self._store[k][0])
-                del self._store[oldest]
+            if key in self._store:
+                # Existing key: refresh order, no eviction needed.
+                self._store.move_to_end(key)
+            elif len(self._store) >= self.maxsize:
+                # O(1) eviction of the least-recently-used entry.
+                self._store.popitem(last=False)
             self._store[key] = (self._clock() + ttl, value)
 
     async def clear(self) -> None:

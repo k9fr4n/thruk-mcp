@@ -112,6 +112,68 @@ async def test_updating_existing_key_does_not_evict() -> None:
     assert await c.get("b") == 2
 
 
+# ---------------------------------------------------------------------------
+# OrderedDict-backed O(1) eviction (issue #148)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_marks_entry_as_recently_used() -> None:
+    """A successful get() should move the entry to the tail so the next eviction
+    drops the least-recently-used key instead of the freshly-touched one.
+
+    Bug (before fix): eviction picked the entry with the smallest expiry
+    timestamp via an O(n) min() scan; getting an entry did not influence
+    eviction order. After switching to OrderedDict + move_to_end, get() now
+    promotes the entry to the MRU position.
+    """
+    clock = FakeClock()
+    cap = 2
+    c = TTLCache(default_ttl=100.0, maxsize=cap, clock=clock)
+
+    await c.set("a", 1)
+    await c.set("b", 2)
+    # Touch "a" so it becomes MRU; "b" is now the LRU candidate.
+    assert await c.get("a") == 1
+
+    # Inserting a new key must evict "b" (LRU), not "a".
+    await c.set("c", 3)
+
+    assert len(c) == cap
+    assert await c.get("a") == 1
+    assert await c.get("b") is None
+    assert await c.get("c") == 3
+
+
+@pytest.mark.asyncio
+async def test_fifo_eviction_when_no_gets() -> None:
+    """With no intervening get() calls, eviction follows insertion order (FIFO)."""
+    clock = FakeClock()
+    cap = 3
+    c = TTLCache(default_ttl=100.0, maxsize=cap, clock=clock)
+
+    await c.set("k1", 1)
+    await c.set("k2", 2)
+    await c.set("k3", 3)
+    await c.set("k4", 4)  # evicts the head: "k1"
+
+    assert len(c) == cap
+    assert await c.get("k1") is None
+    assert await c.get("k2") == 2
+    assert await c.get("k3") == 3
+    assert await c.get("k4") == 4
+
+
+@pytest.mark.asyncio
+async def test_uses_ordereddict_internal_store() -> None:
+    """Pin the internal data structure choice: OrderedDict is required for the
+    O(1) eviction path (popitem(last=False) and move_to_end)."""
+    from collections import OrderedDict
+
+    c = TTLCache()
+    assert isinstance(c._store, OrderedDict)
+
+
 @pytest.mark.asyncio
 async def test_maxsize_zero_still_inserts_one_entry() -> None:
     """maxsize=0 is an edge case: every insert evicts the previous entry."""
