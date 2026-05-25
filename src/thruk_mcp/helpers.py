@@ -7,10 +7,39 @@ convention.
 
 from __future__ import annotations
 
+import contextvars
 import json
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as _urlquote
+
+if TYPE_CHECKING:
+    from .client import ThrukClient
+
+# ---------------------------------------------------------------------------
+# Module-level client accessor (shared by server.py and tools/* submodules)
+# ---------------------------------------------------------------------------
+# Use a ContextVar instead of a bare module-level global so two
+# build_server() calls in the same process (e.g. tests, multi-tenant hosts)
+# do not clobber each other.  Each asyncio task inherits the parent context,
+# so set() in build_server() is visible to every tool coroutine spawned from
+# that same event-loop context.  (issue #143)
+_client_var: contextvars.ContextVar[ThrukClient] = contextvars.ContextVar("thruk_mcp_client")
+
+
+def _get_client() -> ThrukClient:
+    """Return the ThrukClient bound to the current async context.
+
+    Raises ``RuntimeError`` if no client has been registered yet — this means
+    ``build_server()`` has not been called in the active context.
+    """
+    try:
+        return _client_var.get()
+    except LookupError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "thruk-mcp: server not initialised — call build_server() first."
+        ) from exc
+
 
 # ---------------------------------------------------------------------------
 # Query parameter helpers
@@ -176,3 +205,17 @@ def _tool_response(payload: Any, warnings: list[str] | None = None) -> str:
         else:
             payload = {"data": payload, "_warnings": warnings}
     return json.dumps(payload, indent=2, default=str)
+
+
+__all__ = [
+    "_backends",
+    "_build_cv_params",
+    "_client_var",
+    "_downtime_payload",
+    "_duration_human",
+    "_get_client",
+    "_list_params",
+    "_seg",
+    "_tool_response",
+    "_ts",
+]

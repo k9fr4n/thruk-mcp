@@ -18,7 +18,6 @@ functions defined as closures inside ``build_server()``, yielding
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import fnmatch
 import logging
 import re
@@ -81,6 +80,8 @@ from .filters import (
 from .helpers import (
     _backends,
     _build_cv_params,
+    _client_var,
+    _get_client,
     _seg,
     _tool_response,
     _ts,
@@ -93,6 +94,27 @@ from .helpers import (
 )
 from .helpers import (
     _list_params as _list_params,
+)
+from .prompts import diagnose_flapping, investigate_alert, schedule_maintenance
+from .resources import (
+    _host_resource,
+    _hostgroup_resource,
+    _problems_resource,
+    _service_resource,
+    _stats_resource,
+)
+from .tools.escape import (
+    _ALLOWED_METHODS as _ALLOWED_METHODS,
+)
+from .tools.escape import (
+    _REST_PATH_PREFIXES as _REST_PATH_PREFIXES,
+)
+from .tools.escape import (
+    _validate_rest_path as _validate_rest_path,
+)
+from .tools.escape import (
+    thruk_query,
+    thruk_run_background_query,
 )
 
 __all__ = ["WRITE_TOOLS", "ThrukMCPServer", "build_server"]
@@ -142,23 +164,13 @@ HOST_STATE_MAP: dict[str, int] = HOST_STATE_INT
 SVC_STATE_MAP: dict[str, int] = SVC_STATE_INT
 
 # ---------------------------------------------------------------------------
-# Module-level client accessor
+# Module-level client accessor (issue #143)
 # ---------------------------------------------------------------------------
-# Use a ContextVar instead of a bare module-level global so that two
-# build_server() calls in the same process (e.g. in tests or multi-tenant
-# hosts) cannot clobber each other's client.  Each asyncio task inherits the
-# context from its parent, so set() in build_server() is visible to all tool
-# coroutines spawned from the same event-loop context.  (issue #143)
-_client_var: contextvars.ContextVar[ThrukClient] = contextvars.ContextVar("thruk_mcp_client")
-
-
-def _get_client() -> ThrukClient:
-    try:
-        return _client_var.get()
-    except LookupError as exc:  # pragma: no cover
-        raise RuntimeError(
-            "thruk-mcp: server not initialised — call build_server() first."
-        ) from exc
+# ``_client_var`` and ``_get_client`` now live in :mod:`thruk_mcp.helpers` so
+# that the ``tools/`` sub-package (issue #147) and any other module can reach
+# the active ThrukClient without creating a cycle through ``server.py``.
+# They are re-exported from this module so callers that do
+# ``from thruk_mcp.server import _client_var`` (e.g. tests) keep working.
 
 
 # ---------------------------------------------------------------------------
@@ -1352,171 +1364,12 @@ async def thruk_recent_events(
 
 
 # ---------------------------------------------------------------------------
-# Security constants for thruk_query / thruk_run_background_query validation
+# Escape-hatch tools (thruk_query, thruk_run_background_query) — issue #147
 # ---------------------------------------------------------------------------
-
-# Allowed HTTP verbs for the escape-hatch tools.  TRACE and CONNECT are
-# omitted intentionally: TRACE can leak auth headers (HTTP TRACE attack) and
-# CONNECT is a proxy-tunnelling verb that has no valid Thruk REST use-case.
-_ALLOWED_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
-
-# Known Thruk REST resource prefixes.  Any path that does NOT start with one
-# of these is rejected before a request is attempted, preventing callers from
-# routing to CGI endpoints (e.g. /cgi-bin/cmd.cgi) that bypass the Thruk REST
-# authentication layer.
-_REST_PATH_PREFIXES: tuple[str, ...] = (
-    "/hosts",
-    "/services",
-    "/hostgroups",
-    "/servicegroups",
-    "/contacts",
-    "/contactgroups",
-    "/timeperiods",
-    "/commands",
-    "/downtimes",
-    "/comments",
-    "/logs",
-    "/sites",
-    "/processinfo",
-    "/system",
-    "/thruk",
-)
-
-
-def _validate_rest_path(path: str) -> str | None:
-    """Return an error JSON string if *path* is unsafe, or ``None`` when valid.
-
-    Rules enforced:
-    - Must start with ``/`` (not a relative reference).
-    - Must not contain ``..`` (path-traversal segment) which could escape the
-      ``/thruk/r/`` REST prefix and reach internal CGI endpoints.
-    - Must start with a known Thruk REST resource prefix (see
-      ``_REST_PATH_PREFIXES``) to prevent routing to non-REST CGI endpoints.
-
-    Callers should return the error string immediately without making any
-    HTTP request.
-    """
-    if not path.startswith("/"):
-        return _tool_response({"error": (f"Invalid path: must start with '/'. Got: {path!r}")})
-    if ".." in path:
-        return _tool_response({"error": (f"Invalid path: must not contain '..'. Got: {path!r}")})
-    if not any(path.startswith(p) for p in _REST_PATH_PREFIXES):
-        return _tool_response(
-            {
-                "error": (
-                    f"Path {path!r} does not start with a known Thruk REST prefix. "
-                    f"Allowed prefixes: {sorted(_REST_PATH_PREFIXES)}"
-                )
-            }
-        )
-    return None
-
-
-async def thruk_query(
-    path: str,
-    method: str = "GET",
-    params: dict[str, Any] | None = None,
-    data: dict[str, Any] | None = None,
-    backends: str | None = None,
-) -> str:
-    """Escape hatch: call any Thruk REST endpoint. `path` is everything after `/thruk/r`
-    (e.g. `/hosts/srv01/services`). `params` is the query string, `data` the form body.
-    See https://www.thruk.org/documentation/rest.html for the full catalogue.
-
-    WARNING — custom-variable filtering: do NOT use ``q="custom_variables >= 'NAME val'"``
-    or ``q="custom_variables = 'NAME val'"`` — Thruk's REST q= parser silently drops these
-    filters and returns ALL objects (no error, just wrong results).  Instead, pass the
-    variable as a top-level param: ``params={"_VARNAME": "value"}`` for host/service own
-    vars, or ``params={"_HOSTVARNAME": "value"}`` for host vars on a service endpoint.
-    Prefer ``thruk_list_hosts``/``thruk_list_services`` with ``custom_vars={}`` which
-    handle this automatically.
-    """
-    method_upper = method.upper()
-    if method_upper not in _ALLOWED_METHODS:
-        return _tool_response(
-            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")}
-        )
-    if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
-        return _tool_response(
-            {
-                "error": (
-                    f"thruk_query: method {method_upper!r} blocked by THRUK_READ_ONLY=true. "
-                    "Only GET and HEAD are permitted in read-only mode."
-                )
-            }
-        )
-    path_err = _validate_rest_path(path)
-    if path_err is not None:
-        return path_err
-
-    _CV_Q_WARNING = (
-        "q= filter contains 'custom_variables' which is silently ignored by Thruk's REST "
-        "q= parser — results likely include ALL objects (filter not applied). "
-        "Pass the variable as a top-level param instead: "
-        "_VARNAME=value (own var) or _HOSTVARNAME=value (host var on service endpoint). "
-        "Or use thruk_list_hosts / thruk_list_services with custom_vars={'VARNAME': 'value'}."
-    )
-    q_val = str((params or {}).get("q", ""))
-    if "custom_variables" in q_val:
-        log.warning("thruk_query: %s", _CV_Q_WARNING)
-    result = await _get_client().request(
-        method_upper,
-        path,
-        params=params,
-        data=data,
-        backends=_backends(backends),
-    )
-    if "custom_variables" in q_val:
-        return _tool_response({"_warning": _CV_Q_WARNING, "data": result})
-    return _tool_response(result)
-
-
-async def thruk_run_background_query(
-    path: str,
-    method: str = "POST",
-    params: dict[str, Any] | None = None,
-    data: dict[str, Any] | None = None,
-    backends: str | None = None,
-    poll_timeout: float = 300.0,
-) -> str:
-    """Run a potentially long Thruk REST request via the `background=1`
-    mechanism. The server returns a job id immediately, then we poll
-    `/thruk/jobs/<id>/output` until completion (default 5 min timeout).
-
-    Use this for expensive queries: full config dumps, large availability
-    reports, recursive config checks. Same `path` semantics as
-    `thruk_query`."""
-    method_upper = method.upper()
-    if method_upper not in _ALLOWED_METHODS:
-        return _tool_response(
-            {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")}
-        )
-    # Defense-in-depth: thruk_run_background_query is already removed from the
-    # registry when read_only=True (is_write=True in ToolSpec), but guard the
-    # function body as well to prevent bypasses via direct calls or future
-    # refactors that re-expose the tool.
-    if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
-        return _tool_response(
-            {
-                "error": (
-                    f"thruk_run_background_query: method {method_upper!r} blocked by "
-                    "THRUK_READ_ONLY=true. Only GET and HEAD are permitted in read-only mode."
-                )
-            }
-        )
-    path_err = _validate_rest_path(path)
-    if path_err is not None:
-        return path_err
-
-    result = await _get_client().run_background(
-        path,
-        method=method_upper,
-        params=params,
-        data=data,
-        backends=_backends(backends),
-        poll_timeout=poll_timeout,
-    )
-    return _tool_response(result)
+# Moved to :mod:`thruk_mcp.tools.escape`.  Names are re-exported at the top
+# of this module via ``from .tools.escape import ...`` for backward
+# compatibility with callers that still do
+# ``from thruk_mcp.server import thruk_query`` (tests, external users).
 
 
 # ---------------------------------------------------------------------------
@@ -1921,128 +1774,13 @@ async def thruk_delete_downtimes_by_filter(
 
 
 # ---------------------------------------------------------------------------
-# Resources (module-level)
+# Resources & prompts (issue #147 — server.py split)
 # ---------------------------------------------------------------------------
-
-
-async def _host_resource(name: str) -> str:
-    """Single host as a JSON document, addressable as thruk://hosts/<name>."""
-    data = await _get_client().get(f"/hosts/{_seg(name)}")
-    return _tool_response(data)
-
-
-async def _service_resource(host: str, service: str) -> str:
-    """Single service as a JSON document (thruk://services/<host>/<service>)."""
-    data = await _get_client().get(f"/services/{_seg(host)}/{_seg(service)}")
-    return _tool_response(data)
-
-
-async def _hostgroup_resource(name: str) -> str:
-    """Host group config + members as JSON (thruk://hostgroups/<name>)."""
-    data = await _get_client().get(f"/hostgroups/{_seg(name)}")
-    return _tool_response(data)
-
-
-async def _problems_resource() -> str:
-    """Current unhandled host/service problems as a JSON document."""
-    host_params = {
-        "state": 1,
-        "acknowledged": 0,
-        "scheduled_downtime_depth": 0,
-        "columns": DEFAULT_HOST_COLUMNS,
-        "limit": 500,
-    }
-    svc_params = {
-        "state[gte]": 1,
-        "acknowledged": 0,
-        "scheduled_downtime_depth": 0,
-        "columns": DEFAULT_SERVICE_COLUMNS,
-        "limit": 500,
-    }
-    hosts, services = await asyncio.gather(
-        _get_client().get("/hosts", params=host_params),
-        _get_client().get("/services", params=svc_params),
-    )
-    return _tool_response({"hosts": hosts, "services": services})
-
-
-async def _stats_resource() -> str:
-    """Aggregated host/service stats (cached ~15s)."""
-    hosts, services = await asyncio.gather(
-        _get_client().get("/hosts/stats"),
-        _get_client().get("/services/stats"),
-    )
-    return _tool_response({"hosts": hosts, "services": services})
-
-
-# ---------------------------------------------------------------------------
-# Prompts (module-level)
-# ---------------------------------------------------------------------------
-
-
-def investigate_alert(host: str, service: str | None = None) -> str:
-    target = f"host '{host}'" if not service else f"service '{service}' on host '{host}'"
-    steps = "\n".join(
-        [
-            f"1. Fetch the current state of {target} using `thruk_get_host`"
-            + ("/`thruk_get_service`" if service else ""),
-            "2. Pull the recent alert history via `thruk_list_alerts` (last 6h)",
-            "3. Check notifications sent via `thruk_list_notifications`",
-            "4. Inspect related comments and acknowledgements with `thruk_list_comments`",
-            "5. Verify there is no active downtime via `thruk_list_downtimes`",
-            "6. Summarise root-cause hypotheses and propose 2-3 remediation steps",
-            "7. If the operator confirms, acknowledge with `thruk_acknowledge` "
-            "and/or trigger a forced recheck with `thruk_recheck`.",
-        ]
-    )
-    return (
-        f"You are the on-call SRE assistant. The user wants to investigate the "
-        f"current alert on {target}. Proceed methodically:\n\n{steps}\n\n"
-        "Do not modify the monitoring state without explicit user confirmation."
-    )
-
-
-def schedule_maintenance(target: str, duration_minutes: int = 120, kind: str = "hostgroup") -> str:
-    kind = kind.lower()
-    if kind not in {"host", "service", "hostgroup", "servicegroup"}:
-        kind = "hostgroup"
-    tool_map = {
-        "host": "thruk_schedule_downtime",
-        "service": "thruk_schedule_downtime",
-        "hostgroup": "thruk_schedule_hostgroup_downtime",
-        "servicegroup": "thruk_schedule_servicegroup_downtime",
-    }
-    return (
-        f"The user wants to schedule {duration_minutes} minutes of maintenance "
-        f"on the {kind} '{target}'.\n\n"
-        f"1. Confirm the {kind} exists by listing it (e.g. `thruk_list_{kind}s` "
-        "or `thruk_get_host`).\n"
-        "2. Show the user the list of impacted hosts/services.\n"
-        "3. Ask explicit confirmation before applying.\n"
-        f"4. On 'yes', call `{tool_map[kind]}` with "
-        f"duration_minutes={duration_minutes} and a clear comment explaining the reason.\n"
-        "5. Verify the downtime is active via `thruk_list_downtimes`.\n"
-    )
-
-
-def diagnose_flapping(host: str, service: str) -> str:
-    return (
-        f"The user reports that service '{service}' on host '{host}' is flapping. "
-        "Carry out a focused investigation:\n\n"
-        "1. `thruk_get_service` to confirm state and current `is_flapping` flag.\n"
-        "2. `thruk_list_alerts` for the same host/service over the last 24h, "
-        "sorted -time, to count state transitions.\n"
-        "3. `thruk_list_logs` filtered on `message_regex='flapp'` to confirm "
-        "flap-detection events.\n"
-        "4. If perf-data is available in the service row, inspect the metric "
-        "that is oscillating (rta, latency, queue depth, ...).\n"
-        "5. Summarise likely causes (network jitter, threshold too tight, "
-        "passive check freshness, ...).\n"
-        "6. Propose remediation: widen warning/critical thresholds, increase "
-        "max_check_attempts, disable flap detection if intentional, or add a "
-        "downtime while a fix is rolled out.\n"
-        "7. Do not change Thruk state without confirmation."
-    )
+# Resource handlers (``_host_resource``, ``_service_resource``, ...) moved to
+# :mod:`thruk_mcp.resources`; prompt templates (``investigate_alert``,
+# ``schedule_maintenance``, ``diagnose_flapping``) moved to
+# :mod:`thruk_mcp.prompts`.  Both sets are re-imported at the top of this
+# module so external callers and tests keep working unchanged.
 
 
 # ---------------------------------------------------------------------------
