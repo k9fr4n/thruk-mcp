@@ -13,6 +13,8 @@ import httpx
 from .cache import TTLCache
 from .config import ThrukConfig
 
+__all__ = ["ThrukClient", "ThrukError"]
+
 log = logging.getLogger("thruk_mcp.client")
 
 # Paths whose responses change slowly enough to be safely cached for a few

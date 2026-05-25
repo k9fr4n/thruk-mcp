@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
+__all__ = ["audited", "configure", "log_call"]
+
 log = logging.getLogger("thruk_mcp.audit")
 
 # Sensitive keys we never log (none today, but cheap to enumerate for safety).

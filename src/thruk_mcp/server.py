@@ -83,6 +83,8 @@ from .helpers import (
     _list_params as _list_params,
 )
 
+__all__ = ["WRITE_TOOLS", "ThrukMCPServer", "build_server"]
+
 log = logging.getLogger("thruk_mcp.server")
 
 # WRITE_TOOLS is derived from TOOL_REGISTRY below (see end of module).
