@@ -102,6 +102,11 @@ def _is_auditable_write(name: str, arguments: dict[str, Any]) -> bool:
     is intentionally absent from that set (it also serves read/GET requests and
     must NOT be stripped in read-only mode), but its non-GET/HEAD invocations
     are still writes and must be audited.  We inspect ``method`` at call time.
+
+    Note: since issue #138, non-GET/HEAD calls to ``thruk_query`` are also
+    *blocked* (not merely audited) when ``THRUK_READ_ONLY=true``.  This function
+    only governs audit logging — the read-only enforcement lives in the tool
+    function bodies.
     """
     if name in WRITE_TOOLS:
         return True
@@ -1317,6 +1322,16 @@ async def thruk_query(
             {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
             indent=2,
         )
+    if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
+        return json.dumps(
+            {
+                "error": (
+                    f"thruk_query: method {method_upper!r} blocked by THRUK_READ_ONLY=true. "
+                    "Only GET and HEAD are permitted in read-only mode."
+                )
+            },
+            indent=2,
+        )
     path_err = _validate_rest_path(path)
     if path_err is not None:
         return path_err
@@ -1362,6 +1377,20 @@ async def thruk_run_background_query(
     if method_upper not in _ALLOWED_METHODS:
         return json.dumps(
             {"error": (f"Invalid HTTP method {method!r}. Allowed: {sorted(_ALLOWED_METHODS)}")},
+            indent=2,
+        )
+    # Defense-in-depth: thruk_run_background_query is already removed from the
+    # registry when read_only=True (is_write=True in ToolSpec), but guard the
+    # function body as well to prevent bypasses via direct calls or future
+    # refactors that re-expose the tool.
+    if _get_client().config.read_only and method_upper not in {"GET", "HEAD"}:
+        return json.dumps(
+            {
+                "error": (
+                    f"thruk_run_background_query: method {method_upper!r} blocked by "
+                    "THRUK_READ_ONLY=true. Only GET and HEAD are permitted in read-only mode."
+                )
+            },
             indent=2,
         )
     path_err = _validate_rest_path(path)
