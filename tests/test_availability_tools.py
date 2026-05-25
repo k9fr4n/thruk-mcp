@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from tests.conftest import ok
+from thruk_mcp.server import _parse_thruk_time
 
 
 # ---------------------------------------------------------------------------
@@ -136,9 +138,7 @@ async def test_host_availability_include_soft_states(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_host_availability_iso_since(mocked_server) -> None:
-    """ISO datetime since/until are converted to epoch integers (start < end, both > 0)."""
-    from datetime import datetime, timezone
-
+    """ISO datetime since/until are converted to the correct epoch integers."""
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
         return_value=ok({})
@@ -148,13 +148,11 @@ async def test_host_availability_iso_since(mocked_server) -> None:
         {"host": "web01", "since": "2026-05-01 00:00:00", "until": "2026-05-25 00:00:00"},
     )
     params = route.calls.last.request.url.params
-    start = int(params["start"])
-    end = int(params["end"])
-    expected_start = int(datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp())
-    expected_end = int(datetime(2026, 5, 25, tzinfo=timezone.utc).timestamp())
-    assert start == expected_start
-    assert end == expected_end
-    assert start < end
+    expected_start = _parse_thruk_time("2026-05-01 00:00:00")
+    expected_end = _parse_thruk_time("2026-05-25 00:00:00")
+    assert int(params["start"]) == expected_start
+    assert int(params["end"]) == expected_end
+    assert expected_start < expected_end
 
 
 @pytest.mark.asyncio
