@@ -6,6 +6,110 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-25
+
+### Added
+- `thruk_host_availability` and `thruk_service_availability` tools: retrieve SLA/availability
+  data from Thruk's `/availability` endpoint (#171, #174).
+
+### Fixed
+- **Security**: scrub Thruk auth headers and API keys from error messages and log output (#149).
+- **Security**: `thruk_query` validates the HTTP method and rejects path traversal (`..`)
+  in the path argument (#123).
+- **Security**: block write methods of `thruk_query` and `thruk_run_background_query`
+  when `THRUK_READ_ONLY=true` (#138).
+- **Security**: URL-encode path segments to prevent host/service name injection.
+- Disable transport-level retries to avoid double-retry amplification with Thruk (#150).
+- `TTLCache`: switch to `OrderedDict` for O(1) eviction; add size cap to prevent unbounded
+  memory growth (#91, #148).
+- Configure explicit `httpx.Limits` / `httpx.Timeout` on the shared `AsyncClient` (#144).
+- Remove the module-level `_client` global from `server.py` (#143).
+- Register MCP resources and prompts on the low-level `Server` object (#145).
+- Paginate `/hosts` lookup in `_resolve_hosts_to_regex` to avoid silent 1 000-host
+  truncation (#142).
+- Parallelise per-id deletions in `thruk_delete_active_downtimes` (#141).
+- Replace deprecated `datetime.utcfromtimestamp()` in `thruk_alert_heatmap` (#140).
+- Use timezone-aware UTC timestamps for Thruk filter parameters (#139).
+- `ThrukConfig.__repr__` exposed the API key in logs and tracebacks (#122).
+- `get_event_loop()` replaced with `get_running_loop()` in `run_background` (client).
+- `ValueError` in `thruk_delete_downtimes_by_filter` escaped `call_tool` and triggered
+  an MCP protocol error (#71).
+- `thruk_query` POST/DELETE calls are now correctly appended to the audit log (#73).
+- Warn at startup when `THRUK_VERIFY_SSL=false` (#74).
+
+### Changed
+- Split monolithic `server.py` (3 000+ lines) into a `tools/` sub-package (#147).
+- Centralise `json.dumps` response builder into a single helper (#146).
+- Unify `_TOOL_DISPATCH` and `_TOOL_SCHEMAS` into a single `ToolSpec` registry (#85).
+- Consolidate duplicated state maps into `constants.py` (#81).
+- Replace sequential `await` chains with `asyncio.gather()` in five tool functions (#75).
+- O(n) sliding-window algorithm in `thruk_concurrent_failures` (#86).
+- Pin dependency upper bounds for `mcp` and `httpx`; add Dependabot config (#78).
+- Pin GitHub Actions steps to commit SHAs instead of mutable tags (#77).
+- Remove `continue-on-error` from `integration.yml` to surface failures explicitly (#151).
+- Add `__all__` exports to all public modules (#88).
+- Enable `disallow_untyped_defs` in mypy; fix all surfaced typing issues (#89).
+- Extract shared aggregation helper for `thruk_top_noisy_hosts` / `thruk_top_noisy_services`
+  (#84).
+- Parametrize duplicated log-family tool tests (#90).
+- Add missing unit tests: `thruk_concurrent_failures`, `thruk_flap_summary`, HTTP 429
+  retry, timeout retry (#83).
+
+## [1.3.0] - 2026-05-22
+
+### Changed
+- Docker MCP Catalog entry (`catalog/tools.json`) updated with `thruk_concurrent_failures`
+  tool metadata (#93).
+
+## [1.2.0] - 2026-05-21
+
+### Added
+- `thruk_alert_heatmap`: alert counts grouped by configurable time bucket over a window.
+- `thruk_recurring_problems`: hosts/services that generated repeated alerts over a window.
+- `thruk_concurrent_failures`: detect windows where multiple hosts failed concurrently (#54).
+- `thruk_oldest_problems`, `thruk_stale_acks`, `thruk_unacked_critical`,
+  `thruk_problems_by_hostgroup`: semantic problem-management tools (#52).
+- `thruk_top_noisy_hosts` and `thruk_top_noisy_services`: rank noisiest items by alert
+  count (#63).
+- `since` / `until` parameters on noisy/flap tools replacing `hours` / `window_hours`
+  (#68).
+
+### Changed
+- Remove spill-to-workdir mechanism (#62).
+
+### Fixed
+- ruff format applied to `server.py` and `test_semantic_tools.py` (#65).
+
+## [1.1.2] - 2026-05-20
+
+### Fixed
+- Filter builder: extract AND scalar leaves from `q=` when an OR subtree is present (#61).
+
+## [1.1.1] - 2026-05-20
+
+### Fixed
+- Filter builder: strip outer parentheses on the root `q=` expression.
+
+## [1.1.0] - 2026-05-20
+
+### Added
+- Structured AND/OR filter tree for all list tools (#60).
+- Custom-variable (`custom_var`) filtering on all list/alert/notification tools (#39).
+- Hostgroup filter on `thruk_problems`, `thruk_list_notifications`,
+  `thruk_recent_events` (#44).
+
+### Fixed
+- Accept numeric strings for state filter in `list_hosts` / `list_services` (#59).
+- Expand `/alerts` and `/notifications` aliases client-side (#41).
+- Correct Thruk REST verb for downtime deletion (#37).
+- Delete ALL active downtimes + explicit host-downtime cleanup (#32).
+- Route background job poll through REST prefix `/r/` (#31).
+- Graceful per-backend fallback on federation failure (#30).
+- Surface `ThrukError` as tool content instead of raising (#29).
+- Switch to POST for log queries when params exceed 3 800 chars (#48).
+- Resolve hostgroup to `host_name[regex]` for log-family tools (#47).
+- Add `contact_name` / `command_name` to notification default columns (#46).
+
 ## [1.0.0] - 2026-05-17
 
 First stable release. The API surface (29 tools, 5 resources, 3 prompts,
