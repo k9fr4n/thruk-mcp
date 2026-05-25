@@ -914,11 +914,12 @@ async def test_recheck_service_unforced(mocked_server) -> None:
 async def test_notifications_disable_host(mocked_server) -> None:
     """Disabling notifications on a host POSTs to the correct command endpoint."""
     mcp, router = mocked_server
-    route = router.post(
-        "https://thruk.test/r/hosts/srv01/cmd/disable_host_notifications"
-    ).mock(return_value=ok({"rc": 0}))
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/disable_host_notifications").mock(
+        return_value=ok({"rc": 0})
+    )
     result_raw = await mcp.call_tool("thruk_notifications", {"host": "srv01", "enabled": False})
     import json as _json
+
     payload = _json.loads(result_raw[0].text)
     assert payload["action"] == "disabled"
     assert payload["target"] == "srv01"
@@ -929,9 +930,9 @@ async def test_notifications_disable_host(mocked_server) -> None:
 async def test_notifications_enable_host(mocked_server) -> None:
     """Enabling notifications on a host POSTs to enable_host_notifications."""
     mcp, router = mocked_server
-    route = router.post(
-        "https://thruk.test/r/hosts/srv01/cmd/enable_host_notifications"
-    ).mock(return_value=ok({"rc": 0}))
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/enable_host_notifications").mock(
+        return_value=ok({"rc": 0})
+    )
     await mcp.call_tool("thruk_notifications", {"host": "srv01", "enabled": True})
     assert route.called
 
@@ -950,6 +951,7 @@ async def test_notifications_disable_service(mocked_server) -> None:
         "thruk_notifications", {"host": "srv01", "service": "ssh", "enabled": False}
     )
     import json as _json
+
     payload = _json.loads(result_raw[0].text)
     assert payload["target"] == "srv01/ssh"
     assert svc_route.called
@@ -976,6 +978,7 @@ async def test_notifications_cascade(mocked_server) -> None:
         "thruk_notifications", {"host": "srv01", "enabled": False, "cascade": True}
     )
     import json as _json
+
     payload = _json.loads(result_raw[0].text)
     assert payload["target"] == "srv01 (host + all services)"
     assert host_route.called
@@ -1580,9 +1583,9 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
     payload = _json.loads(result[0].text)
     assert isinstance(payload, dict), "truncated result must be wrapped in a dict"
     assert "_warnings" in payload, "truncation warning must appear in _warnings"
-    assert any("truncated" in w.lower() for w in payload["_warnings"]), (
-        f"no truncation warning found in {payload['_warnings']}"
-    )
+    assert any(
+        "truncated" in w.lower() for w in payload["_warnings"]
+    ), f"no truncation warning found in {payload['_warnings']}"
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,8 @@
 """Tests for thruk_host_availability and thruk_service_availability (issue #171)."""
 
-from __future__ import annotations  # noqa: I001 - ruff misclassifies section with single stdlib import
+from __future__ import (
+    annotations,
+)  # noqa: I001 - ruff misclassifies section with single stdlib import
 
 import json
 
@@ -8,7 +10,6 @@ import pytest
 
 from tests.conftest import ok
 from thruk_mcp.server import _parse_thruk_time
-
 
 # ---------------------------------------------------------------------------
 # thruk_host_availability
@@ -97,9 +98,7 @@ async def test_host_availability_timeperiod_in_response(mocked_server) -> None:
 async def test_host_availability_with_downtimes(mocked_server) -> None:
     """with_downtimes=True must send withdowntimes=1."""
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
-        return_value=ok({})
-    )
+    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(return_value=ok({}))
     await mcp.call_tool(
         "thruk_host_availability",
         {"host": "web01", "with_downtimes": True},
@@ -112,9 +111,7 @@ async def test_host_availability_with_downtimes(mocked_server) -> None:
 async def test_host_availability_without_downtimes(mocked_server) -> None:
     """with_downtimes=False (default) must NOT send withdowntimes param."""
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
-        return_value=ok({})
-    )
+    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(return_value=ok({}))
     await mcp.call_tool("thruk_host_availability", {"host": "web01"})
     params = route.calls.last.request.url.params
     assert "withdowntimes" not in params
@@ -124,9 +121,7 @@ async def test_host_availability_without_downtimes(mocked_server) -> None:
 async def test_host_availability_include_soft_states(mocked_server) -> None:
     """include_soft_states=True must send includesoftstates=1."""
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
-        return_value=ok({})
-    )
+    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(return_value=ok({}))
     await mcp.call_tool(
         "thruk_host_availability",
         {"host": "web01", "include_soft_states": True},
@@ -139,9 +134,7 @@ async def test_host_availability_include_soft_states(mocked_server) -> None:
 async def test_host_availability_iso_since(mocked_server) -> None:
     """ISO datetime since/until are converted to the correct epoch integers."""
     mcp, router = mocked_server
-    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(
-        return_value=ok({})
-    )
+    route = router.get("https://thruk.test/r/hosts/web01/availability").mock(return_value=ok({}))
     await mcp.call_tool(
         "thruk_host_availability",
         {"host": "web01", "since": "2026-05-01 00:00:00", "until": "2026-05-25 00:00:00"},
@@ -170,9 +163,9 @@ async def test_host_availability_list_response(mocked_server) -> None:
 async def test_host_availability_backends(mocked_server) -> None:
     """backends param routes through /r/sites/<backend>/..."""
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/sites/prod/hosts/web01/availability"
-    ).mock(return_value=ok({"time_up_percent": 100.0}))
+    route = router.get("https://thruk.test/r/sites/prod/hosts/web01/availability").mock(
+        return_value=ok({"time_up_percent": 100.0})
+    )
     await mcp.call_tool(
         "thruk_host_availability",
         {"host": "web01", "backends": "prod"},
@@ -195,9 +188,9 @@ async def test_service_availability_basic(mocked_server) -> None:
         "time_critical_percent": 0.05,
         "time_unknown_percent": 0.0,
     }
-    route = router.get(
-        "https://thruk.test/r/services/web01/HTTP/availability"
-    ).mock(return_value=ok(payload))
+    route = router.get("https://thruk.test/r/services/web01/HTTP/availability").mock(
+        return_value=ok(payload)
+    )
     await mcp.call_tool(
         "thruk_service_availability",
         {"host": "web01", "service": "HTTP", "since": "-7d"},
@@ -232,9 +225,9 @@ async def test_service_availability_response_structure(mocked_server) -> None:
 async def test_service_availability_timeperiod(mocked_server) -> None:
     """timeperiod overrides since/until; only timeperiod param sent to Thruk."""
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/services/web01/HTTP/availability"
-    ).mock(return_value=ok({"time_ok_percent": 100.0}))
+    route = router.get("https://thruk.test/r/services/web01/HTTP/availability").mock(
+        return_value=ok({"time_ok_percent": 100.0})
+    )
     await mcp.call_tool(
         "thruk_service_availability",
         {"host": "web01", "service": "HTTP", "timeperiod": "last24hours"},
@@ -249,9 +242,7 @@ async def test_service_availability_timeperiod(mocked_server) -> None:
 async def test_service_availability_timeperiod_in_response(mocked_server) -> None:
     """timeperiod must appear in response; no since/until keys."""
     mcp, router = mocked_server
-    router.get("https://thruk.test/r/services/db01/MySQL/availability").mock(
-        return_value=ok({})
-    )
+    router.get("https://thruk.test/r/services/db01/MySQL/availability").mock(return_value=ok({}))
     result = await mcp.call_tool(
         "thruk_service_availability",
         {"host": "db01", "service": "MySQL", "timeperiod": "thismonth"},
@@ -265,9 +256,9 @@ async def test_service_availability_timeperiod_in_response(mocked_server) -> Non
 @pytest.mark.asyncio
 async def test_service_availability_with_downtimes(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/services/web01/HTTP/availability"
-    ).mock(return_value=ok({}))
+    route = router.get("https://thruk.test/r/services/web01/HTTP/availability").mock(
+        return_value=ok({})
+    )
     await mcp.call_tool(
         "thruk_service_availability",
         {"host": "web01", "service": "HTTP", "with_downtimes": True},
@@ -279,9 +270,9 @@ async def test_service_availability_with_downtimes(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_service_availability_include_soft_states(mocked_server) -> None:
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/services/web01/HTTP/availability"
-    ).mock(return_value=ok({}))
+    route = router.get("https://thruk.test/r/services/web01/HTTP/availability").mock(
+        return_value=ok({})
+    )
     await mcp.call_tool(
         "thruk_service_availability",
         {"host": "web01", "service": "HTTP", "include_soft_states": True},
@@ -294,9 +285,9 @@ async def test_service_availability_include_soft_states(mocked_server) -> None:
 async def test_service_availability_backends(mocked_server) -> None:
     """backends param routes the request through /r/sites/<backend>/..."""
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/sites/prod/services/web01/HTTP/availability"
-    ).mock(return_value=ok({"time_ok_percent": 99.0}))
+    route = router.get("https://thruk.test/r/sites/prod/services/web01/HTTP/availability").mock(
+        return_value=ok({"time_ok_percent": 99.0})
+    )
     await mcp.call_tool(
         "thruk_service_availability",
         {"host": "web01", "service": "HTTP", "backends": "prod"},
@@ -483,9 +474,9 @@ async def test_hostgroup_availability_with_downtimes(mocked_server) -> None:
 async def test_hostgroup_availability_backends(mocked_server) -> None:
     """backends routes through /r/sites/<backend>/..."""
     mcp, router = mocked_server
-    route = router.get(
-        "https://thruk.test/r/sites/prod/hostgroups/HG_PROD/availability"
-    ).mock(return_value=ok([]))
+    route = router.get("https://thruk.test/r/sites/prod/hostgroups/HG_PROD/availability").mock(
+        return_value=ok([])
+    )
     await mcp.call_tool(
         "thruk_hostgroup_availability",
         {"hostgroup": "HG_PROD", "backends": "prod"},
@@ -497,9 +488,7 @@ async def test_hostgroup_availability_backends(mocked_server) -> None:
 async def test_hostgroup_availability_empty(mocked_server) -> None:
     """Empty hostgroup returns total=0 with no error."""
     mcp, router = mocked_server
-    router.get("https://thruk.test/r/hostgroups/HG_EMPTY/availability").mock(
-        return_value=ok([])
-    )
+    router.get("https://thruk.test/r/hostgroups/HG_EMPTY/availability").mock(return_value=ok([]))
     result = await mcp.call_tool(
         "thruk_hostgroup_availability",
         {"hostgroup": "HG_EMPTY"},

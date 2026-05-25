@@ -1713,9 +1713,7 @@ async def thruk_notifications(
                 ]
             svc_results = await asyncio.gather(
                 *(
-                    client.post(
-                        f"/services/{_seg(host)}/{_seg(svc)}/cmd/{verb_svc}", backends=be
-                    )
+                    client.post(f"/services/{_seg(host)}/{_seg(svc)}/cmd/{verb_svc}", backends=be)
                     for svc in services
                 )
             )
