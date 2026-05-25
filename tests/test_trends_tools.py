@@ -5,12 +5,12 @@ thruk_alert_heatmap, thruk_recurring_problems.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
 from tests.conftest import ok
-from thruk_mcp.server import _parse_thruk_time
+from thruk_mcp.server import _now_utc_epoch, _parse_thruk_time
 
 # ---------------------------------------------------------------------------
 # _parse_thruk_time unit tests
@@ -18,21 +18,22 @@ from thruk_mcp.server import _parse_thruk_time
 
 
 def test_parse_thruk_time_relative_hours() -> None:
-    now = int(datetime.now().timestamp())
+    # Use UTC-aware reference to match the fixed implementation.
+    now = _now_utc_epoch()
     result = _parse_thruk_time("-2h")
     assert result is not None
     assert abs(result - (now - 7200)) <= 2
 
 
 def test_parse_thruk_time_relative_minutes() -> None:
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     result = _parse_thruk_time("-30m")
     assert result is not None
     assert abs(result - (now - 1800)) <= 2
 
 
 def test_parse_thruk_time_relative_days() -> None:
-    now = int(datetime.now().timestamp())
+    now = _now_utc_epoch()
     result = _parse_thruk_time("-7d")
     assert result is not None
     assert abs(result - (now - 7 * 86400)) <= 2
@@ -43,9 +44,35 @@ def test_parse_thruk_time_epoch_string() -> None:
 
 
 def test_parse_thruk_time_iso_datetime() -> None:
+    # BUG REGRESSION (issue #139): bare ISO strings must be interpreted as UTC,
+    # not local TZ.  Previously `datetime.strptime(...).timestamp()` used the
+    # local timezone — on a Paris-TZ host this would return epoch+3600 instead
+    # of the correct UTC epoch.
+    #
+    # Before fix (broken):
+    #   result == int(datetime(2026, 5, 21, 14, 0, 0).timestamp())  # local TZ
+    #
+    # After fix (correct):
     result = _parse_thruk_time("2026-05-21 14:00:00")
     assert result is not None
-    assert result == int(datetime(2026, 5, 21, 14, 0, 0).timestamp())
+    expected_utc = int(datetime(2026, 5, 21, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    assert result == expected_utc, (
+        f"ISO string must be parsed as UTC; got {result}, expected {expected_utc}"
+    )
+
+
+def test_parse_thruk_time_iso_t_format() -> None:
+    """'T'-separated ISO format is also interpreted as UTC."""
+    result = _parse_thruk_time("2026-05-21T14:00:00")
+    expected_utc = int(datetime(2026, 5, 21, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    assert result == expected_utc
+
+
+def test_parse_thruk_time_iso_z_suffix() -> None:
+    """Trailing 'Z' suffix — unambiguously UTC."""
+    result = _parse_thruk_time("2026-05-21T14:00:00Z")
+    expected_utc = int(datetime(2026, 5, 21, 14, 0, 0, tzinfo=timezone.utc).timestamp())
+    assert result == expected_utc
 
 
 def test_parse_thruk_time_none() -> None:
@@ -54,6 +81,18 @@ def test_parse_thruk_time_none() -> None:
 
 def test_parse_thruk_time_unparseable() -> None:
     assert _parse_thruk_time("not-a-time") is None
+
+
+def test_now_utc_epoch_is_timezone_aware() -> None:
+    """_now_utc_epoch() must return the same value regardless of the process TZ.
+
+    Verified by comparing with datetime.now(timezone.utc) — the only correct
+    way to get the current UTC epoch.
+    """
+    before = int(datetime.now(timezone.utc).timestamp())
+    result = _now_utc_epoch()
+    after = int(datetime.now(timezone.utc).timestamp())
+    assert before <= result <= after, "_now_utc_epoch() must be within [before, after]"
 
 
 # ---------------------------------------------------------------------------
