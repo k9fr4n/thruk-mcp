@@ -7,6 +7,7 @@ This is the primary regression guard against URL / param mistakes.
 
 from __future__ import annotations
 
+import json
 from urllib.parse import parse_qs
 
 import httpx
@@ -907,21 +908,111 @@ async def test_recheck_service_unforced(mocked_server) -> None:
     assert route.called
 
 
+# ----------------------------------------- Notifications enable/disable
+
+
+@pytest.mark.asyncio
+async def test_notifications_disable_host(mocked_server) -> None:
+    """Disabling notifications on a host POSTs to the correct command endpoint."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/disable_host_notifications").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool("thruk_notifications", {"host": "srv01", "enabled": False})
+    payload = json.loads(result_raw[0].text)
+    assert payload["action"] == "disabled"
+    assert payload["target"] == "srv01"
+    assert route.called
+
+
+@pytest.mark.asyncio
+async def test_notifications_enable_host(mocked_server) -> None:
+    """Enabling notifications on a host POSTs to enable_host_notifications."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/enable_host_notifications").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool("thruk_notifications", {"host": "srv01", "enabled": True})
+    assert route.called
+
+
+@pytest.mark.asyncio
+async def test_notifications_disable_service(mocked_server) -> None:
+    """Service-level command; host command must NOT be called."""
+    mcp, router = mocked_server
+    svc_route = router.post(
+        "https://thruk.test/r/services/srv01/ssh/cmd/disable_svc_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    host_route = router.post(
+        "https://thruk.test/r/hosts/srv01/cmd/disable_host_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    result_raw = await mcp.call_tool(
+        "thruk_notifications", {"host": "srv01", "service": "ssh", "enabled": False}
+    )
+    payload = json.loads(result_raw[0].text)
+    assert payload["target"] == "srv01/ssh"
+    assert svc_route.called
+    assert not host_route.called
+
+
+@pytest.mark.asyncio
+async def test_notifications_cascade(mocked_server) -> None:
+    """cascade=True triggers host cmd + one cmd per service returned by /hosts/{host}/services."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/srv01/services").mock(
+        return_value=ok([{"description": "ssh"}, {"description": "http"}])
+    )
+    host_route = router.post(
+        "https://thruk.test/r/hosts/srv01/cmd/disable_host_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    ssh_route = router.post(
+        "https://thruk.test/r/services/srv01/ssh/cmd/disable_svc_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    http_route = router.post(
+        "https://thruk.test/r/services/srv01/http/cmd/disable_svc_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    result_raw = await mcp.call_tool(
+        "thruk_notifications", {"host": "srv01", "enabled": False, "cascade": True}
+    )
+    payload = json.loads(result_raw[0].text)
+    assert payload["target"] == "srv01 (host + all services)"
+    assert host_route.called
+    assert ssh_route.called
+    assert http_route.called
+
+
+@pytest.mark.asyncio
+async def test_notifications_cascade_ignored_when_service_given(mocked_server) -> None:
+    """cascade=True is silently ignored when a service is explicitly specified."""
+    mcp, router = mocked_server
+    svc_route = router.post(
+        "https://thruk.test/r/services/srv01/ssh/cmd/enable_svc_notifications"
+    ).mock(return_value=ok({"rc": 0}))
+    # /hosts/{host}/services must NOT be called
+    svc_list_route = router.get("https://thruk.test/r/hosts/srv01/services").mock(
+        return_value=ok([])
+    )
+    await mcp.call_tool(
+        "thruk_notifications",
+        {"host": "srv01", "service": "ssh", "enabled": True, "cascade": True},
+    )
+    assert svc_route.called
+    assert not svc_list_route.called
+
+
 # ---------------------------------------------------- Query escape hatches
 
 
 @pytest.mark.asyncio
 async def test_query_cv_warning_injected(mocked_server) -> None:
     """thruk_query wraps the response in a _warning envelope when q= contains custom_variables."""
-    import json as _json
-
     mcp, router = mocked_server
     router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "h1"}, {"name": "h2"}]))
     result = await mcp.call_tool(
         "thruk_query",
         {"path": "/hosts", "params": {"q": "custom_variables >= 'KERNEL windows'", "limit": 10}},
     )
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "_warning" in payload
     assert "custom_variables" in payload["_warning"]
     assert "data" in payload
@@ -931,15 +1022,13 @@ async def test_query_cv_warning_injected(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_query_no_warning_without_cv(mocked_server) -> None:
     """thruk_query does NOT inject a warning when q= does not mention custom_variables."""
-    import json as _json
-
     mcp, router = mocked_server
     router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "h1"}]))
     result = await mcp.call_tool(
         "thruk_query",
         {"path": "/hosts", "params": {"q": "state = 1", "limit": 5}},
     )
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     # Plain list, no envelope
     assert isinstance(payload, list)
 
@@ -986,8 +1075,6 @@ def _make_log_entry(
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_basic(mocked_server) -> None:
     """Top-noisy-hosts aggregates by host and excludes RECOVERY (state=0)."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = [
         _make_log_entry("alpha", 1, 10),  # DOWN
@@ -1003,7 +1090,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
     assert p["time[gte]"] == "-6h"
     assert p["columns"] == "host_name,state,time"
 
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "-6h"
     assert payload["until"] is None
     assert payload["total_alerts_in_window"] == 3  # alpha x2 + beta x1 (recovery excluded)
@@ -1018,13 +1105,11 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_only_recovery_returns_empty(mocked_server) -> None:
     """When all entries are RECOVERY the results list should be empty."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = [_make_log_entry("alpha", 0), _make_log_entry("beta", 0)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["total_alerts_in_window"] == 0
     assert payload["results"] == []
 
@@ -1032,35 +1117,29 @@ async def test_top_noisy_hosts_only_recovery_returns_empty(mocked_server) -> Non
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_limit_respected(mocked_server) -> None:
     """Only ``limit`` hosts are returned even when more are present."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = [_make_log_entry(f"host{i}", 1, i) for i in range(20)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"limit": 3})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert len(payload["results"]) == 3
 
 
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_filter_error(mocked_server) -> None:
     """Invalid filter field must return an error key."""
-    import json as _json
-
     mcp, _router = mocked_server
     result = await mcp.call_tool(
         "thruk_top_noisy_hosts",
         {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "down"}},
     )
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "error" in payload
 
 
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_since_until(mocked_server) -> None:
     """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
-    import json as _json
-
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     result = await mcp.call_tool(
@@ -1070,7 +1149,7 @@ async def test_top_noisy_hosts_since_until(mocked_server) -> None:
     p = post_params(router.calls.last)
     assert p["time[gte]"] == "2026-05-20 00:00:00"
     assert p["time[lte]"] == "2026-05-20 23:59:59"
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
 
@@ -1078,8 +1157,6 @@ async def test_top_noisy_hosts_since_until(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_top_noisy_services_basic(mocked_server) -> None:
     """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = [
         _make_log_entry("alpha", 2, 10, service="HTTP"),  # CRITICAL
@@ -1096,7 +1173,7 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
     assert p["time[gte]"] == "-12h"
     assert p["columns"] == "host_name,service_description,state,time"
 
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "-12h"
     assert payload["until"] is None
     assert payload["total_alerts_in_window"] == 4  # recovery excluded
@@ -1123,22 +1200,18 @@ async def test_top_noisy_services_default_since(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_top_noisy_services_filter_error(mocked_server) -> None:
     """Invalid filter field (e.g. 'state') must return an error key."""
-    import json as _json
-
     mcp, _router = mocked_server
     result = await mcp.call_tool(
         "thruk_top_noisy_services",
         {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "warning"}},
     )
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "error" in payload
 
 
 @pytest.mark.asyncio
 async def test_top_noisy_services_since_until(mocked_server) -> None:
     """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
-    import json as _json
-
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     result = await mcp.call_tool(
@@ -1148,7 +1221,7 @@ async def test_top_noisy_services_since_until(mocked_server) -> None:
     p = post_params(router.calls.last)
     assert p["time[gte]"] == "2026-05-20 00:00:00"
     assert p["time[lte]"] == "2026-05-20 23:59:59"
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
 
@@ -1190,8 +1263,6 @@ async def test_aggregate_alerts_helper_hit_limit_warning(mocked_server) -> None:
     Regression: before the refactor the cap check used ``len(data) >= _NOISY_MAX_ALERTS``
     inline. The helper must preserve this behaviour.
     """
-    import json as _json
-
     from thruk_mcp.server import _NOISY_MAX_ALERTS
 
     mcp, router = mocked_server
@@ -1199,7 +1270,7 @@ async def test_aggregate_alerts_helper_hit_limit_warning(mocked_server) -> None:
     raw = [_make_log_entry(f"h{i % 10}", 1, i) for i in range(_NOISY_MAX_ALERTS)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "_warning" in payload, "_warning must appear when data hits the hard cap"
     assert str(_NOISY_MAX_ALERTS) in payload["_warning"]
 
@@ -1207,41 +1278,35 @@ async def test_aggregate_alerts_helper_hit_limit_warning(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_aggregate_alerts_helper_below_limit_no_warning(mocked_server) -> None:
     """No _warning key when data is below the hard cap."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = [_make_log_entry("alpha", 1, i) for i in range(5)]
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "_warning" not in payload, "_warning must not appear below the hard cap"
 
 
 @pytest.mark.asyncio
 async def test_aggregate_alerts_helper_state_map_host(mocked_server) -> None:
     """last_state uses HOST_STATES for noisy_hosts (DOWN/UNREACHABLE)."""
-    import json as _json
-
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(
         return_value=ok([_make_log_entry("srv", 1)])  # state 1 = DOWN
     )
     result = await mcp.call_tool("thruk_top_noisy_hosts", {})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["results"][0]["last_state"] == "DOWN"
 
 
 @pytest.mark.asyncio
 async def test_aggregate_alerts_helper_state_map_service(mocked_server) -> None:
     """last_state uses SERVICE_STATES for noisy_services (WARNING/CRITICAL/UNKNOWN)."""
-    import json as _json
-
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(
         return_value=ok([_make_log_entry("srv", 2, service="HTTP")])  # state 2 = CRITICAL
     )
     result = await mcp.call_tool("thruk_top_noisy_services", {})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["results"][0]["last_state"] == "CRITICAL"
 
 
@@ -1269,8 +1334,6 @@ def _make_flap_sequence(
 @pytest.mark.asyncio
 async def test_flap_summary_basic_service(mocked_server) -> None:
     """Service with 4 transitions is returned; one with only 1 is excluded."""
-    import json as _json
-
     mcp, router = mocked_server
     # alpha/HTTP: OK->CRIT->OK->CRIT->OK = 4 transitions (included)
     # beta/CPU:   OK->CRIT = 1 transition (excluded with min_transitions=3)
@@ -1285,7 +1348,7 @@ async def test_flap_summary_basic_service(mocked_server) -> None:
     assert p["time[gte]"] == "-6h"
     assert p["sort"] == "time"
 
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "-6h"
     assert payload["until"] is None
     assert payload["min_transitions"] == 3
@@ -1301,14 +1364,12 @@ async def test_flap_summary_basic_service(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_flap_summary_host_level(mocked_server) -> None:
     """Host-level flapping has service=null in the result."""
-    import json as _json
-
     mcp, router = mocked_server
     # Host flapping: UP(0)->DOWN(1)->UP(0)->DOWN(1) = 3 transitions
     raw = _make_flap_sequence("router-01", [0, 1, 0, 1])
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["total_flapping_objects"] == 1
     r = payload["results"][0]
     assert r["service"] is None
@@ -1320,8 +1381,6 @@ async def test_flap_summary_host_level(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_flap_summary_ranked_by_transitions(mocked_server) -> None:
     """Results are sorted by transition_count descending."""
-    import json as _json
-
     mcp, router = mocked_server
     # svc-A: 4 transitions, svc-B: 6 transitions -> B must be first
     raw = _make_flap_sequence("h", [0, 1, 0, 1, 0], service="svc-A") + _make_flap_sequence(
@@ -1329,7 +1388,7 @@ async def test_flap_summary_ranked_by_transitions(mocked_server) -> None:
     )
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     results = payload["results"]
     assert results[0]["service"] == "svc-B"
     assert results[0]["transition_count"] == 6
@@ -1339,13 +1398,11 @@ async def test_flap_summary_ranked_by_transitions(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_flap_summary_no_flapping(mocked_server) -> None:
     """All objects below min_transitions yields empty results."""
-    import json as _json
-
     mcp, router = mocked_server
     raw = _make_flap_sequence("h", [0, 1], service="svc")  # 1 transition only
     router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["total_flapping_objects"] == 0
     assert payload["results"] == []
 
@@ -1353,22 +1410,18 @@ async def test_flap_summary_no_flapping(mocked_server) -> None:
 @pytest.mark.asyncio
 async def test_flap_summary_filter_error(mocked_server) -> None:
     """Invalid filter field returns an error key."""
-    import json as _json
-
     mcp, _router = mocked_server
     result = await mcp.call_tool(
         "thruk_flap_summary",
         {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "ok"}},
     )
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "error" in payload
 
 
 @pytest.mark.asyncio
 async def test_flap_summary_since_until(mocked_server) -> None:
     """since/until are forwarded as time[gte]/time[lte] and reflected in payload."""
-    import json as _json
-
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
     result = await mcp.call_tool(
@@ -1378,7 +1431,7 @@ async def test_flap_summary_since_until(mocked_server) -> None:
     p = post_params(router.calls.last)
     assert p["time[gte]"] == "2026-05-20 00:00:00"
     assert p["time[lte]"] == "2026-05-20 23:59:59"
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
     assert payload["min_transitions"] == 2
@@ -1399,8 +1452,6 @@ async def test_resolve_hosts_paginates_beyond_1000(mocked_server) -> None:
     After the fix: get_all() pages through all results and the regex includes
     every returned host name.
     """
-    import json as _json
-
     mcp, router = mocked_server
 
     # Simulate a hostgroup with 1500 hosts: first page returns 500 rows,
@@ -1440,7 +1491,7 @@ async def test_resolve_hosts_paginates_beyond_1000(mocked_server) -> None:
     assert "host1499" in regex, "Last host (page 3) should appear in regex"
 
     # No truncation warning expected at 1500 hosts (well below 20_000)
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     if isinstance(payload, dict):
         assert "_warning" not in payload or "truncated" not in payload.get("_warning", "")
 
@@ -1459,7 +1510,6 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
     We mock ``_resolve_hosts_to_regex_from_params`` directly to return
     ``truncated=True`` without having to generate 20 000 mock host rows.
     """
-    import json as _json
     from unittest.mock import AsyncMock, patch
 
     mcp, router = mocked_server
@@ -1482,7 +1532,7 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
             },
         )
 
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert isinstance(payload, dict), "truncated result must be wrapped in a dict"
     assert "_warnings" in payload, "truncation warning must appear in _warnings"
     assert any("truncated" in w.lower() for w in payload["_warnings"]), (
@@ -1493,7 +1543,6 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
 @pytest.mark.asyncio
 async def test_resolve_hosts_truncation_warning_top_noisy_hosts(mocked_server) -> None:
     """Truncation warning propagates through _resolve_log_filter into payload-dict tools."""
-    import json as _json
     from unittest.mock import AsyncMock, patch
 
     mcp, router = mocked_server
@@ -1517,6 +1566,6 @@ async def test_resolve_hosts_truncation_warning_top_noisy_hosts(mocked_server) -
             },
         )
 
-    payload = _json.loads(result[0].text)
+    payload = json.loads(result[0].text)
     assert "_warning" in payload, "truncation warning must appear in _warning"
     assert "truncated" in payload["_warning"].lower()

@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 36 MCP Tools
+### 43 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -125,6 +125,20 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 `thruk_stale_acks` (acknowledgements older than N days — forgotten problems),
 `thruk_problems_by_hostgroup` (problem counts aggregated per hostgroup).
 
+**Read — analytics**
+`thruk_alert_heatmap` (alert counts bucketed by time, useful for spotting recurring
+patterns), `thruk_concurrent_failures` (windows where multiple hosts failed simultaneously),
+`thruk_recurring_problems` (hosts/services generating repeated alerts over a window).
+
+**Read — availability / SLA**
+`thruk_host_availability` (uptime % for a single host — `time_up_percent`, `time_down_percent`,
+`time_unreachable_percent` and scheduled equivalents),
+`thruk_service_availability` (ok/warning/critical/unknown % for a single service),
+`thruk_hostgroup_availability` (availability for all hosts or services in a hostgroup,
+sorted worst-first; `type` = `hosts` | `services` | `both`).
+All three accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` shortcut
+(`lastmonth`, `thismonth`, `last24hours`, `lastweek`, …).
+
 **Write — downtime management**
 `thruk_schedule_downtime` (host/service), `thruk_schedule_host_services_downtime`
 (all services of a host), `thruk_schedule_propagated_host_downtime` (parent+children),
@@ -133,7 +147,9 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 `thruk_delete_downtimes_by_filter`.
 
 **Write — problem handling**
-`thruk_acknowledge`, `thruk_remove_acknowledgement`, `thruk_recheck`.
+`thruk_acknowledge`, `thruk_remove_acknowledgement`, `thruk_recheck`,
+`thruk_notifications` (enable/disable host or service notifications, with optional
+cascade to all services of a host).
 
 **Escape hatches**
 `thruk_query` (raw call to any REST endpoint), `thruk_run_background_query`
