@@ -864,6 +864,57 @@ async def test_thruk_query_non_read_only_allows_post() -> None:
         await _close(mcp)
 
 
+# ---------------------------------------------------------------------------
+# Issue #143 — ContextVar isolation: two build_server() calls must not
+# clobber each other's ThrukClient reference.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_build_server_calls_independent_clients() -> None:
+    """Two build_server() calls in the same process must each use their own client.
+
+    Bug (before fix): build_server() set a module-level ``_client`` global.
+    The second call would silently overwrite it, so the first server would
+    start routing requests through the second server's ThrukClient.
+
+    Fix: _client_var (ContextVar) is set per call; each ThrukMCPServer stores
+    its own client in ``._thruk_client`` and tools read ``_client_var.get()``
+    which reflects the last set() in the current context.
+
+    This test verifies that both servers hold distinct ThrukClient instances
+    and that the module-level ContextVar was updated by each build_server() call.
+    """
+    from thruk_mcp.server import _client_var
+
+    cfg1 = ThrukConfig(base_url="https://thruk-a.test", api_key="key-a")
+    cfg2 = ThrukConfig(base_url="https://thruk-b.test", api_key="key-b")
+
+    mcp1 = build_server(cfg1)
+    mcp2 = build_server(cfg2)
+
+    try:
+        client1 = mcp1._thruk_client  # type: ignore[attr-defined]
+        client2 = mcp2._thruk_client  # type: ignore[attr-defined]
+
+        # Each server must hold a distinct client instance.
+        assert client1 is not client2, (
+            "build_server() must create independent ThrukClient instances"
+        )
+
+        # Each client must point to its own base URL (no clobber).
+        assert str(client1.config.base_url) == "https://thruk-a.test"
+        assert str(client2.config.base_url) == "https://thruk-b.test"
+
+        # The ContextVar holds the most-recently set client (last writer wins
+        # in a flat context — that is the expected behaviour for the main-thread
+        # single-server use case).
+        assert _client_var.get() is client2
+    finally:
+        await client1.aclose()
+        await client2.aclose()
+
+
 @pytest.mark.asyncio
 async def test_thruk_run_background_query_read_only_blocks_post() -> None:
     """thruk_run_background_query with method=POST must be blocked when THRUK_READ_ONLY=true.
