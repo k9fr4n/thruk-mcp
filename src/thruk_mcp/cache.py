@@ -3,7 +3,7 @@
 Intended for use inside a single ThrukClient instance to absorb the burst of
 identical calls an LLM agent typically issues (e.g. /sites, /hosts/stats called
 from 5 different tools in one turn). Not a replacement for a real cache like
-Redis — process-local, no eviction beyond TTL, no size cap.
+Redis — process-local, bounded by ``maxsize`` with LRU-by-expiry eviction.
 """
 
 from __future__ import annotations
@@ -16,10 +16,22 @@ __all__ = ["TTLCache"]
 
 
 class TTLCache:
-    """Async-safe TTL cache keyed by an arbitrary hashable."""
+    """Async-safe TTL cache keyed by an arbitrary hashable.
 
-    def __init__(self, default_ttl: float = 15.0, clock: Any = time.monotonic) -> None:
+    When the number of stored entries reaches ``maxsize``, inserting a new key
+    evicts the entry whose expiry timestamp is the earliest (i.e. the one that
+    would expire first). Updating an existing key is always allowed without
+    triggering eviction.
+    """
+
+    def __init__(
+        self,
+        default_ttl: float = 15.0,
+        maxsize: int = 512,
+        clock: Any = time.monotonic,
+    ) -> None:
         self.default_ttl = default_ttl
+        self.maxsize = maxsize
         self._clock = clock
         self._lock = asyncio.Lock()
         self._store: dict[Any, tuple[float, Any]] = {}
@@ -38,6 +50,10 @@ class TTLCache:
     async def set(self, key: Any, value: Any, ttl: float | None = None) -> None:
         ttl = self.default_ttl if ttl is None else ttl
         async with self._lock:
+            if key not in self._store and len(self._store) >= self.maxsize:
+                # Evict the entry with the earliest expiry timestamp.
+                oldest = min(self._store, key=lambda k: self._store[k][0])
+                del self._store[oldest]
             self._store[key] = (self._clock() + ttl, value)
 
     async def clear(self) -> None:
