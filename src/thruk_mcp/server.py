@@ -2829,7 +2829,7 @@ class ThrukMCPServer:
             # ValueError is included as a defensive catch: tools that raise it
             # (e.g. validation guards before the fix for issue #71) must not
             # escape to the MCP protocol layer as an unhandled exception.
-            return [TextContent(type="text", text=f"Error: {exc}")]
+            return [TextContent(type="text", text=audit.scrub(f"Error: {exc}"))]
         if self._cfg.audit_log and _is_auditable_write(name, arguments):
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]

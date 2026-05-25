@@ -940,3 +940,111 @@ async def test_thruk_run_background_query_read_only_blocks_post() -> None:
         assert len(router.calls) == 0
     finally:
         await _close(mcp)
+
+
+# ---------------------------------------------------------------------------
+# Issue #149 — Scrub Thruk auth headers / api keys from error & log output
+# ---------------------------------------------------------------------------
+
+
+def test_scrub_masks_x_thruk_auth_key_header() -> None:
+    out = audit.scrub("X-Thruk-Auth-Key: supersecret123")
+    assert "supersecret123" not in out
+    assert "***" in out
+    assert out.startswith("X-Thruk-Auth-Key: ")
+
+
+def test_scrub_masks_x_thruk_auth_key_url_encoded() -> None:
+    out = audit.scrub("GET /thruk/r/hosts?X-Thruk-Auth-Key=abc123XYZ&limit=10")
+    assert "abc123XYZ" not in out
+    assert "***" in out
+    # Surrounding context is preserved.
+    assert "limit=10" in out
+
+
+def test_scrub_masks_apikey_query_param() -> None:
+    out = audit.scrub("https://thruk.test/api?apikey=topsecret&foo=bar")
+    assert "topsecret" not in out
+    assert "foo=bar" in out
+
+
+def test_scrub_masks_authorization_header() -> None:
+    out = audit.scrub("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.xxx")
+    assert "eyJhbGciOiJIUzI1NiJ9.xxx" not in out
+    assert "Bearer" in out
+    assert "***" in out
+
+
+def test_scrub_is_idempotent() -> None:
+    once = audit.scrub("X-Thruk-Auth-Key: sekret")
+    twice = audit.scrub(once)
+    assert once == twice
+
+
+def test_scrub_passthrough_for_clean_strings() -> None:
+    assert audit.scrub("plain message") == "plain message"
+    assert audit.scrub("host=srv01 service=ping") == "host=srv01 service=ping"
+
+
+@pytest.mark.asyncio
+async def test_thruk_error_body_is_scrubbed() -> None:
+    """A Thruk 5xx body echoing back the auth header must not leak the secret.
+
+    Pre-fix behaviour (before this issue's resolution):
+        raise ThrukError(f"... HTTP {code} for {method} {path}: {resp.text[:500]}")
+    would surface a body like
+        'invalid request: X-Thruk-Auth-Key: REAL_SECRET'
+    verbatim into the LLM transcript and audit log. The fix routes every
+    such message through ``audit.scrub`` so only the masked label remains.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", default_backends=())
+    client = ThrukClient(cfg, max_retries=0)
+    leaked = "REAL_SECRET_TOKEN_42"
+    try:
+        with respx.mock() as router:
+            router.get(f"{BASE}/r/hosts").respond(
+                500,
+                text=f"upstream rejected: X-Thruk-Auth-Key: {leaked}",
+            )
+            from thruk_mcp.client import ThrukError as _TE  # local alias
+
+            with pytest.raises(_TE) as ei:
+                await client.get("/hosts")
+        msg = str(ei.value)
+        assert leaked not in msg, f"secret leaked in error message: {msg}"
+        assert "***" in msg
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_thruk_error_url_apikey_is_scrubbed() -> None:
+    """When the failure path formats the URL itself, apikey= must be masked."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", default_backends=())
+    client = ThrukClient(cfg, max_retries=0)
+    try:
+        with respx.mock() as router:
+            router.get(f"{BASE}/r/hosts").mock(
+                side_effect=httpx.ConnectError("boom apikey=LEAKED123")
+            )
+            with pytest.raises(Exception) as ei:
+                await client.get("/hosts")
+        assert "LEAKED123" not in str(ei.value)
+    finally:
+        await client.aclose()
+
+
+def test_log_call_scrubs_error_field(caplog) -> None:
+    """audit.log_call must scrub the *error* string before emitting JSON."""
+    audit.configure(enabled=True)
+    with caplog.at_level(logging.INFO, logger="thruk_mcp.audit"):
+        audit.log_call(
+            "thruk_acknowledge",
+            {"host": "srv01"},
+            user="op",
+            status="error",
+            error="HTTP 500: X-Thruk-Auth-Key: SECRET_VAL",
+        )
+    joined = " ".join(r.message for r in caplog.records)
+    assert "SECRET_VAL" not in joined
+    assert "***" in joined
