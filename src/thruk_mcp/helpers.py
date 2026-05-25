@@ -7,6 +7,7 @@ convention.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote as _urlquote
@@ -140,3 +141,38 @@ def _downtime_payload(
         "fixed": "1" if fixed else "0",
         "triggered_by": str(triggered_by),
     }
+
+
+# ---------------------------------------------------------------------------
+# Response builder (issue #146)
+# ---------------------------------------------------------------------------
+
+
+def _tool_response(payload: Any, warnings: list[str] | None = None) -> str:
+    """Centralised MCP tool JSON response builder.
+
+    Wraps *payload* as ``json.dumps(..., indent=2, default=str)`` — the
+    canonical wire format used by every tool implementation in
+    ``server.py``.
+
+    When *warnings* is a non-empty list, the warnings are merged into the
+    payload:
+
+    - a ``dict`` payload gains a ``_warnings`` key;
+    - any other payload is wrapped as ``{"data": payload, "_warnings": warnings}``.
+
+    When *warnings* is empty or ``None``, the wire output is byte-for-byte
+    identical to a plain ``json.dumps(payload, indent=2, default=str)`` —
+    no extra keys, no wrapping. This guarantees the migration from the
+    inlined call sites is a pure refactor with no observable change on
+    the protocol surface.
+
+    Future serialization changes (compact mode, custom default encoder,
+    response schema versioning) only need to be applied here.
+    """
+    if warnings:
+        if isinstance(payload, dict):
+            payload = {**payload, "_warnings": warnings}
+        else:
+            payload = {"data": payload, "_warnings": warnings}
+    return json.dumps(payload, indent=2, default=str)

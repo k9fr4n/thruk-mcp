@@ -6,6 +6,8 @@ No HTTP mocking needed — these are all stateless functions.
 
 from __future__ import annotations
 
+import json
+
 from thruk_mcp.helpers import (
     _backends,
     _build_cv_params,
@@ -13,6 +15,7 @@ from thruk_mcp.helpers import (
     _duration_human,
     _list_params,
     _seg,
+    _tool_response,
     _ts,
 )
 
@@ -255,3 +258,63 @@ def test_downtime_payload_returns_string_values() -> None:
     p = _downtime_payload("maint", "ops", "now", "+2h", None, True, 0)
     for v in p.values():
         assert isinstance(v, str), f"Expected str, got {type(v)} for value {v!r}"
+
+
+# ---------------------------------------------------------------------------
+# _tool_response (issue #146)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_response_no_warnings_dict_payload_is_byte_identical() -> None:
+    """Without warnings, output matches the legacy json.dumps(..., indent=2, default=str).
+
+    Pre-fix repro (would have asserted equal but the helper did not exist):
+        return json.dumps({"a": 1, "b": [2, 3]}, indent=2, default=str)
+    """
+    payload = {"a": 1, "b": [2, 3]}
+    assert _tool_response(payload) == json.dumps(payload, indent=2, default=str)
+
+
+def test_tool_response_no_warnings_list_payload_is_byte_identical() -> None:
+    rows = [{"x": 1}, {"x": 2}]
+    assert _tool_response(rows) == json.dumps(rows, indent=2, default=str)
+
+
+def test_tool_response_no_warnings_empty_list_is_byte_identical() -> None:
+    """Empty warnings argument must not add a _warnings key or wrap."""
+    assert _tool_response({"k": "v"}, warnings=[]) == json.dumps({"k": "v"}, indent=2, default=str)
+    assert _tool_response({"k": "v"}, warnings=None) == json.dumps(
+        {"k": "v"}, indent=2, default=str
+    )
+
+
+def test_tool_response_warnings_merged_into_dict_payload() -> None:
+    out = _tool_response({"a": 1}, warnings=["w1", "w2"])
+    parsed = json.loads(out)
+    assert parsed == {"a": 1, "_warnings": ["w1", "w2"]}
+
+
+def test_tool_response_warnings_wrap_non_dict_payload() -> None:
+    """List / other payloads with non-empty warnings become {data, _warnings}."""
+    out = _tool_response([1, 2, 3], warnings=["oops"])
+    parsed = json.loads(out)
+    assert parsed == {"data": [1, 2, 3], "_warnings": ["oops"]}
+
+
+def test_tool_response_default_str_handles_non_json_types() -> None:
+    """default=str must serialise types json doesn't know about (sets here)."""
+    out = _tool_response({"s": {1, 2}})
+    # set repr is non-deterministic; just check it parsed and contained a str
+    parsed = json.loads(out)
+    assert isinstance(parsed["s"], str)
+
+
+def test_tool_response_does_not_mutate_input_dict() -> None:
+    payload = {"a": 1}
+    _tool_response(payload, warnings=["x"])
+    assert payload == {"a": 1}  # _warnings must NOT leak back into the caller's dict
+
+
+def test_tool_response_uses_indent_2() -> None:
+    out = _tool_response({"a": 1})
+    assert "\n  " in out  # 2-space indent present
