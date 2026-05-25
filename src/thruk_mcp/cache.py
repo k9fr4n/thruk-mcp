@@ -12,6 +12,8 @@ import asyncio
 import time
 from typing import Any
 
+__all__ = ["TTLCache"]
+
 
 class TTLCache:
     """Async-safe TTL cache keyed by an arbitrary hashable."""

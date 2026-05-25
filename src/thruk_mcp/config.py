@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+__all__ = ["ThrukConfig"]
+
 # Sentinel values injected by orchestrators (e.g. Docker MCP Gateway) when an
 # optional secret is declared in the catalog but left unbound by the operator.
 # We treat them as "not set" so that defaults are applied instead of crashing.

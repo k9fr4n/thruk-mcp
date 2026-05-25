@@ -204,6 +204,106 @@ class TestFutureAnnotations:
         )
 
 
+class TestDunderAll:
+    """Verify that every public module declares __all__ with the expected symbols (issue #88).
+
+    Without __all__, `from thruk_mcp.<module> import *` leaks private helpers,
+    and static analysers cannot distinguish intended public API from internals.
+
+    Bug before fix (issue #88):
+        # None of the public source modules declared __all__, e.g.:
+        # from thruk_mcp.client import *   # leaked _url, _backoff, CACHEABLE_PATHS, ...
+        # from thruk_mcp.filters import *  # leaked LEAF_OPS, _has_or, _leaf_to_params, ...
+
+    Fix: add __all__ to each public module listing only the symbols intended
+    for external use, as specified in the issue body.
+    """
+
+    # Expected public symbols per module (subset: must all be present).
+    # Only the symbols explicitly listed in the issue are checked; modules
+    # may legitimately add more in future without breaking this test.
+    from typing import ClassVar
+
+    EXPECTED: ClassVar[dict[str, list[str]]] = {
+        "client": ["ThrukClient", "ThrukError"],
+        "config": ["ThrukConfig"],
+        "audit": ["configure", "log_call", "audited"],
+        "cache": ["TTLCache"],
+        "filters": [
+            "FilterError",
+            "validate_filter",
+            "compile_filter",
+            "compile_filter_problems",
+            "extract_log_lookup_fields",
+            "build_tool_schema",
+            "filter_schema_property",
+            "FIELDS_HOSTS",
+            "FIELDS_SERVICES",
+            "FIELDS_LOGS",
+            "FIELDS_ALERTS",
+            "FIELDS_NOTIFICATIONS",
+            "FIELDS_PROBLEMS",
+            "FIELDS_NOISY_HOSTS",
+            "FIELDS_NOISY_SERVICES",
+        ],
+        "server": ["build_server", "ThrukMCPServer", "WRITE_TOOLS"],
+    }
+
+    def _import_module(self, name: str) -> object:
+        import importlib
+
+        return importlib.import_module(f"thruk_mcp.{name}")
+
+    def test_all_public_modules_declare_dunder_all(self) -> None:
+        """Every public module must have an __all__ attribute."""
+        missing: list[str] = []
+        for mod_name in self.EXPECTED:
+            mod = self._import_module(mod_name)
+            if not hasattr(mod, "__all__"):
+                missing.append(mod_name)
+        assert not missing, (
+            f"Modules missing __all__ (issue #88): {missing}. "
+            "Add `__all__ = [...]` listing the intended public API."
+        )
+
+    def test_all_expected_symbols_in_dunder_all(self) -> None:
+        """Every expected public symbol must appear in its module's __all__."""
+        problems: list[str] = []
+        for mod_name, symbols in self.EXPECTED.items():
+            mod = self._import_module(mod_name)
+            declared: list[str] = getattr(mod, "__all__", [])
+            for sym in symbols:
+                if sym not in declared:
+                    problems.append(f"{mod_name}.{sym}")
+        assert not problems, f"Symbols missing from __all__ (issue #88): {problems}"
+
+    def test_all_dunder_all_symbols_are_importable(self) -> None:
+        """Every name listed in __all__ must actually exist in the module namespace."""
+        problems: list[str] = []
+        for mod_name in self.EXPECTED:
+            mod = self._import_module(mod_name)
+            declared: list[str] = getattr(mod, "__all__", [])
+            for sym in declared:
+                if not hasattr(mod, sym):
+                    problems.append(f"{mod_name}.{sym}")
+        assert not problems, (
+            f"Names in __all__ that do not exist in the module (issue #88): {problems}"
+        )
+
+    def test_private_helpers_not_in_dunder_all(self) -> None:
+        """Names starting with '_' must not appear in __all__ for public modules."""
+        violations: list[str] = []
+        for mod_name in self.EXPECTED:
+            mod = self._import_module(mod_name)
+            declared: list[str] = getattr(mod, "__all__", [])
+            for sym in declared:
+                if sym.startswith("_"):
+                    violations.append(f"{mod_name}.{sym}")
+        assert not violations, (
+            f"Private names (underscore-prefixed) found in __all__ (issue #88): {violations}"
+        )
+
+
 class TestParametrisedTypeHints:
     """Ensure bare ``dict`` / ``list[dict]`` annotations are gone from server.py (issue #80).
 

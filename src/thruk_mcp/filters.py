@@ -33,6 +33,24 @@ from typing import Any
 
 from .constants import HOST_STATE_INT, SVC_STATE_INT
 
+__all__ = [
+    "FIELDS_ALERTS",
+    "FIELDS_HOSTS",
+    "FIELDS_LOGS",
+    "FIELDS_NOISY_HOSTS",
+    "FIELDS_NOISY_SERVICES",
+    "FIELDS_NOTIFICATIONS",
+    "FIELDS_PROBLEMS",
+    "FIELDS_SERVICES",
+    "FilterError",
+    "build_tool_schema",
+    "compile_filter",
+    "compile_filter_problems",
+    "extract_log_lookup_fields",
+    "filter_schema_property",
+    "validate_filter",
+]
+
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
