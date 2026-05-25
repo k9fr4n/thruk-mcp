@@ -1,6 +1,6 @@
 """Tests for thruk_host_availability and thruk_service_availability (issue #171)."""
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001 – ruff misclassifies section with single stdlib import
 
 import json
 
