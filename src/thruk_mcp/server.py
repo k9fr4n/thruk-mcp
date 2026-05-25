@@ -29,7 +29,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from mcp.server import Server
-from mcp.types import TextContent, Tool
+from mcp.server.lowlevel.server import ReadResourceContents
+from mcp.types import (
+    GetPromptResult,
+    Prompt,
+    PromptArgument,
+    PromptMessage,
+    Resource,
+    ResourceTemplate,
+    TextContent,
+    Tool,
+)
+from pydantic import AnyUrl
 
 from . import audit
 from .client import ThrukClient, ThrukError
@@ -3129,6 +3140,132 @@ class ThrukMCPServer:
     def create_initialization_options(self) -> Any:
         return self._server.create_initialization_options()
 
+    # --- Resources ---------------------------------------------------------
+
+    async def read_resource(self, uri: AnyUrl) -> list[ReadResourceContents]:
+        """Read a Thruk resource by URI, delegating to the module-level helpers.
+
+        Handles:
+          thruk://hosts/{name}
+          thruk://services/{host}/{service}
+          thruk://hostgroups/{name}
+          thruk://problems
+          thruk://stats
+        """
+        s = str(uri)
+        if s.startswith("thruk://hosts/"):
+            content = await _host_resource(s.split("/hosts/", 1)[1])
+        elif s.startswith("thruk://services/"):
+            parts = s.split("/services/", 1)[1].split("/", 1)
+            content = await _service_resource(parts[0], parts[1])
+        elif s.startswith("thruk://hostgroups/"):
+            content = await _hostgroup_resource(s.split("/hostgroups/", 1)[1])
+        elif s == "thruk://problems":
+            content = await _problems_resource()
+        elif s == "thruk://stats":
+            content = await _stats_resource()
+        else:
+            raise ValueError(f"Unknown resource URI: {uri!r}")
+        return [ReadResourceContents(content=content, mime_type="application/json")]
+
+    async def list_resources(self) -> list[Resource]:
+        """Return the two static Thruk resources exposed over MCP."""
+        return [
+            Resource(uri=AnyUrl("thruk://problems"), name="Current unhandled problems"),
+            Resource(uri=AnyUrl("thruk://stats"), name="Aggregated host/service stats"),
+        ]
+
+    async def list_resource_templates(self) -> list[ResourceTemplate]:
+        """Return the parametric Thruk resource URI templates."""
+        return [
+            ResourceTemplate(uriTemplate="thruk://hosts/{name}", name="Thruk host"),
+            ResourceTemplate(uriTemplate="thruk://services/{host}/{service}", name="Thruk service"),
+            ResourceTemplate(uriTemplate="thruk://hostgroups/{name}", name="Thruk hostgroup"),
+        ]
+
+    # --- Prompts -----------------------------------------------------------
+
+    async def list_prompts(self) -> list[Prompt]:
+        """Return the three Thruk prompt templates."""
+        return [
+            Prompt(
+                name="investigate_alert",
+                description="Investigate a current alert on a host or service",
+                arguments=[
+                    PromptArgument(name="host", description="Host name", required=True),
+                    PromptArgument(
+                        name="service",
+                        description="Service description (optional)",
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="schedule_maintenance",
+                description="Schedule maintenance downtime for a target",
+                arguments=[
+                    PromptArgument(
+                        name="target", description="Host/service/group name", required=True
+                    ),
+                    PromptArgument(
+                        name="duration_minutes",
+                        description="Duration in minutes (default 120)",
+                        required=False,
+                    ),
+                    PromptArgument(
+                        name="kind",
+                        description=(
+                            "host, service, hostgroup or servicegroup (default hostgroup)"
+                        ),
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="diagnose_flapping",
+                description="Diagnose a flapping service",
+                arguments=[
+                    PromptArgument(name="host", description="Host name", required=True),
+                    PromptArgument(
+                        name="service", description="Service description", required=True
+                    ),
+                ],
+            ),
+        ]
+
+    async def get_prompt(
+        self, name: str, arguments: dict[str, str] | None = None
+    ) -> GetPromptResult:
+        """Render a prompt by name with the provided arguments.
+
+        Delegates to the module-level prompt functions
+        (``investigate_alert``, ``schedule_maintenance``, ``diagnose_flapping``).
+        """
+        args = arguments or {}
+        if name == "investigate_alert":
+            text = investigate_alert(
+                host=args.get("host", ""),
+                service=args.get("service") or None,
+            )
+        elif name == "schedule_maintenance":
+            raw_dur = args.get("duration_minutes", "120")
+            duration = int(raw_dur) if str(raw_dur).isdigit() else 120
+            text = schedule_maintenance(
+                target=args.get("target", ""),
+                duration_minutes=duration,
+                kind=args.get("kind", "hostgroup"),
+            )
+        elif name == "diagnose_flapping":
+            text = diagnose_flapping(
+                host=args.get("host", ""),
+                service=args.get("service", ""),
+            )
+        else:
+            raise ValueError(f"Unknown prompt: {name!r}")
+        return GetPromptResult(
+            messages=[PromptMessage(role="user", content=TextContent(type="text", text=text))]
+        )
+
 
 def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
     """Build the MCP server with all Thruk tools registered.
@@ -3162,6 +3299,28 @@ def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
     @wrapper._server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return await wrapper.call_tool(name, arguments)
+
+    # issue #145 — register resource and prompt handlers so that MCP clients
+    # (Claude Desktop, MCP Gateway, etc.) can discover and use them.
+    @wrapper._server.list_resource_templates()
+    async def list_resource_templates() -> list[ResourceTemplate]:
+        return await wrapper.list_resource_templates()
+
+    @wrapper._server.list_resources()
+    async def list_resources() -> list[Resource]:
+        return await wrapper.list_resources()
+
+    @wrapper._server.read_resource()
+    async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+        return await wrapper.read_resource(uri)
+
+    @wrapper._server.list_prompts()
+    async def list_prompts() -> list[Prompt]:
+        return await wrapper.list_prompts()
+
+    @wrapper._server.get_prompt()
+    async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+        return await wrapper.get_prompt(name, arguments)
 
     return wrapper
 
