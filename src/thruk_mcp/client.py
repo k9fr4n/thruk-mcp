@@ -43,7 +43,7 @@ CACHEABLE_PATHS: frozenset[str] = frozenset(
 RETRY_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 
-def _build_default_client(config: ThrukConfig, max_retries: int) -> httpx.AsyncClient:
+def _build_default_client(config: ThrukConfig) -> httpx.AsyncClient:
     """Build the default shared ``httpx.AsyncClient`` with explicit pool and timeout settings.
 
     Splits the single ``config.timeout`` float into a structured
@@ -55,6 +55,14 @@ def _build_default_client(config: ThrukConfig, max_retries: int) -> httpx.AsyncC
     ``config.max_keepalive_connections`` (env vars ``THRUK_MAX_CONNECTIONS`` /
     ``THRUK_MAX_KEEPALIVE``).  The defaults (20 / 10) are far below the httpx
     default of 100 to avoid saturating a single Thruk core under LLM fan-out.
+
+    Transport-level retries are explicitly disabled (``retries=0``). The
+    :class:`ThrukClient` outer retry loop is the single source of truth for
+    retries — it already handles both ``httpx.RequestError`` and retryable
+    HTTP statuses (429/5xx) with jittered exponential backoff, which the
+    transport layer does not provide. See issue #150 for the rationale: with
+    both layers enabled, a hard outage at ``max_retries=3`` would amplify to
+    up to ~(N+1)² ≈ 16 connection attempts per logical request.
     """
     limits = httpx.Limits(
         max_connections=config.max_connections,
@@ -68,7 +76,9 @@ def _build_default_client(config: ThrukConfig, max_retries: int) -> httpx.AsyncC
         pool=config.timeout,
     )
     return httpx.AsyncClient(
-        transport=httpx.AsyncHTTPTransport(retries=max_retries),
+        # retries=0: the outer ThrukClient.request() loop owns all retry logic;
+        # see issue #150 for the double-retry amplification this prevents.
+        transport=httpx.AsyncHTTPTransport(retries=0),
         verify=config.verify_ssl,
         timeout=timeout,
         limits=limits,
@@ -86,8 +96,9 @@ class ThrukClient:
 
     Features:
     - native multi-backend URL building (`/r/sites/<a,b>/...`)
-    - connection-level retries (`httpx.AsyncHTTPTransport(retries=N)`)
     - HTTP-level retries with exponential backoff + jitter for 5xx / 429
+      and `httpx.RequestError` (single source of truth — transport-level
+      retries are disabled to avoid double-retry amplification; see #150)
     - opt-in TTL cache for slow-moving endpoints
     - `get_all()` async paginator for unbounded queries
     - `run_background()` helper for Thruk long-running requests (?background=1)
@@ -110,7 +121,7 @@ class ThrukClient:
         self._sem: asyncio.Semaphore | None = (
             asyncio.Semaphore(config.max_concurrent) if config.max_concurrent > 0 else None
         )
-        self._client = client or _build_default_client(config, max_retries)
+        self._client = client or _build_default_client(config)
 
     async def aclose(self) -> None:
         await self._client.aclose()

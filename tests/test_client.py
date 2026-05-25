@@ -168,7 +168,7 @@ class TestBuildDefaultClient:
             patch("thruk_mcp.client.httpx.Timeout"),
         ):
             mock_ac.return_value = MagicMock()
-            _build_default_client(cfg, max_retries=3)
+            _build_default_client(cfg)
         mock_limits.assert_called_once_with(
             max_connections=15,
             max_keepalive_connections=7,
@@ -185,7 +185,7 @@ class TestBuildDefaultClient:
             patch("thruk_mcp.client.httpx.Timeout"),
         ):
             mock_ac.return_value = MagicMock()
-            _build_default_client(cfg, max_retries=3)
+            _build_default_client(cfg)
         mock_limits.assert_called_once_with(
             max_connections=20,
             max_keepalive_connections=10,
@@ -195,7 +195,7 @@ class TestBuildDefaultClient:
     def test_timeout_is_split(self) -> None:
         """Timeout must be an httpx.Timeout instance, not a bare float."""
         cfg = self._cfg(timeout=30.0)
-        client = _build_default_client(cfg, max_retries=3)
+        client = _build_default_client(cfg)
         t = client.timeout
         assert isinstance(t, httpx.Timeout)
         assert t.read == 30.0
@@ -205,13 +205,13 @@ class TestBuildDefaultClient:
     def test_connect_timeout_capped_at_5s(self) -> None:
         """connect timeout must be min(5.0, config.timeout) — always ≤ 5 s for long timeouts."""
         cfg = self._cfg(timeout=60.0)
-        client = _build_default_client(cfg, max_retries=3)
+        client = _build_default_client(cfg)
         assert client.timeout.connect == 5.0  # type: ignore[attr-defined]
 
     def test_connect_timeout_uses_config_when_smaller(self) -> None:
         """When config.timeout < 5 s, connect timeout must use the smaller value."""
         cfg = self._cfg(timeout=2.0)
-        client = _build_default_client(cfg, max_retries=3)
+        client = _build_default_client(cfg)
         assert client.timeout.connect == 2.0  # type: ignore[attr-defined]
 
     def test_default_client_in_thruk_client_uses_build_helper(self) -> None:
@@ -219,8 +219,54 @@ class TestBuildDefaultClient:
         sentinel = MagicMock(spec=httpx.AsyncClient)
         with patch("thruk_mcp.client._build_default_client", return_value=sentinel) as mock_build:
             tc = ThrukClient(CFG)
-        mock_build.assert_called_once_with(CFG, 3)  # default max_retries=3
+        mock_build.assert_called_once_with(CFG)
         assert tc._client is sentinel
+
+    # -----------------------------------------------------------------
+    # Issue #150 — disable transport-level retries (no double-retry amplification)
+    # -----------------------------------------------------------------
+    #
+    # Pre-fix behaviour (regression target):
+    #     transport=httpx.AsyncHTTPTransport(retries=max_retries)
+    #     # -> outer loop (max_retries+1 iterations) x transport (max_retries+1
+    #     #    connect attempts) ~= (N+1)^2 connection attempts on a hard outage
+    #     # -> with default N=3, up to 16 connect attempts per logical request
+    #
+    # Post-fix: transport must be built with retries=0; the outer
+    # ThrukClient.request() loop is the single source of truth.
+
+    def test_transport_retries_disabled(self) -> None:
+        """AsyncHTTPTransport must be built with retries=0 — no transport-level retries."""
+        cfg = self._cfg()
+        with (
+            patch("thruk_mcp.client.httpx.AsyncHTTPTransport") as mock_transport,
+            patch("thruk_mcp.client.httpx.AsyncClient") as mock_ac,
+            patch("thruk_mcp.client.httpx.Limits"),
+            patch("thruk_mcp.client.httpx.Timeout"),
+        ):
+            mock_ac.return_value = MagicMock()
+            _build_default_client(cfg)
+        mock_transport.assert_called_once_with(retries=0)
+
+    @pytest.mark.asyncio
+    async def test_outer_loop_attempts_unaffected_by_transport(self) -> None:
+        """Outer retry loop must perform exactly max_retries+1 attempts on RequestError.
+
+        This guards against a regression where transport-level retries silently
+        swallow connect errors and inflate the effective attempt count.
+        """
+        async with respx.mock() as router:
+            route = router.get("https://thruk.test/r/hosts").mock(
+                side_effect=httpx.ConnectError("boom")
+            )
+            client = ThrukClient(CFG, max_retries=2, backoff_base=0.0, backoff_cap=0.0)
+            try:
+                with pytest.raises(ThrukError):
+                    await client.get("/hosts")
+            finally:
+                await client.aclose()
+        # max_retries=2 → exactly 3 outer attempts, no transport amplification.
+        assert route.call_count == 3
 
 
 class TestConfigPoolEnvVars:
