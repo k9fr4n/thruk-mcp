@@ -18,6 +18,7 @@ functions defined as closures inside ``build_server()``, yielding
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fnmatch
 import json
 import logging
@@ -143,13 +144,21 @@ SVC_STATE_MAP: dict[str, int] = SVC_STATE_INT
 # ---------------------------------------------------------------------------
 # Module-level client accessor
 # ---------------------------------------------------------------------------
-_client: ThrukClient | None = None
+# Use a ContextVar instead of a bare module-level global so that two
+# build_server() calls in the same process (e.g. in tests or multi-tenant
+# hosts) cannot clobber each other's client.  Each asyncio task inherits the
+# context from its parent, so set() in build_server() is visible to all tool
+# coroutines spawned from the same event-loop context.  (issue #143)
+_client_var: contextvars.ContextVar[ThrukClient] = contextvars.ContextVar("thruk_mcp_client")
 
 
 def _get_client() -> ThrukClient:
-    if _client is None:  # pragma: no cover
-        raise RuntimeError("thruk-mcp: server not initialised — call build_server() first.")
-    return _client
+    try:
+        return _client_var.get()
+    except LookupError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "thruk-mcp: server not initialised — call build_server() first."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -3275,9 +3284,12 @@ def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
     - arguments arrive as a raw dict in call_tool — no Pydantic model
     - the Docker MCP Gateway cannot silently strip arguments
     """
-    global _client
     cfg = config or ThrukConfig.from_env()
-    _client = ThrukClient(cfg)
+    client = ThrukClient(cfg)
+    # Bind the new client to the current context so that all tool coroutines
+    # spawned from this event-loop context reach the right instance.  Each
+    # build_server() call operates independently — no shared module-level state.
+    _client_var.set(client)
 
     audit.configure(enabled=cfg.audit_log)
 
@@ -3290,7 +3302,7 @@ def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
             continue
         enabled[name] = fn
 
-    wrapper = ThrukMCPServer(Server("thruk-mcp"), enabled, _client, cfg)
+    wrapper = ThrukMCPServer(Server("thruk-mcp"), enabled, client, cfg)
 
     @wrapper._server.list_tools()
     async def list_tools() -> list[Tool]:
