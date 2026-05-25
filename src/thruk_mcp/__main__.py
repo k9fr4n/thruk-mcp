@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from typing import Any
 
 from mcp.server.stdio import stdio_server
 
@@ -45,7 +46,7 @@ async def _run_http(port: int, host: str, log_level: str) -> None:
         log.warning(_SSL_WARNING)
     sse = SseServerTransport("/messages/")
 
-    async def handle_sse(request):  # starlette Request type not imported in local scope
+    async def handle_sse(request: Any) -> Response:  # starlette Request — avoid heavy import
         async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
             await server.run(streams[0], streams[1], server.create_initialization_options())
         return Response()

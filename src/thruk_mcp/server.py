@@ -2909,10 +2909,10 @@ class ThrukMCPServer:
             audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
 
-    async def run(self, read_stream, write_stream, init_options=None):
+    async def run(self, read_stream: Any, write_stream: Any, init_options: Any = None) -> None:
         await self._server.run(read_stream, write_stream, init_options)
 
-    def create_initialization_options(self):
+    def create_initialization_options(self) -> Any:
         return self._server.create_initialization_options()
 
 

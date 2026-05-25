@@ -115,3 +115,53 @@ def test_registry_tool_count() -> None:
         f"Expected 39 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
+
+
+# ---------------------------------------------------------------------------
+# ThrukMCPServer interface contract (issue #89: disallow_untyped_defs)
+# ---------------------------------------------------------------------------
+
+
+class TestThrukMCPServerInterface:
+    """Verify that ThrukMCPServer wrapper methods are correctly typed and callable.
+
+    These tests guard against regressions introduced when adding type annotations
+    to the previously-untyped run() and create_initialization_options() methods
+    (issue #89 — enable disallow_untyped_defs=true).
+    """
+
+    def test_run_is_coroutine_function(self) -> None:
+        """ThrukMCPServer.run must be an async coroutine function."""
+        from thruk_mcp.server import ThrukMCPServer
+
+        assert inspect.iscoroutinefunction(ThrukMCPServer.run)
+
+    def test_create_initialization_options_is_callable(self) -> None:
+        """ThrukMCPServer.create_initialization_options must be a plain callable."""
+        from thruk_mcp.server import ThrukMCPServer
+
+        assert callable(ThrukMCPServer.create_initialization_options)
+        assert not inspect.iscoroutinefunction(ThrukMCPServer.create_initialization_options)
+
+    def test_create_initialization_options_returns_value(self) -> None:
+        """create_initialization_options() must return a non-None value."""
+        from thruk_mcp.config import ThrukConfig
+        from thruk_mcp.server import build_server
+
+        cfg = ThrukConfig(base_url="http://thruk.test", api_key="test-key")
+        server = build_server(cfg)
+        result = server.create_initialization_options()
+        assert result is not None
+
+    def test_run_signature_has_required_params(self) -> None:
+        """run() must accept read_stream, write_stream, and optional init_options."""
+        from thruk_mcp.server import ThrukMCPServer
+
+        sig = inspect.signature(ThrukMCPServer.run)
+        params = list(sig.parameters)
+        assert "read_stream" in params
+        assert "write_stream" in params
+        assert "init_options" in params
+        # init_options must be optional (has a default value)
+        init_param = sig.parameters["init_options"]
+        assert init_param.default is not inspect.Parameter.empty
