@@ -377,6 +377,81 @@ async def thruk_service_availability(
     return _tool_response(result)
 
 
+async def thruk_hostgroup_availability(
+    hostgroup: str,
+    type: str = "hosts",
+    since: str | None = "-7d",
+    until: str | None = None,
+    timeperiod: str | None = None,
+    with_downtimes: bool = False,
+    include_soft_states: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Compute availability (uptime / SLA %) for all hosts/services in a hostgroup.
+
+    Returns a list sorted by ``time_up_percent`` ascending (worst performers first),
+    so the LLM can immediately answer "which hosts were below SLA this month?".
+
+    ``type`` controls what is returned:
+    - ``"hosts"`` (default) — one entry per host with ``time_up_percent``,
+      ``time_down_percent``, ``time_unreachable_percent`` and ``scheduled_*``
+      equivalents.
+    - ``"services"`` — one entry per service with ``time_ok_percent``,
+      ``time_warning_percent``, ``time_critical_percent``, ``time_unknown_percent``.
+    - ``"both"`` — hosts and services combined.
+
+    ``since`` / ``until`` accept Thruk relative times (``"-7d"``, ``"-1m"``) or
+    ISO datetimes (``"2026-05-01 00:00:00"``). Default window: last 7 days.
+
+    ``timeperiod`` (e.g. ``"lastmonth"``, ``"thismonth"``, ``"last24hours"``,
+    ``"lastweek"``) is a Thruk-native shortcut that overrides ``since``/``until``
+    when provided.
+    """
+    if type not in ("hosts", "services", "both"):
+        return _tool_response(
+            {"error": f"Invalid type {type!r}. Must be 'hosts', 'services' or 'both'."}
+        )
+
+    params: dict[str, Any] = {"type": type}
+    if timeperiod:
+        params["timeperiod"] = timeperiod
+    else:
+        ts_since = _parse_thruk_time(since)
+        ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
+        if ts_since is not None:
+            params["start"] = ts_since
+        if ts_until is not None:
+            params["end"] = ts_until
+    if with_downtimes:
+        params["withdowntimes"] = 1
+    if include_soft_states:
+        params["includesoftstates"] = 1
+
+    data = await _get_client().get(
+        f"/hostgroups/{_seg(hostgroup)}/availability",
+        params=params,
+        backends=_backends(backends),
+    )
+
+    rows: list[Any] = data if isinstance(data, list) else ([data] if data else [])
+    # Sort worst performers first so the LLM sees the outliers immediately
+    sort_key = "time_ok_percent" if type == "services" else "time_up_percent"
+    try:
+        rows = sorted(rows, key=lambda r: float(r.get(sort_key, 100.0)))
+    except (TypeError, ValueError):
+        pass  # non-numeric response — return as-is
+
+    meta: dict[str, Any] = {"hostgroup": hostgroup, "type": type}
+    if timeperiod:
+        meta["timeperiod"] = timeperiod
+    else:
+        meta["since"] = since
+        meta["until"] = until
+    meta["total"] = len(rows)
+    meta["results"] = rows
+    return _tool_response(meta)
+
+
 async def thruk_list_hostgroups(
     limit: int = 100,
     offset: int = 0,
@@ -2611,6 +2686,56 @@ TOOL_REGISTRY: list[ToolSpec] = [
             "service",
             host=_str("Host name"),
             service=_str("Service description"),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-7d",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-7d", "-1m") '
+                    'or ISO datetime ("2026-05-01 00:00:00"). Default: last 7 days. '
+                    "Ignored when ``timeperiod`` is set."
+                ),
+            },
+            until={
+                **_OPT_STR,
+                "description": (
+                    "End of analysis window (same formats as ``since``). "
+                    "Defaults to now. Ignored when ``timeperiod`` is set."
+                ),
+            },
+            timeperiod={
+                **_OPT_STR,
+                "description": (
+                    "Thruk-native time period shortcut: "
+                    '"last24hours", "lastweek", "lastmonth", "thismonth", etc. '
+                    "Overrides ``since``/``until`` when provided."
+                ),
+            },
+            with_downtimes=_bool(
+                "Count scheduled downtime periods as outages (withdowntimes=1).",
+                default=False,
+            ),
+            include_soft_states=_bool(
+                "Include soft state changes in calculations (includesoftstates=1).",
+                default=False,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_hostgroup_availability",
+        fn=thruk_hostgroup_availability,
+        schema=_s(
+            "hostgroup",
+            hostgroup=_str("Hostgroup name"),
+            type={
+                "type": "string",
+                "default": "hosts",
+                "enum": ["hosts", "services", "both"],
+                "description": (
+                    "What to return: 'hosts' (default), 'services', or 'both'. "
+                    "Hosts return time_up_percent; services return time_ok_percent."
+                ),
+            },
             since={
                 "anyOf": [{"type": "string"}, {"type": "null"}],
                 "default": "-7d",

@@ -422,6 +422,82 @@
     }
   },
   {
+    "name": "thruk_hostgroup_availability",
+    "description": "Compute availability (uptime / SLA %) for all hosts/services in a hostgroup. Returns a list sorted by time_up_percent ascending (worst performers first). type param: hosts (default), services, or both. since/until accept Thruk relative times or ISO datetimes. timeperiod (e.g. lastmonth, last24hours) overrides since/until.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "hostgroup"
+      ],
+      "properties": {
+        "hostgroup": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "default": "hosts",
+          "enum": [
+            "hosts",
+            "services",
+            "both"
+          ]
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-7d"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeperiod": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "with_downtimes": {
+          "type": "boolean",
+          "default": false
+        },
+        "include_soft_states": {
+          "type": "boolean",
+          "default": false
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_list_hostgroups",
     "description": "List host groups. Default columns return name/alias and host/service counts only.",
     "inputSchema": {

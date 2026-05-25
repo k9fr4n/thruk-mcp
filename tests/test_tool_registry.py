@@ -111,15 +111,16 @@ class TestWriteTools:
 
 
 def test_registry_tool_count() -> None:
-    """Registry must contain exactly 42 tools (sentinel for accidental removals).
+    """Registry must contain exactly 43 tools (sentinel for accidental removals).
 
     Count history:
       39 → +1 thruk_notifications (enable/disable host+service notifications)
          → +2 thruk_host_availability, thruk_service_availability (issue #171)
-      = 42
+         → +1 thruk_hostgroup_availability (issue #171)
+      = 43
     """
-    assert len(TOOL_REGISTRY) == 42, (
-        f"Expected 42 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 43, (
+        f"Expected 43 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 
