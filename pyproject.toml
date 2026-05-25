@@ -84,4 +84,4 @@ warn_unused_ignores = true
 warn_unreachable = true
 no_implicit_optional = true
 check_untyped_defs = true
-disallow_untyped_defs = false  # relaxed for now; flip to true in v0.5
+disallow_untyped_defs = true
