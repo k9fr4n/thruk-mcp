@@ -84,6 +84,13 @@ class ThrukConfig:
     # Protects the Thruk core from an LLM that loops on tools.
     max_concurrent: int = 0
 
+    # --- HTTP connection-pool knobs (v1.4) --------------------------------
+    # Explicit httpx.Limits values. Defaults are far below the httpx default
+    # (100 connections) to avoid saturating a single Thruk core under LLM
+    # fan-out patterns. Exposed via env vars for operator tuning.
+    max_connections: int = 20
+    max_keepalive_connections: int = 10
+
     @classmethod
     def from_env(cls) -> ThrukConfig:
         # THRUK_API_KEY is mandatory — also reject the placeholder.
@@ -104,6 +111,8 @@ class ThrukConfig:
             enabled_tools=_split_csv(_str_env("THRUK_ENABLED_TOOLS")),
             audit_log=_envbool("THRUK_AUDIT_LOG", True),
             max_concurrent=_int_env("THRUK_MAX_CONCURRENT", 0),
+            max_connections=_int_env("THRUK_MAX_CONNECTIONS", 20),
+            max_keepalive_connections=_int_env("THRUK_MAX_KEEPALIVE", 10),
         )
 
     def __repr__(self) -> str:
@@ -124,7 +133,9 @@ class ThrukConfig:
             f"read_only={self.read_only!r}, "
             f"enabled_tools={self.enabled_tools!r}, "
             f"audit_log={self.audit_log!r}, "
-            f"max_concurrent={self.max_concurrent!r})"
+            f"max_concurrent={self.max_concurrent!r}, "
+            f"max_connections={self.max_connections!r}, "
+            f"max_keepalive_connections={self.max_keepalive_connections!r})"
         )
 
     def __str__(self) -> str:
