@@ -25,7 +25,7 @@ import re
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from mcp.server import Server
@@ -858,7 +858,9 @@ async def thruk_alert_heatmap(
         while b <= last_b:
             results.append(
                 {
-                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
                     "count": raw_counts.get(b, 0),
                 }
             )
@@ -868,7 +870,9 @@ async def thruk_alert_heatmap(
         for b in sorted(raw_counts):
             results.append(
                 {
-                    "bucket_start": datetime.utcfromtimestamp(b).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
                     "count": raw_counts[b],
                 }
             )
