@@ -761,3 +761,131 @@ async def test_thruk_run_background_query_rejects_unknown_path_prefix() -> None:
         assert len(router.calls) == 0
     finally:
         await _close(mcp)
+
+
+# ---------------------------------------------------------------------------
+# Issue #138 — thruk_query must block non-GET/HEAD methods in read-only mode
+# ---------------------------------------------------------------------------
+
+# Pre-fix behaviour (the vulnerability):
+#   thruk_query accepted any method in _ALLOWED_METHODS even when read_only=True,
+#   because it was kept out of WRITE_TOOLS intentionally (it also handles GET).
+#   An LLM could therefore call thruk_query(method="POST", path="/hosts/srv01/cmd/...")
+#   to mutate monitoring state while THRUK_READ_ONLY=true, completely bypassing
+#   the WRITE_TOOLS allowlist.  The fix adds an explicit guard inside the function.
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_read_only_blocks_post() -> None:
+    """thruk_query with method=POST must be rejected when THRUK_READ_ONLY=true.
+
+    This is the primary regression test for issue #138.
+    Without the fix, a POST call would be forwarded to Thruk despite read_only=True.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", read_only=True)
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_query",
+                {"path": "/hosts/srv01/cmd/acknowledge_host_problem", "method": "POST"},
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert "THRUK_READ_ONLY" in payload["error"]
+        assert "POST" in payload["error"]
+        assert len(router.calls) == 0, "No HTTP request must be made when blocked by read-only"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_read_only_blocks_delete() -> None:
+    """thruk_query with method=DELETE must be rejected when THRUK_READ_ONLY=true."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", read_only=True)
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            result = await mcp.call_tool(
+                "thruk_query",
+                {"path": "/downtimes/42", "method": "DELETE"},
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" in payload
+        assert "THRUK_READ_ONLY" in payload["error"]
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_read_only_allows_get() -> None:
+    """thruk_query with method=GET must still work when THRUK_READ_ONLY=true.
+
+    The whole point of keeping thruk_query available in read-only mode is to
+    allow read operations — this test verifies GET is not blocked.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", read_only=True)
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            route = router.route(method="GET", url__regex=r".*/r/hosts$").mock(
+                return_value=httpx.Response(200, json=[])
+            )
+            result = await mcp.call_tool("thruk_query", {"path": "/hosts", "method": "GET"})
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" not in payload, f"GET should not be blocked in read-only mode: {payload}"
+        assert route.called, "GET must be forwarded to Thruk even in read-only mode"
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_query_non_read_only_allows_post() -> None:
+    """thruk_query with method=POST must still work when THRUK_READ_ONLY=false (default)."""
+    cfg = ThrukConfig(base_url=BASE, api_key="k", read_only=False)
+    mcp = build_server(cfg)
+    try:
+        with respx.mock() as router:
+            router.post(f"{BASE}/r/hosts/srv01/cmd/acknowledge_host_problem").mock(
+                return_value=httpx.Response(200, json={"rc": 0})
+            )
+            result = await mcp.call_tool(
+                "thruk_query",
+                {"path": "/hosts/srv01/cmd/acknowledge_host_problem", "method": "POST"},
+            )
+        assert len(result) == 1
+        payload = json.loads(result[0].text)
+        assert "error" not in payload
+    finally:
+        await _close(mcp)
+
+
+@pytest.mark.asyncio
+async def test_thruk_run_background_query_read_only_blocks_post() -> None:
+    """thruk_run_background_query with method=POST must be blocked when THRUK_READ_ONLY=true.
+
+    thruk_run_background_query is already removed from the tool registry in read-only mode
+    (is_write=True), but the function body guard provides defense-in-depth.
+    """
+    cfg = ThrukConfig(base_url=BASE, api_key="k", read_only=True)
+    mcp = build_server(cfg)
+    try:
+        # Call the underlying function directly to test the in-body guard
+        # (the tool is stripped from the registry in read-only mode)
+        from thruk_mcp.server import thruk_run_background_query
+
+        with respx.mock() as router:
+            raw = await thruk_run_background_query(
+                path="/hosts/srv01/cmd/schedule_host_check",
+                method="POST",
+            )
+        payload = json.loads(raw)
+        assert "error" in payload
+        assert "THRUK_READ_ONLY" in payload["error"]
+        assert len(router.calls) == 0
+    finally:
+        await _close(mcp)
