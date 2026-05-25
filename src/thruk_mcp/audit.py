@@ -18,18 +18,43 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
 
-__all__ = ["audited", "configure", "log_call"]
+__all__ = ["audited", "configure", "log_call", "scrub"]
 
 log = logging.getLogger("thruk_mcp.audit")
 
 # Sensitive keys we never log (none today, but cheap to enumerate for safety).
 _REDACT: frozenset[str] = frozenset({"api_key", "password", "token"})
+
+# Free-text secret patterns applied by :func:`scrub` to any string about to be
+# logged or surfaced to the LLM/operator. Each pattern keeps the *label*
+# (group 1) so the scrubbed string remains diagnosable
+# (e.g. ``X-Thruk-Auth-Key: ***``) while only the token itself is replaced.
+# Both ``:`` and ``=`` separators are accepted because Thruk error bodies
+# sometimes echo a header back URL-encoded as ``X-Thruk-Auth-Key=<token>``.
+_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(X-Thruk-Auth-(?:Key|User)\s*[:=]\s*)[^&\s\"\']+", re.IGNORECASE),
+    re.compile(r"(\bapi[_-]?key\s*=\s*)[^&\s\"\']+", re.IGNORECASE),
+    re.compile(r"(\bauthorization\s*:\s*\S+\s+)\S+", re.IGNORECASE),
+)
+
+
+def scrub(text: str) -> str:
+    """Return *text* with known secret-bearing substrings masked.
+
+    Idempotent and safe to call on already-scrubbed strings. All callers in
+    this codebase pre-format the input with an f-string, so we keep a strict
+    ``str`` annotation rather than coercing arbitrary objects.
+    """
+    for pat in _SECRET_PATTERNS:
+        text = pat.sub(r"\1***", text)
+    return text
 
 
 def _redact(value: Any) -> Any:
@@ -73,7 +98,7 @@ def log_call(
         "status": status,
     }
     if error:
-        record["error"] = error
+        record["error"] = scrub(error)
     log.info(json.dumps(record, default=str))
 
 
@@ -113,7 +138,7 @@ def audited(
                 result = await fn(*args, **kwargs)
             except Exception as exc:
                 record["status"] = "error"
-                record["error"] = f"{type(exc).__name__}: {exc}"
+                record["error"] = scrub(f"{type(exc).__name__}: {exc}")
                 log.info(json.dumps(record, default=str))
                 raise
             record["status"] = "ok"

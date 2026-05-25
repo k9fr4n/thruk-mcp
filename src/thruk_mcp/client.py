@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from .audit import scrub
 from .cache import TTLCache
 from .config import ThrukConfig
 
@@ -157,7 +158,7 @@ class ThrukClient:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                log.info("Thruk %s %s (try %d)", method, url, attempt + 1)
+                log.info("Thruk %s %s (try %d)", method, scrub(url), attempt + 1)
                 if self._sem is not None:
                     async with self._sem:
                         resp = await self._client.request(method, url, params=params, data=data)
@@ -168,30 +169,32 @@ class ThrukClient:
                 if attempt < self.max_retries:
                     await self._backoff(attempt)
                     continue
-                raise ThrukError(f"Failed to reach Thruk at {url}: {exc}") from exc
+                raise ThrukError(scrub(f"Failed to reach Thruk at {url}: {exc}")) from exc
 
             if resp.status_code in RETRY_STATUS and attempt < self.max_retries:
-                log.warning("Thruk HTTP %d on %s, retrying", resp.status_code, url)
+                log.warning("Thruk HTTP %d on %s, retrying", resp.status_code, scrub(url))
                 await self._backoff(attempt)
                 continue
             if resp.status_code >= 400:
                 raise ThrukError(
-                    f"Thruk API returned HTTP {resp.status_code} for {method} {path}: "
-                    f"{resp.text[:500]}"
+                    scrub(
+                        f"Thruk API returned HTTP {resp.status_code} for "
+                        f"{method} {path}: {resp.text[:500]}"
+                    )
                 )
             if not resp.content:
                 return None
             try:
                 payload = resp.json()
             except ValueError as exc:
-                raise ThrukError(f"Invalid JSON from Thruk: {exc}") from exc
+                raise ThrukError(scrub(f"Invalid JSON from Thruk: {exc}")) from exc
 
             if cacheable and cache_key is not None:
                 await self.cache.set(cache_key, payload, ttl=cache_ttl)
             return payload
 
         # Should be unreachable, but keep mypy happy.
-        raise ThrukError(f"Failed to reach Thruk at {url}: {last_exc}")
+        raise ThrukError(scrub(f"Failed to reach Thruk at {url}: {last_exc}"))
 
     async def get(self, path: str, **kw: Any) -> Any:
         return await self.request("GET", path, **kw)
@@ -357,7 +360,7 @@ class ThrukClient:
                 continue
             if resp.status_code >= 400:
                 raise ThrukError(
-                    f"Thruk job {job_id} failed: HTTP {resp.status_code}: {resp.text[:500]}"
+                    scrub(f"Thruk job {job_id} failed: HTTP {resp.status_code}: {resp.text[:500]}")
                 )
             if not resp.content:
                 return None
