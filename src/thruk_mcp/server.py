@@ -1670,6 +1670,49 @@ async def thruk_acknowledge(
     )
 
 
+async def thruk_add_comment(
+    host: str,
+    comment: str,
+    service: str | None = None,
+    author: str = "thruk-mcp",
+    persistent: bool = True,
+    backends: str | None = None,
+) -> str:
+    """Add a free-form operator comment on a host or service.
+
+    Posts a timestamped note via Thruk REST without acknowledging the problem
+    or scheduling a downtime.  Typical use-cases: incident timeline annotations
+    ("Investigating high load, ETA 30 min"), false-positive markers, ops handoff
+    notes.
+
+    Thruk commands used:
+    - host:    ``POST /hosts/{host}/cmd/add_host_comment``
+    - service: ``POST /services/{host}/{svc}/cmd/add_svc_comment``
+
+    Payload keys forwarded to Thruk:
+    - ``comment_data``   — the comment text
+    - ``comment_author`` — display name of the author
+    - ``persistent``     — when "1" the comment survives Nagios restarts /
+      subsequent check results; when "0" it is dropped on the next check.
+
+    This tool does **not** acknowledge a problem (use ``thruk_acknowledge``)
+    and does **not** schedule a downtime (use ``thruk_schedule_downtime``).
+    """
+    endpoint = (
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/add_svc_comment"
+        if service
+        else f"/hosts/{_seg(host)}/cmd/add_host_comment"
+    )
+    payload = {
+        "comment_data": comment,
+        "comment_author": author,
+        "persistent": "1" if persistent else "0",
+    }
+    return _tool_response(
+        await _get_client().post(endpoint, data=payload, backends=_backends(backends))
+    )
+
+
 async def thruk_remove_acknowledgement(
     host: str, service: str | None = None, backends: str | None = None
 ) -> str:
@@ -3194,6 +3237,21 @@ TOOL_REGISTRY: list[ToolSpec] = [
             sticky=_bool(default=True),
             notify=_bool(default=True),
             persistent=_bool(default=False),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_add_comment",
+        fn=thruk_add_comment,
+        schema=_s(
+            "host",
+            "comment",
+            host=_str("Host name"),
+            comment=_str("Free-form comment text to attach to the host or service."),
+            service=_OPT_STR,
+            author=_str(),
+            persistent=_bool(default=True),
             backends=_BACKENDS,
         ),
         is_write=True,

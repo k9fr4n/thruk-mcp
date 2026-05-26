@@ -2014,6 +2014,65 @@
     }
   },
   {
+    "name": "thruk_add_comment",
+    "description": "Add a free-form operator comment on a host or service. Posts a timestamped note via Thruk REST without acknowledging the problem or scheduling a downtime. Use for incident timeline annotations, false-positive markers, ops handoff notes. Set persistent=False to drop the comment on the next check result.",
+    "inputSchema": {
+      "properties": {
+        "host": {
+          "description": "Host name",
+          "title": "Host",
+          "type": "string"
+        },
+        "comment": {
+          "description": "Free-form comment text to attach to the host or service.",
+          "title": "Comment",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "author": {
+          "default": "thruk-mcp",
+          "title": "Author",
+          "type": "string"
+        },
+        "persistent": {
+          "default": true,
+          "title": "Persistent",
+          "type": "boolean"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends.",
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "host",
+        "comment"
+      ],
+      "title": "thruk_add_commentArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_remove_acknowledgement",
     "description": "Remove an acknowledgement.",
     "inputSchema": {

@@ -94,6 +94,7 @@ class TestWriteTools:
         "thruk_delete_active_downtimes",
         "thruk_delete_downtimes_by_filter",
         "thruk_acknowledge",
+        "thruk_add_comment",  # added: free-form comment on host/service (issue #168)
         "thruk_remove_acknowledgement",
         "thruk_recheck",
         "thruk_run_background_query",
@@ -114,17 +115,18 @@ class TestWriteTools:
 
 
 def test_registry_tool_count() -> None:
-    """Registry must contain exactly 44 tools (sentinel for accidental removals).
+    """Registry must contain exactly 45 tools (sentinel for accidental removals).
 
     Count history:
       39 → +1 thruk_notifications (enable/disable host+service notifications)
          → +2 thruk_host_availability, thruk_service_availability (issue #171)
          → +1 thruk_hostgroup_availability (issue #171)
          → +1 thruk_checks (enable/disable active checks, issue #167)
-      = 44
+         → +1 thruk_add_comment (free-form host/service comment, issue #168)
+      = 45
     """
-    assert len(TOOL_REGISTRY) == 44, (
-        f"Expected 44 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 45, (
+        f"Expected 45 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 
