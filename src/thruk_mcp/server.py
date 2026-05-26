@@ -550,6 +550,84 @@ async def thruk_get_contact(contact: str, backends: str | None = None) -> str:
     return _tool_response(data)
 
 
+# ---------------------------------------------------------------------------
+# Hostgroup defense-in-depth (issue #200)
+# ---------------------------------------------------------------------------
+# The dual-query architecture of ``thruk_problems`` relies on each Thruk
+# backend honouring ``groups[gte]`` / ``host_groups[gte]`` server-side.  In
+# multi-backend federations a single mis-behaving backend can leak rows that
+# don't actually belong to the requested hostgroup(s).  We therefore
+# re-validate the ``groups`` / ``host_groups`` membership of every returned
+# row and surface a ``_warnings`` entry whenever something had to be dropped.
+
+
+def _collect_hostgroup_constraints(node: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Extract every ``hostgroup`` leaf from a validated AND-only filter tree.
+
+    Returns a list of ``(op, value)`` tuples suitable for client-side
+    re-validation in :func:`thruk_problems` (defense-in-depth, see issue #200).
+    """
+    out: list[tuple[str, Any]] = []
+
+    def _walk(n: dict[str, Any]) -> None:
+        if n.get("type") == "leaf":
+            if n.get("field") == "hostgroup":
+                out.append((str(n["op"]), n["value"]))
+        else:
+            for child in n.get("conditions") or []:
+                _walk(child)
+
+    _walk(node)
+    return out
+
+
+def _row_matches_hostgroup_constraints(
+    groups: Any,
+    constraints: list[tuple[str, Any]],
+) -> bool:
+    """Return True iff ``groups`` (a list-of-strings column) satisfies every constraint.
+
+    Conservative on unknown/missing data: if ``groups`` is not a list we treat
+    the row as non-matching only when at least one positive constraint
+    (``eq``/``in``/``regex``) exists — that way a backend that strips the
+    column entirely still triggers the warning, instead of silently leaking.
+    """
+    g: list[str] = [str(x) for x in groups] if isinstance(groups, list) else []
+    g_set = set(g)
+    for op, val in constraints:
+        if op == "eq":
+            if str(val) not in g_set:
+                return False
+        elif op == "in":
+            allowed = {str(v) for v in val} if isinstance(val, list) else {str(val)}
+            if g_set.isdisjoint(allowed):
+                return False
+        elif op == "neq":
+            if str(val) in g_set:
+                return False
+        elif op == "regex":
+            pat = re.compile(str(val), re.IGNORECASE)
+            if not any(pat.search(x) for x in g):
+                return False
+        # gte / lte don't make sense for the list ``groups`` column; ignore.
+    return True
+
+
+def _ensure_columns_param(params: dict[str, Any], required: str) -> None:
+    """Ensure ``required`` appears in ``params['columns']`` (no-op if columns unset).
+
+    When ``columns`` is absent the response carries every column already, so
+    nothing to do.  Otherwise append ``required`` if it's not already listed.
+    """
+    cur = params.get("columns")
+    if not cur:  # None or empty string → all columns coming back
+        return
+    cols = [c.strip() for c in str(cur).split(",") if c.strip()]
+    if required not in cols:
+        cols.append(required)
+        params["columns"] = ",".join(cols)
+
+
 async def thruk_problems(
     filter: dict[str, Any] | None = None,
     limit: int = 100,
@@ -564,6 +642,11 @@ async def thruk_problems(
     ``filter`` supports fields: ``hostgroup``, ``custom_var`` (host-level, applied as
     ``_VAR`` on hosts and ``_HOSTVAR`` on services), ``host_custom_var`` (services
     sub-query only), ``state``. OR is not supported (dual-query architecture requires AND).
+
+    Hostgroup constraints are additionally **re-validated client-side** on the merged
+    response (issue #200): if any backend leaks a row that does not actually carry the
+    requested hostgroup in its ``groups`` / ``host_groups`` column the row is dropped
+    and a ``_warnings`` entry is appended.
     """
     host_params = _list_params(limit, offset, "-state,name", columns, DEFAULT_HOST_COLUMNS)
     host_params.update({"state": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
@@ -571,6 +654,7 @@ async def thruk_problems(
         limit, offset, "-state,host_name,description", columns, DEFAULT_SERVICE_COLUMNS
     )
     svc_params.update({"state[gte]": 1, "acknowledged": 0, "scheduled_downtime_depth": 0})
+    hostgroup_constraints: list[tuple[str, Any]] = []
     if filter is not None:
         try:
             validate_filter(filter, FIELDS_PROBLEMS)
@@ -582,14 +666,41 @@ async def thruk_problems(
             return _tool_response({"error": str(exc)})
         host_params.update(extra_host)
         svc_params.update(extra_svc)
+        hostgroup_constraints = _collect_hostgroup_constraints(filter)
+        if hostgroup_constraints:
+            # Ensure we receive the column we need to re-validate.
+            _ensure_columns_param(host_params, "groups")
+            _ensure_columns_param(svc_params, "host_groups")
     hosts, host_warnings = await _get_client().get_with_fallback(
         "/hosts", params=host_params, backends=_backends(backends)
     )
     services, svc_warnings = await _get_client().get_with_fallback(
         "/services", params=svc_params, backends=_backends(backends)
     )
-    result: dict[str, Any] = {"hosts": hosts, "services": services}
     all_warnings = list(dict.fromkeys(host_warnings + svc_warnings))
+    if hostgroup_constraints:
+        before_h, before_s = len(hosts), len(services)
+        hosts = [
+            h
+            for h in hosts
+            if _row_matches_hostgroup_constraints(h.get("groups"), hostgroup_constraints)
+        ]
+        services = [
+            s
+            for s in services
+            if _row_matches_hostgroup_constraints(s.get("host_groups"), hostgroup_constraints)
+        ]
+        leaked_h = before_h - len(hosts)
+        leaked_s = before_s - len(services)
+        if leaked_h or leaked_s:
+            all_warnings.append(
+                "hostgroup_filter_leak: dropped "
+                f"{leaked_h} host(s) and {leaked_s} service(s) returned by a backend "
+                "but not actually members of the requested hostgroup(s) — "
+                "this usually indicates a misbehaving backend in a multi-backend "
+                "federation (issue #200)."
+            )
+    result: dict[str, Any] = {"hosts": hosts, "services": services}
     if all_warnings:
         result["_warnings"] = all_warnings
     return _tool_response(result)
