@@ -73,6 +73,9 @@ DEFAULT_DOWNTIME_COLUMNS = (
 DEFAULT_COMMENT_COLUMNS = (
     "id,host_name,service_description,author,comment,entry_time,entry_type,persistent,peer_name"
 )
+DEFAULT_CONTACT_COLUMNS = (
+    "name,alias,email,pager,host_notifications_enabled,service_notifications_enabled"
+)
 
 # ---------------------------------------------------------------------------
 # Analysis constants
