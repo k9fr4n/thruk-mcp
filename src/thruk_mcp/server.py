@@ -212,9 +212,29 @@ async def thruk_list_hosts(
 
 
 async def thruk_get_host(host: str, backends: str | None = None) -> str:
-    """Get a single host by name."""
+    """Get a single host by name.
+
+    The Thruk REST ``/hosts/{name}`` endpoint always returns a JSON list
+    (one entry per backend in a federated setup). This tool unpacks that
+    list so callers get the expected single object:
+
+    - empty list  -> ``{"error": "Host 'X' not found"}``
+    - one entry   -> the dict itself
+    - many entries (same hostname on multiple backends) -> the list, with
+      a ``_warnings`` entry flagging the collision so the caller can
+      disambiguate via ``backends=``.
+    """
     data = await _get_client().get(f"/hosts/{_seg(host)}", backends=_backends(backends))
-    return _tool_response(data)
+    if not isinstance(data, list):
+        return _tool_response(data)
+    if not data:
+        return _tool_response({"error": f"Host {host!r} not found"})
+    if len(data) == 1:
+        return _tool_response(data[0])
+    return _tool_response(
+        data,
+        [f"{len(data)} backends returned a result for host {host!r}; listing all."],
+    )
 
 
 async def thruk_list_services(
@@ -251,11 +271,26 @@ async def thruk_list_services(
 
 
 async def thruk_get_service(host: str, service: str, backends: str | None = None) -> str:
-    """Get a single service by host and description."""
+    """Get a single service by host and description.
+
+    The Thruk REST ``/services/{host}/{svc}`` endpoint always returns a JSON
+    list (one entry per backend in a federated setup). This tool unpacks
+    that list so callers get the expected single object — see
+    :func:`thruk_get_host` for the exact unpacking rules.
+    """
     data = await _get_client().get(
         f"/services/{_seg(host)}/{_seg(service)}", backends=_backends(backends)
     )
-    return _tool_response(data)
+    if not isinstance(data, list):
+        return _tool_response(data)
+    if not data:
+        return _tool_response({"error": f"Service {host!r}/{service!r} not found"})
+    if len(data) == 1:
+        return _tool_response(data[0])
+    return _tool_response(
+        data,
+        [f"{len(data)} backends returned a result for service {host!r}/{service!r}; listing all."],
+    )
 
 
 async def thruk_host_availability(
