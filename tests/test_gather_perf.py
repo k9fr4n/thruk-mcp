@@ -318,17 +318,15 @@ async def test_delete_downtimes_by_filter_host_gather_all_ids_fired(mocked_serve
     mcp, router = mocked_server
     # Issue #196: peer resolver returns empty → broadcast fallback (preserves
     # the parallelism property this test asserts).
+    # Issue #197: host + comment now takes the substring path (no system cmd).
     router.get("https://thruk.test/r/hosts/web01").mock(return_value=ok([]))
-    router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
-        return_value=ok({"rc": 0})
-    )
     # Three host-level downtimes returned by the enumeration GET.
     router.get("https://thruk.test/r/downtimes").mock(
         return_value=ok(
             [
-                {"id": 100, "service_description": "", "comment": "maint"},
-                {"id": 200, "service_description": "", "comment": "maint"},
-                {"id": 300, "service_description": "", "comment": "maint"},
+                {"id": 100, "service_description": "", "comment": "scheduled maint"},
+                {"id": 200, "service_description": "", "comment": "scheduled maint"},
+                {"id": 300, "service_description": "", "comment": "scheduled maint"},
             ]
         )
     )

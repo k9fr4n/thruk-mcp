@@ -2516,22 +2516,56 @@ async def thruk_delete_downtimes_by_filter(
     comment: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """Bulk-delete downtimes matching arbitrary filters via system commands.
+    """Bulk-delete downtimes matching arbitrary filters.
 
-    Uses `del_downtime_by_hostgroup_name`, `del_downtime_by_host_name`, or
-    `del_downtime_by_start_time_comment` depending on the most specific filter.
+    Strategy depends on the filter combination:
 
-    **Known Naemon limitation**: `DEL_DOWNTIME_BY_HOST_NAME` only covers
-    service-level downtimes. When filtering by `host` (without `hostgroup`),
-    this tool additionally enumerates and deletes matching host-level downtimes
-    via explicit `DEL_HOST_DOWNTIME` commands. Those results appear in the
-    `host_downtimes_deleted` / `host_downtimes_errors` keys of the response.
+    * **``host`` + ``comment``** (issue #197): the tool enumerates downtimes
+      for the host via ``/downtimes`` and applies a **case-insensitive
+      substring** match on ``comment`` client-side, then issues per-id
+      ``del_downtime`` commands against the matching host- or service-level
+      endpoint. This avoids Naemon's exact-string comparison on the comment
+      field (``DEL_DOWNTIME_BY_HOST_NAME`` would otherwise silently no-op for
+      partial-comment filters). Matches are reported under
+      ``host_downtimes_*`` and ``service_downtimes_*``.
+    * **``host`` only**: bulk via ``del_downtime_by_host_name`` system command
+      (service downtimes) plus explicit enumeration of host-level downtimes
+      (which the system command does not cover).
+    * **``hostgroup``**: bulk via ``del_downtime_by_hostgroup_name``.
+    * **``comment`` or ``start_time`` only**: bulk via
+      ``del_downtime_by_start_time_comment`` — **exact** match on ``comment``
+      (Naemon limitation, no client-side fallback available).
 
-    At least one of `host`, `hostgroup`, `service`, `start_time` or `comment`
-    must be provided."""
+    At least one of ``host``, ``hostgroup``, ``service``, ``start_time`` or
+    ``comment`` must be provided."""
     client = _get_client()
     be = _backends(backends)
 
+    if not any([host, hostgroup, service, start_time, comment]):
+        raise ThrukError("Provide at least one of host, hostgroup, service, start_time, comment.")
+
+    # Issue #196: when filtering by host without an explicit `backends=`
+    # override, pre-resolve the backend owning the host so commands are not
+    # broadcast to every Naemon site (11/12 useless commands in a typical
+    # federation). Ambiguous lookups fall back to broadcast.
+    if host and not hostgroup and be is None:
+        resolved = await _resolve_peer_for_host(client, host)
+        if resolved is not None:
+            be = resolved
+
+    # ------------------------------------------------------------------
+    # Issue #197: host + comment → client-side substring match path.
+    # Skip the system command entirely (its comment match is exact and
+    # silently no-ops for partial filters).
+    # ------------------------------------------------------------------
+    if host and not hostgroup and comment:
+        return await _delete_downtimes_by_host_comment(
+            client, be, host=host, comment=comment, service=service, start_time=start_time
+        )
+
+    # ------------------------------------------------------------------
+    # Bulk system-command path (no client-side filtering available).
+    # ------------------------------------------------------------------
     payload: dict[str, str] = {}
     if host:
         payload["hostname"] = host
@@ -2542,26 +2576,15 @@ async def thruk_delete_downtimes_by_filter(
     if start_time:
         payload["start_time"] = start_time
     if comment:
+        # NOTE: exact-match only — see docstring (issue #197).
         payload["comment"] = comment
-    if not payload:
-        raise ThrukError("Provide at least one of host, hostgroup, service, start_time, comment.")
+
     if hostgroup:
         cmd = "del_downtime_by_hostgroup_name"
     elif host:
         cmd = "del_downtime_by_host_name"
     else:
         cmd = "del_downtime_by_start_time_comment"
-
-    # Issue #196: when filtering by host without an explicit `backends=`
-    # override, pre-resolve the backend owning the host so the
-    # DEL_DOWNTIME_BY_HOST_NAME command is not broadcast to every Naemon
-    # site (which would log 11/12 useless commands in a typical federation).
-    # Ambiguous lookups (collision / unknown host) fall back to the previous
-    # broadcast behaviour to preserve correctness.
-    if host and not hostgroup and be is None:
-        resolved = await _resolve_peer_for_host(client, host)
-        if resolved is not None:
-            be = resolved
 
     cmd_result = await client.post(f"/system/cmd/{cmd}", data=payload, backends=be)
     result: dict[str, Any] = {"system_command": cmd_result}
@@ -2573,8 +2596,6 @@ async def thruk_delete_downtimes_by_filter(
             "host_name": host,
             "columns": "id,service_description,comment,start_time",
         }
-        if comment:
-            dt_params["comment"] = comment
         if start_time:
             dt_params["start_time"] = start_time
 
@@ -2583,8 +2604,7 @@ async def thruk_delete_downtimes_by_filter(
         # Host-level downtimes have an empty service_description.
         host_dts = [d for d in all_dts if not d.get("service_description")]
 
-        # Issue #141: same gather pattern — all host-level DEL requests fire
-        # concurrently rather than being serialised.
+        # Issue #141: parallelise per-id DEL via asyncio.gather.
         async def _del_host_one(dt_id: int) -> tuple[int, Any, ThrukError | None]:
             try:
                 resp = await client.post(
@@ -2609,6 +2629,87 @@ async def thruk_delete_downtimes_by_filter(
         result["host_downtimes_errors"] = host_errors
 
     return _tool_response(result)
+
+
+async def _delete_downtimes_by_host_comment(
+    client: Any,
+    be: tuple[str, ...] | None,
+    *,
+    host: str,
+    comment: str,
+    service: str | None,
+    start_time: str | None,
+) -> str:
+    """Issue #197: client-side substring filter on the ``comment`` field.
+
+    Enumerates downtimes for ``host`` (optionally narrowed by ``service`` and
+    ``start_time``), keeps only those whose comment contains ``comment``
+    (case-insensitive), then issues per-id ``del_downtime`` against the
+    correct endpoint (host- vs service-level) in parallel via
+    :func:`asyncio.gather`.
+
+    This works around Naemon's exact-string comparison on the comment field
+    in ``DEL_DOWNTIME_BY_HOST_NAME`` which would silently no-op on partial
+    matches and return ``{"message": "Command successfully submitted"}``."""
+    dt_params: dict[str, Any] = {
+        "host_name": host,
+        "columns": "id,service_description,comment,start_time",
+    }
+    if service:
+        dt_params["service_description"] = service
+    if start_time:
+        dt_params["start_time"] = start_time
+
+    raw = await client.get("/downtimes", params=dt_params, backends=be)
+    all_dts: list[dict[str, Any]] = raw if isinstance(raw, list) else ([raw] if raw else [])
+
+    needle = comment.lower()
+    matching = [d for d in all_dts if needle in str(d.get("comment", "")).lower()]
+    host_dts = [d for d in matching if not d.get("service_description")]
+    svc_dts = [d for d in matching if d.get("service_description")]
+
+    async def _del_one(endpoint: str, dt_id: int) -> tuple[int, Any, ThrukError | None]:
+        try:
+            resp = await client.post(endpoint, data={"downtime_id": dt_id}, backends=be)
+            return dt_id, resp, None
+        except ThrukError as exc:
+            return dt_id, None, exc
+
+    host_ep = f"/hosts/{_seg(host)}/cmd/del_downtime"
+    host_coros = [_del_one(host_ep, d["id"]) for d in host_dts if d.get("id") is not None]
+    svc_coros = [
+        _del_one(
+            f"/services/{_seg(host)}/{_seg(str(d['service_description']))}/cmd/del_downtime",
+            d["id"],
+        )
+        for d in svc_dts
+        if d.get("id") is not None
+    ]
+
+    host_results: list[tuple[int, Any, ThrukError | None]] = list(await asyncio.gather(*host_coros))
+    svc_results: list[tuple[int, Any, ThrukError | None]] = list(await asyncio.gather(*svc_coros))
+
+    def _split(
+        rows: list[tuple[int, Any, ThrukError | None]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        ok_rows = [{"downtime_id": i, "result": r} for i, r, e in rows if e is None]
+        err_rows = [{"downtime_id": i, "error": str(e)} for i, _, e in rows if e is not None]
+        return ok_rows, err_rows
+
+    host_ok, host_err = _split(host_results)
+    svc_ok, svc_err = _split(svc_results)
+
+    return _tool_response(
+        {
+            "match_mode": "substring",
+            "comment_substring": comment,
+            "matched": len(matching),
+            "host_downtimes_deleted": host_ok,
+            "host_downtimes_errors": host_err,
+            "service_downtimes_deleted": svc_ok,
+            "service_downtimes_errors": svc_err,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
