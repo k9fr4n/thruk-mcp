@@ -6,11 +6,19 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from urllib.parse import parse_qs
 
 import pytest
 
 from tests.conftest import ok
 from thruk_mcp.server import _now_utc_epoch, _parse_thruk_time
+
+
+def _post_params(call) -> dict[str, str]:
+    """Local helper mirroring tests/test_tools.py::post_params."""
+    body = call.request.content.decode()
+    return {k: v[0] for k, v in parse_qs(body).items()}
+
 
 # ---------------------------------------------------------------------------
 # _parse_thruk_time unit tests
@@ -561,3 +569,42 @@ async def test_recurring_invalid_filter(mocked_server) -> None:
     )
     payload = json.loads(result[0].text)
     assert "error" in payload
+
+
+# ---------------------------------------------------------------------------
+# Issue #193 — class=1 defence-in-depth on trend tools
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name, args",
+    [
+        ("thruk_alert_heatmap", {"since": "-6h", "bucket": "1h"}),
+        ("thruk_recurring_problems", {"since": "-6h", "min_alerts": 1}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_trend_tools_post_class_one(mocked_server, tool_name: str, args: dict) -> None:
+    """Regression for issue #193 (sibling of #176).
+
+    Before the fix, ``thruk_alert_heatmap`` and ``thruk_recurring_problems``
+    only set ``type[~]=^(HOST|SERVICE) ALERT`` on their /logs POST. Naemon
+    Livestatus does not exclude rows where ``type`` is NULL from regex
+    filters, so class=0 system messages, class=5 external commands and
+    class=6 current-state snapshots leaked through and inflated bucket
+    counts / per-object alert counts.
+
+    The fix adds ``class=1`` to the POST body as a defence-in-depth cut.
+    """
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(tool_name, args)
+    assert route.called, f"{tool_name} must POST to /logs"
+    p = _post_params(route.calls.last)
+    assert p.get("type[~]") == "^(HOST|SERVICE) ALERT", (
+        f"{tool_name}: type[~] regex filter must remain present."
+    )
+    assert p.get("class") == "1", (
+        f"{tool_name}: must POST class=1 server-side cut (issue #193) so class=0/5/6 "
+        "rows with type=NULL cannot leak past the regex filter."
+    )

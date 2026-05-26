@@ -557,3 +557,36 @@ async def test_concurrent_failures_large_dataset_perf(mocked_server) -> None:
     # O(n) should complete well under 5 s even inside Docker with n=10_000.
     # The O(n²) implementation would take 100+ s for the same input.
     assert elapsed < 5.0, f"concurrent_failures took {elapsed:.2f}s for {n} events (too slow)"
+
+
+# ---------------------------------------------------------------------------
+# Issue #193 — concurrent_failures must POST class=1 too
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_posts_class_one(mocked_server) -> None:
+    """Regression for issue #193 (sibling of #176).
+
+    ``thruk_concurrent_failures`` filters on ``type[~]=^HOST ALERT`` and
+    ``state[gte]=1``. The ``state[gte]`` constraint helps in practice but
+    does not fully protect against the Naemon Livestatus NULL-row leak that
+    motivated issue #176 — class=5/6 rows (external commands, current-state
+    snapshots) can carry a populated ``state`` column and still pass the
+    regex filter. ``class=1`` cuts them server-side regardless.
+    """
+    from urllib.parse import parse_qs
+
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_concurrent_failures", {"since": "-1h"})
+    assert route.called
+    body = parse_qs(route.calls.last.request.content.decode())
+    assert body.get("type[~]") == ["^HOST ALERT"]
+    assert body.get("class") == ["1"], (
+        "concurrent_failures must POST class=1 (issue #193) so non-ALERT rows "
+        "with type=NULL but a populated state column cannot leak through."
+    )
+    assert body.get("state[gte]") == ["1"], (
+        "Existing state[gte]=1 filter (recovery exclusion) must still be POSTed."
+    )
