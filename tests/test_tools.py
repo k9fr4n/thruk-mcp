@@ -319,6 +319,51 @@ async def test_list_contacts_pagination_and_columns(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_contact(mocked_server) -> None:
+    """Issue #173: thruk_get_contact hits GET /contacts/{name} and returns the record."""
+    mcp, router = mocked_server
+    payload = {
+        "name": "alice",
+        "alias": "Alice Operator",
+        "email": "alice@example.com",
+        "pager": "+33...",
+        "host_notifications_enabled": 1,
+        "service_notifications_enabled": 1,
+    }
+    route = router.get("https://thruk.test/r/contacts/alice").mock(return_value=ok(payload))
+    raw = await mcp.call_tool("thruk_get_contact", {"contact": "alice"})
+    assert route.called
+    body = json.loads(raw[0].text)
+    assert body["name"] == "alice"
+    assert body["email"] == "alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_get_contact_404_raises_thruk_error(mocked_server) -> None:
+    """Issue #173: a 404 on an unknown contact surfaces as ThrukError."""
+    from thruk_mcp.client import ThrukError
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/contacts/ghost").mock(
+        return_value=httpx.Response(404, text="contact not found")
+    )
+    with pytest.raises(ThrukError):
+        await mcp.call_tool("thruk_get_contact", {"contact": "ghost"})
+
+
+@pytest.mark.asyncio
+async def test_get_contact_url_escapes_name(mocked_server) -> None:
+    """Issue #173: contact names with special chars must be URL-escaped via _seg."""
+    mcp, router = mocked_server
+    # Space → %20 in the path segment.
+    route = router.get("https://thruk.test/r/contacts/alice%20smith").mock(
+        return_value=ok({"name": "alice smith"})
+    )
+    await mcp.call_tool("thruk_get_contact", {"contact": "alice smith"})
+    assert route.called
+
+
+@pytest.mark.asyncio
 async def test_problems(mocked_server) -> None:
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))

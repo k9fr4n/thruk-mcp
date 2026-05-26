@@ -499,6 +499,19 @@ async def thruk_list_contacts(
     return _tool_response(data)
 
 
+async def thruk_get_contact(contact: str, backends: str | None = None) -> str:
+    """Get a single Nagios/Naemon contact by name.
+
+    Hits ``GET /thruk/r/contacts/{name}`` and returns the full contact record
+    (email, pager, notification commands and timeperiods, host/service
+    notification flags, contact groups, custom variables).
+
+    Raises ``ThrukError`` (404 surfaced verbatim) if the contact does not exist.
+    """
+    data = await _get_client().get(f"/contacts/{_seg(contact)}", backends=_backends(backends))
+    return _tool_response(data)
+
+
 async def thruk_problems(
     filter: dict[str, Any] | None = None,
     limit: int = 100,
@@ -3225,6 +3238,11 @@ TOOL_REGISTRY: list[ToolSpec] = [
             columns=_OPT_STR,
             backends=_BACKENDS,
         ),
+    ),
+    ToolSpec(
+        name="thruk_get_contact",
+        fn=thruk_get_contact,
+        schema=_s("contact", contact=_str("Contact name"), backends=_BACKENDS),
     ),
     ToolSpec(
         name="thruk_problems",
