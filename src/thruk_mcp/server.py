@@ -124,6 +124,13 @@ from .tools.escape import (
 
 __all__ = ["WRITE_TOOLS", "ThrukMCPServer", "build_server"]
 
+# Actionable suffix appended to every "Result capped at ..." warning so that
+# users / LLMs immediately know how to mitigate the truncation (issue #201).
+_NOISY_CAP_HINT: str = (
+    " Narrow the time window (e.g. since='-2h') or raise the cap by setting "
+    "the THRUK_NOISY_MAX_ALERTS env var (default 10000)."
+)
+
 log = logging.getLogger("thruk_mcp.server")
 
 # Hard limit for paginated /hosts lookups that build a host_name[regex].
@@ -1050,6 +1057,7 @@ async def thruk_top_noisy_hosts(
     elif hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -1129,6 +1137,7 @@ async def thruk_top_noisy_services(
     elif hit_limit:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -1253,6 +1262,7 @@ async def thruk_flap_summary(
     elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -1456,6 +1466,7 @@ async def thruk_alert_heatmap(
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
             "Buckets after 'truncated_after' are reported as count=null (data not fetched)."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -1577,6 +1588,7 @@ async def thruk_recurring_problems(
     elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -3209,6 +3221,7 @@ async def thruk_concurrent_failures(
     elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; detection may be incomplete."
+            + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings

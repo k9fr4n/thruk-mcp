@@ -6,6 +6,8 @@ added: a single edit to this file propagates everywhere.
 
 from __future__ import annotations
 
+import os
+
 # ---------------------------------------------------------------------------
 # Host state maps
 # ---------------------------------------------------------------------------
@@ -83,4 +85,53 @@ DEFAULT_CONTACT_COLUMNS = (
 
 # Maximum number of raw log entries fetched for noisy-* aggregation queries.
 # Beyond this cap the aggregation may be incomplete; a _warning key is added.
-_NOISY_MAX_ALERTS: int = 10_000
+#
+# Operators can override the cap via the THRUK_NOISY_MAX_ALERTS env var (e.g.
+# large infrastructures with > 10 000 alert events in their typical analysis
+# window).  A defensive lower bound is enforced so an operator typo (e.g. "0"
+# or "5") cannot silently defeat aggregation entirely.
+
+#: Lower bound for the noisy-aggregation cap.  Anything below this would
+#: produce useless rankings; we coerce to this minimum and keep going rather
+#: than crash the server.
+_NOISY_MAX_ALERTS_MIN: int = 100
+
+#: Default value when THRUK_NOISY_MAX_ALERTS is unset / invalid.
+_NOISY_MAX_ALERTS_DEFAULT: int = 10_000
+
+
+def _load_noisy_max_alerts(
+    raw: str | None = None,
+    *,
+    default: int = _NOISY_MAX_ALERTS_DEFAULT,
+    minimum: int = _NOISY_MAX_ALERTS_MIN,
+) -> int:
+    """Resolve the noisy-aggregation cap from an env-style string.
+
+    Parameters
+    ----------
+    raw:
+        Raw value as read from the environment.  ``None`` (or any non-int
+        string) falls back to *default* — this is intentional: a server-side
+        operator typo should not crash startup.
+    default:
+        Value returned when *raw* is missing or unparseable.
+    minimum:
+        Floor enforced on the parsed value (defensive: a too-small cap would
+        make the analytics tools useless without producing any error).
+
+    Returns
+    -------
+    int
+        The effective cap, guaranteed >= *minimum*.
+    """
+    if raw is None:
+        return default
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, minimum)
+
+
+_NOISY_MAX_ALERTS: int = _load_noisy_max_alerts(os.getenv("THRUK_NOISY_MAX_ALERTS"))

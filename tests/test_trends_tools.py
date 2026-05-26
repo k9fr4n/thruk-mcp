@@ -608,3 +608,77 @@ async def test_trend_tools_post_class_one(mocked_server, tool_name: str, args: d
         f"{tool_name}: must POST class=1 server-side cut (issue #193) so class=0/5/6 "
         "rows with type=NULL cannot leak past the regex filter."
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #201 — THRUK_NOISY_MAX_ALERTS env var override + actionable warning
+# ---------------------------------------------------------------------------
+#
+# Before the fix, `_NOISY_MAX_ALERTS` was a literal `10_000` in constants.py
+# and the cap-hit `_warning` string read:
+#
+#     "Result capped at 10000 log entries; aggregation may be incomplete."
+#
+# Operators on large infrastructures (>10k alert events per analysis window)
+# had no way to raise the cap, and the warning gave no remediation hint.
+#
+# After the fix:
+#   - constants._load_noisy_max_alerts honours THRUK_NOISY_MAX_ALERTS;
+#   - the warning mentions the env var and the time-window mitigation.
+
+
+def test_load_noisy_max_alerts_default_when_unset() -> None:
+    from thruk_mcp.constants import _NOISY_MAX_ALERTS_DEFAULT, _load_noisy_max_alerts
+
+    assert _load_noisy_max_alerts(None) == _NOISY_MAX_ALERTS_DEFAULT
+
+
+def test_load_noisy_max_alerts_honours_env_override() -> None:
+    from thruk_mcp.constants import _load_noisy_max_alerts
+
+    assert _load_noisy_max_alerts("50000") == 50_000
+
+
+def test_load_noisy_max_alerts_invalid_falls_back_to_default() -> None:
+    from thruk_mcp.constants import _NOISY_MAX_ALERTS_DEFAULT, _load_noisy_max_alerts
+
+    # Non-int strings, empty strings, and other garbage must NOT crash —
+    # an operator typo should not bring the server down.
+    assert _load_noisy_max_alerts("not-a-number") == _NOISY_MAX_ALERTS_DEFAULT
+    assert _load_noisy_max_alerts("") == _NOISY_MAX_ALERTS_DEFAULT
+
+
+def test_load_noisy_max_alerts_enforces_minimum() -> None:
+    """Tiny caps would defeat aggregation; the loader floors to _NOISY_MAX_ALERTS_MIN."""
+    from thruk_mcp.constants import _NOISY_MAX_ALERTS_MIN, _load_noisy_max_alerts
+
+    assert _load_noisy_max_alerts("5") == _NOISY_MAX_ALERTS_MIN
+    assert _load_noisy_max_alerts("0") == _NOISY_MAX_ALERTS_MIN
+    # Negative values are also coerced up.
+    assert _load_noisy_max_alerts("-100") == _NOISY_MAX_ALERTS_MIN
+
+
+@pytest.mark.asyncio
+async def test_heatmap_cap_warning_is_actionable(mocked_server) -> None:
+    """Issue #201: the cap warning must point users at the env-var mitigation.
+
+    Pre-fix message:
+        "Result capped at 10000 log entries; aggregation may be incomplete."
+    Post-fix message must additionally mention THRUK_NOISY_MAX_ALERTS so an
+    LLM consuming the tool output can immediately suggest the right fix.
+    """
+    mcp, router = mocked_server
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    big_data = [_log(BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
+
+    result = await mcp.call_tool("thruk_alert_heatmap", {"since": "-24h"})
+    payload = json.loads(result[0].text)
+    warning = payload["_warning"]
+    assert "THRUK_NOISY_MAX_ALERTS" in warning, (
+        "Cap warning must mention the env var so operators know how to raise the cap."
+    )
+    assert "since" in warning, (
+        "Cap warning must suggest narrowing the time window as an alternative mitigation."
+    )

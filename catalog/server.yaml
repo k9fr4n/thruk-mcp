@@ -61,6 +61,9 @@ config:
     - name: THRUK_MAX_CONCURRENT
       example: "8"
       value: '{{thruk-mcp.max_concurrent}}'
+    - name: THRUK_NOISY_MAX_ALERTS
+      example: "50000"
+      value: '{{thruk-mcp.noisy_max_alerts}}'
   parameters:
     type: object
     properties:
@@ -92,6 +95,13 @@ config:
         type: string
         description: Cap of concurrent in-flight HTTP requests to Thruk. 0 = unlimited.
         default: "0"
+      noisy_max_alerts:
+        type: string
+        description: >-
+          Maximum raw log entries fetched by analytics tools
+          (heatmap, flap, noisy, recurring, concurrent_failures).
+          Raise on large infrastructures.
+        default: "10000"
     required:
       - base_url
 # allowHosts restricts outbound network access when running under the Docker MCP Gateway.
