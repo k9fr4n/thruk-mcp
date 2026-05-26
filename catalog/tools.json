@@ -2014,6 +2014,89 @@
     }
   },
   {
+    "name": "thruk_bulk_acknowledge",
+    "description": "Acknowledge every unhandled host/service problem matching the given filters in one MCP call. Optional filters: hostgroup, state ('down'|'unreachable'|'critical'|'warning'|'unknown'), hosts_only, services_only. Pagination is handled internally. Returns {acknowledged, failed, targets, errors}; emits an informational _warning when no targets match.",
+    "inputSchema": {
+      "properties": {
+        "author": {
+          "default": "thruk-mcp",
+          "title": "Author",
+          "type": "string"
+        },
+        "comment": {
+          "default": "bulk acknowledged via MCP",
+          "title": "Comment",
+          "type": "string"
+        },
+        "hostgroup": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hostgroup"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Restrict to a single state: 'down' / 'unreachable' (hosts) or 'critical' / 'warning' / 'unknown' (services). None (default) matches every non-OK problem.",
+          "title": "State"
+        },
+        "hosts_only": {
+          "default": false,
+          "title": "Hosts Only",
+          "type": "boolean"
+        },
+        "services_only": {
+          "default": false,
+          "title": "Services Only",
+          "type": "boolean"
+        },
+        "sticky": {
+          "default": true,
+          "title": "Sticky",
+          "type": "boolean"
+        },
+        "notify": {
+          "default": true,
+          "title": "Notify",
+          "type": "boolean"
+        },
+        "persistent": {
+          "default": false,
+          "title": "Persistent",
+          "type": "boolean"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends.",
+          "title": "Backends"
+        }
+      },
+      "title": "thruk_bulk_acknowledgeArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_add_comment",
     "description": "Add a free-form operator comment on a host or service. Posts a timestamped note via Thruk REST without acknowledging the problem or scheduling a downtime. Use for incident timeline annotations, false-positive markers, ops handoff notes. Set persistent=False to drop the comment on the next check result.",
     "inputSchema": {
