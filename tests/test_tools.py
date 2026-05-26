@@ -491,6 +491,56 @@ async def test_get_downtime(mocked_server) -> None:
     assert route.called
 
 
+# ---------------------------------------------------------------- issue #199
+# thruk_get_downtime must unpack Thruk's per-backend list into a single
+# object, matching thruk_get_host / thruk_get_service. Pre-fix the raw list
+# was forwarded verbatim, so a caller asking for one downtime received
+# ``[{...}]`` instead of ``{...}``.
+
+
+@pytest.mark.asyncio
+async def test_get_downtime_unpacks_single_element_list(mocked_server) -> None:
+    """Pre-fix: returned [{"id": 42}]. Post-fix: returns the dict."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes/42").mock(
+        return_value=ok([{"id": 42, "host_name": "srv01", "comment": "maint"}])
+    )
+    result = await mcp.call_tool("thruk_get_downtime", {"downtime_id": 42})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict), "single-backend response must be unpacked to a dict"
+    assert payload == {"id": 42, "host_name": "srv01", "comment": "maint"}
+
+
+@pytest.mark.asyncio
+async def test_get_downtime_empty_list_returns_not_found(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes/99999").mock(return_value=ok([]))
+    result = await mcp.call_tool("thruk_get_downtime", {"downtime_id": 99999})
+    payload = json.loads(result[0].text)
+    assert payload == {"error": "Downtime 99999 not found"}
+
+
+@pytest.mark.asyncio
+async def test_get_downtime_multi_backend_returns_list_with_warning(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes/42").mock(
+        return_value=ok(
+            [
+                {"id": 42, "peer_name": "A"},
+                {"id": 42, "peer_name": "B"},
+            ]
+        )
+    )
+    result = await mcp.call_tool("thruk_get_downtime", {"downtime_id": 42})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict)
+    assert payload["data"] == [
+        {"id": 42, "peer_name": "A"},
+        {"id": 42, "peer_name": "B"},
+    ]
+    assert payload["_warnings"] and "2 backends" in payload["_warnings"][0]
+
+
 @pytest.mark.asyncio
 async def test_list_comments(mocked_server) -> None:
     mcp, router = mocked_server

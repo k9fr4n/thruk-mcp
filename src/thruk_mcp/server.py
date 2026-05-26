@@ -2424,11 +2424,32 @@ async def thruk_delete_downtime(
 
 
 async def thruk_get_downtime(downtime_id: int, backends: str | None = None) -> str:
-    """Get a single downtime by id."""
+    """Get a single downtime by id.
+
+    The Thruk REST ``/downtimes/{id}`` endpoint always returns a JSON list
+    (one entry per backend in a federated setup). This tool unpacks that
+    list so callers get the expected single object, mirroring
+    ``thruk_get_host`` / ``thruk_get_service``:
+
+    - empty list  -> ``{"error": "Downtime <id> not found"}``
+    - one entry   -> the dict itself
+    - many entries (same downtime id on multiple backends) -> the list,
+      with a ``_warnings`` entry flagging the collision so the caller can
+      disambiguate via ``backends=``.
+    """
     data = await _get_client().get(
         f"/downtimes/{_seg(str(downtime_id))}", backends=_backends(backends)
     )
-    return _tool_response(data)
+    if not isinstance(data, list):
+        return _tool_response(data)
+    if not data:
+        return _tool_response({"error": f"Downtime {downtime_id} not found"})
+    if len(data) == 1:
+        return _tool_response(data[0])
+    return _tool_response(
+        data,
+        [f"{len(data)} backends returned a result for downtime {downtime_id}; listing all."],
+    )
 
 
 async def thruk_schedule_host_services_downtime(
