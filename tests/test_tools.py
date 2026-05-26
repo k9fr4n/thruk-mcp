@@ -1038,6 +1038,100 @@ async def test_notifications_cascade_ignored_when_service_given(mocked_server) -
     assert not svc_list_route.called
 
 
+# ---------------------------------------------------- thruk_checks (issue #167)
+
+
+@pytest.mark.asyncio
+async def test_checks_disable_host(mocked_server) -> None:
+    """Disabling active checks on a host POSTs to disable_host_checks."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/disable_host_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool("thruk_checks", {"host": "srv01", "enabled": False})
+    payload = json.loads(result_raw[0].text)
+    assert payload["action"] == "disabled"
+    assert payload["target"] == "srv01"
+    assert route.called
+
+
+@pytest.mark.asyncio
+async def test_checks_enable_host(mocked_server) -> None:
+    """Enabling active checks on a host POSTs to enable_host_checks."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/enable_host_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool("thruk_checks", {"host": "srv01", "enabled": True})
+    payload = json.loads(result_raw[0].text)
+    assert payload["action"] == "enabled"
+    assert route.called
+
+
+@pytest.mark.asyncio
+async def test_checks_disable_service(mocked_server) -> None:
+    """Service-level command; host command must NOT be called."""
+    mcp, router = mocked_server
+    svc_route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/disable_svc_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/disable_host_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    result_raw = await mcp.call_tool(
+        "thruk_checks", {"host": "srv01", "service": "ssh", "enabled": False}
+    )
+    payload = json.loads(result_raw[0].text)
+    assert payload["target"] == "srv01/ssh"
+    assert svc_route.called
+    assert not host_route.called
+
+
+@pytest.mark.asyncio
+async def test_checks_cascade(mocked_server) -> None:
+    """cascade=True triggers host cmd + one cmd per service returned by /hosts/{host}/services."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/srv01/services").mock(
+        return_value=ok([{"description": "ssh"}, {"description": "http"}])
+    )
+    host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/disable_host_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    ssh_route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/disable_svc_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    http_route = router.post(
+        "https://thruk.test/r/services/srv01/http/cmd/disable_svc_checks"
+    ).mock(return_value=ok({"rc": 0}))
+    result_raw = await mcp.call_tool(
+        "thruk_checks", {"host": "srv01", "enabled": False, "cascade": True}
+    )
+    payload = json.loads(result_raw[0].text)
+    assert payload["target"] == "srv01 (host + all services)"
+    assert host_route.called
+    assert ssh_route.called
+    assert http_route.called
+
+
+@pytest.mark.asyncio
+async def test_checks_cascade_ignored_when_service_given(mocked_server) -> None:
+    """cascade=True is silently ignored when a service is explicitly specified."""
+    mcp, router = mocked_server
+    svc_route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/enable_svc_checks").mock(
+        return_value=ok({"rc": 0})
+    )
+    # /hosts/{host}/services must NOT be called
+    svc_list_route = router.get("https://thruk.test/r/hosts/srv01/services").mock(
+        return_value=ok([])
+    )
+    await mcp.call_tool(
+        "thruk_checks",
+        {"host": "srv01", "service": "ssh", "enabled": True, "cascade": True},
+    )
+    assert svc_route.called
+    assert not svc_list_route.called
+
+
 # ---------------------------------------------------- Query escape hatches
 
 
