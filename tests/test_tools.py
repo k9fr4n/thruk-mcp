@@ -777,6 +777,134 @@ async def test_problems_no_hostgroup_no_group_param(mocked_server) -> None:
     assert "host_groups[gte]" not in r_svc.calls.last.request.url.params
 
 
+# ---------------------------------------------- hostgroup defense-in-depth (issue #200)
+# Before the fix: a backend that returns a host/service not actually in the
+# requested hostgroup would leak straight through the merged response.
+# After the fix: such rows are dropped client-side and a _warnings entry is added.
+
+
+@pytest.mark.asyncio
+async def test_problems_hostgroup_leak_is_filtered_out(mocked_server) -> None:
+    """A row whose ``groups`` does not contain the requested hostgroup must be dropped."""
+    mcp, router = mocked_server
+    # h1 legitimately belongs to HG_X; h2 is the leak from a misbehaving backend.
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok(
+            [
+                {"name": "h1", "state": 1, "groups": ["HG_X", "OTHER"]},
+                {"name": "h2", "state": 1, "groups": ["UNRELATED"]},
+            ]
+        )
+    )
+    # svc on host-in-group is kept; svc on host-not-in-group is dropped.
+    r_svc = router.get("https://thruk.test/r/services").mock(
+        return_value=ok(
+            [
+                {"host_name": "h1", "description": "cpu", "state": 2, "host_groups": ["HG_X"]},
+                {
+                    "host_name": "leaked",
+                    "description": "disk",
+                    "state": 2,
+                    "host_groups": ["OTHER"],
+                },
+            ]
+        )
+    )
+
+    raw = await mcp.call_tool(
+        "thruk_problems",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_X"}},
+    )
+    payload = json.loads(raw[0].text)
+
+    # Server-side filter still requested (defense-in-depth, not a replacement).
+    assert r_hosts.calls.last.request.url.params["groups[gte]"] == "HG_X"
+    assert r_svc.calls.last.request.url.params["host_groups[gte]"] == "HG_X"
+    # The ``groups`` / ``host_groups`` columns were appended so we can re-validate.
+    assert "groups" in r_hosts.calls.last.request.url.params["columns"]
+    assert "host_groups" in r_svc.calls.last.request.url.params["columns"]
+    # Leaked rows are gone.
+    assert [h["name"] for h in payload["hosts"]] == ["h1"]
+    assert [s["host_name"] for s in payload["services"]] == ["h1"]
+    # Warning surfaced (one host + one service dropped).
+    assert any("hostgroup_filter_leak" in w for w in payload["_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_problems_hostgroup_no_leak_no_warning(mocked_server) -> None:
+    """Clean response: no row is dropped and no leak warning is appended."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "h1", "state": 1, "groups": ["HG_X"]}])
+    )
+    router.get("https://thruk.test/r/services").mock(
+        return_value=ok(
+            [{"host_name": "h1", "description": "cpu", "state": 2, "host_groups": ["HG_X"]}]
+        )
+    )
+    raw = await mcp.call_tool(
+        "thruk_problems",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_X"}},
+    )
+    payload = json.loads(raw[0].text)
+    assert len(payload["hosts"]) == 1
+    assert len(payload["services"]) == 1
+    assert "_warnings" not in payload or not any(
+        "hostgroup_filter_leak" in w for w in payload.get("_warnings", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_problems_hostgroup_in_op_keeps_any_match(mocked_server) -> None:
+    """``op=in`` accepts a row whose groups intersects the requested list."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok(
+            [
+                {"name": "h1", "state": 1, "groups": ["HG_A"]},
+                {"name": "h2", "state": 1, "groups": ["HG_B"]},
+                {"name": "h3", "state": 1, "groups": ["HG_C"]},  # leak
+            ]
+        )
+    )
+    router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    raw = await mcp.call_tool(
+        "thruk_problems",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "hostgroup",
+                "op": "in",
+                "value": ["HG_A", "HG_B"],
+            }
+        },
+    )
+    payload = json.loads(raw[0].text)
+    assert sorted(h["name"] for h in payload["hosts"]) == ["h1", "h2"]
+    assert any("hostgroup_filter_leak" in w for w in payload["_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_problems_hostgroup_missing_groups_column_treated_as_leak(mocked_server) -> None:
+    """If a backend strips the ``groups`` column we conservatively drop the row.
+
+    This protects against silent leaks even when the column is absent —
+    matches the "fail closed" intent of the issue #200 fix.
+    """
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "h-stripped", "state": 1}])  # no groups key
+    )
+    router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    raw = await mcp.call_tool(
+        "thruk_problems",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_X"}},
+    )
+    payload = json.loads(raw[0].text)
+    assert payload["hosts"] == []
+    assert any("hostgroup_filter_leak" in w for w in payload["_warnings"])
+
+
 @pytest.mark.asyncio
 async def test_list_notifications_hostgroup(mocked_server) -> None:
     """hostgroup resolved to host_name[regex] on /logs (two-step approach)."""
