@@ -19,6 +19,8 @@ from __future__ import annotations
 import inspect
 from typing import ClassVar
 
+import pytest
+
 from thruk_mcp.server import (
     _TOOL_DISPATCH,
     _TOOL_SCHEMAS,
@@ -173,3 +175,68 @@ class TestThrukMCPServerInterface:
         # init_options must be optional (has a default value)
         init_param = sig.parameters["init_options"]
         assert init_param.default is not inspect.Parameter.empty
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #177
+#
+# Bug: thruk_top_noisy_hosts / thruk_top_noisy_services / thruk_flap_summary
+# declared `hours: int` in their MCP schema but their async signatures
+# accept `since`/`until` only. Any client honoring the schema and passing
+# `hours=...` triggered `TypeError` re-raised as `ValueError("Invalid
+# arguments for ...")`.
+#
+# Pre-fix reproduction (would now fail):
+#
+#     await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 24})
+#     # → ValueError: Invalid arguments for 'thruk_top_noisy_hosts':
+#     #   thruk_top_noisy_hosts() got an unexpected keyword argument 'hours'
+#
+# Fix: replace `hours=_int(default=24)` with the canonical `since`/`until`
+# pair used by sibling tools (thruk_alert_heatmap, thruk_recurring_problems).
+# ---------------------------------------------------------------------------
+
+
+class TestIssue177SchemaSignatureAlignment:
+    """Schema parameters of the three trend tools must match their signatures."""
+
+    AFFECTED: ClassVar[tuple[str, ...]] = (
+        "thruk_top_noisy_hosts",
+        "thruk_top_noisy_services",
+        "thruk_flap_summary",
+    )
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["thruk_top_noisy_hosts", "thruk_top_noisy_services", "thruk_flap_summary"],
+    )
+    def test_schema_exposes_since_until_not_hours(self, tool_name: str) -> None:
+        schema = _TOOL_SCHEMAS[tool_name]
+        props = schema.get("properties", {})
+        assert "since" in props, f"{tool_name} schema must expose 'since'"
+        assert "until" in props, f"{tool_name} schema must expose 'until'"
+        assert "hours" not in props, (
+            f"{tool_name} schema must NOT expose 'hours' "
+            f"(function signature uses since/until — see issue #177)"
+        )
+        # since must default to "-24h" to preserve the previous default window
+        assert props["since"].get("default") == "-24h"
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        ["thruk_top_noisy_hosts", "thruk_top_noisy_services", "thruk_flap_summary"],
+    )
+    def test_schema_keys_are_subset_of_function_signature(self, tool_name: str) -> None:
+        """Every schema property must correspond to a real function parameter."""
+        fn = _TOOL_DISPATCH[tool_name]
+        sig = inspect.signature(fn)
+        accepts_var_keyword = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+        fn_params = set(sig.parameters)
+        schema_props = set(_TOOL_SCHEMAS[tool_name].get("properties", {}))
+        unknown = schema_props - fn_params
+        assert accepts_var_keyword or not unknown, (
+            f"{tool_name}: schema declares {sorted(unknown)} not in function signature "
+            f"{sorted(fn_params)}"
+        )

@@ -2284,9 +2284,29 @@
           "default": null,
           "description": "Structured filter tree supporting AND/OR nesting.\n\nTwo node types:\n  leaf:  {\"type\":\"leaf\",  \"field\":\"...\", \"op\":\"...\", \"value\":...}\n  group: {\"type\":\"group\", \"operator\":\"and\"|\"or\", \"conditions\":[...]}\n\nAvailable fields: custom_var, host, hostgroup\nOperators: eq, gte, in, lte, neq, regex\n\nExamples:"
         },
-        "hours": {
-          "type": "integer",
-          "default": 24
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
         },
         "limit": {
           "type": "integer",
@@ -2442,9 +2462,29 @@
           "default": null,
           "description": "Structured filter tree supporting AND/OR nesting.\n\nTwo node types:\n  leaf:  {\"type\":\"leaf\",  \"field\":\"...\", \"op\":\"...\", \"value\":...}\n  group: {\"type\":\"group\", \"operator\":\"and\"|\"or\", \"conditions\":[...]}\n\nAvailable fields: custom_var, host, hostgroup, service\nOperators: eq, gte, in, lte, neq, regex\n\nExamples:"
         },
-        "hours": {
-          "type": "integer",
-          "default": 24
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
         },
         "limit": {
           "type": "integer",
@@ -2600,9 +2640,29 @@
           "default": null,
           "description": "Structured filter tree supporting AND/OR nesting.\n\nTwo node types:\n  leaf:  {\"type\":\"leaf\",  \"field\":\"...\", \"op\":\"...\", \"value\":...}\n  group: {\"type\":\"group\", \"operator\":\"and\"|\"or\", \"conditions\":[...]}\n\nAvailable fields: custom_var, host, hostgroup, service\nOperators: eq, gte, in, lte, neq, regex\n\nExamples:"
         },
-        "hours": {
-          "type": "integer",
-          "default": 24
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
         },
         "limit": {
           "type": "integer",

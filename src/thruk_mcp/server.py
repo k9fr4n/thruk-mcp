@@ -2516,7 +2516,15 @@ TOOL_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_HOSTS,
             filter=filter_schema_property(FIELDS_NOISY_HOSTS),
-            hours=_int(default=24),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-24h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+                ),
+            },
+            until=_OPT_STR,
             limit=_int(default=10),
             backends=_BACKENDS,
         ),
@@ -2527,7 +2535,15 @@ TOOL_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-            hours=_int(default=24),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-24h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+                ),
+            },
+            until=_OPT_STR,
             limit=_int(default=10),
             backends=_BACKENDS,
         ),
@@ -2538,7 +2554,15 @@ TOOL_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             filter=filter_schema_property(FIELDS_NOISY_SERVICES),
-            hours=_int(default=24),
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-24h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-21 14:00:00"). Default: last 24 h.'
+                ),
+            },
+            until=_OPT_STR,
             limit=_int(default=10),
             min_transitions=_int(default=3),
             backends=_BACKENDS,
