@@ -914,6 +914,61 @@ async def test_acknowledge_uses_correct_payload_keys(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_comment_host(mocked_server) -> None:
+    """Host comment must POST to add_host_comment with comment_data/author/persistent=1."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/add_host_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_add_comment",
+        {"host": "srv01", "comment": "Investigating high load, ETA 30 min"},
+    )
+    assert route.called, "thruk_add_comment must POST to /hosts/{host}/cmd/add_host_comment"
+    body = post_params(route.calls.last)
+    assert body["comment_data"] == "Investigating high load, ETA 30 min"
+    assert body["comment_author"] == "thruk-mcp"  # default author
+    assert body["persistent"] == "1"  # default persistent=True
+
+
+@pytest.mark.asyncio
+async def test_add_comment_service(mocked_server) -> None:
+    """Service comment must POST to add_svc_comment under /services/{host}/{svc}/cmd/."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/add_svc_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_add_comment",
+        {"host": "srv01", "service": "ssh", "comment": "False positive — upstream degraded"},
+    )
+    assert route.called, "service comment must POST to /services/{host}/{svc}/cmd/add_svc_comment"
+    body = post_params(route.calls.last)
+    assert body["comment_data"] == "False positive — upstream degraded"
+
+
+@pytest.mark.asyncio
+async def test_add_comment_author_and_persistent_forwarded(mocked_server) -> None:
+    """Custom author and persistent=False must be forwarded verbatim to Thruk payload."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/add_host_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_add_comment",
+        {
+            "host": "srv01",
+            "comment": "transient note",
+            "author": "incident-bot",
+            "persistent": False,
+        },
+    )
+    body = post_params(route.calls.last)
+    assert body["comment_author"] == "incident-bot"
+    assert body["persistent"] == "0"
+
+
+@pytest.mark.asyncio
 async def test_remove_acknowledgement(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/hosts/srv01/cmd/remove_host_acknowledgement").mock(
