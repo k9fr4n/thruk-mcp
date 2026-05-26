@@ -215,6 +215,87 @@ def _downtime_payload(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Latency sanitizer (issue #202)
+# ---------------------------------------------------------------------------
+
+#: Field names whose value we treat as a "latency in seconds" — both the
+#: host row's ``latency`` and a service row's ``host_latency`` column have
+#: been observed carrying a spurious Unix timestamp (see issue #202).
+_LATENCY_KEYS: tuple[str, ...] = ("latency", "host_latency")
+
+#: Maximum number of host names listed in the aggregated warning.  Keeps
+#: the LLM-facing payload bounded even on a federated install where every
+#: backend exposes the bug.
+_LATENCY_WARN_SAMPLE: int = 5
+
+
+def _sanitize_latency(
+    payload: Any,
+    *,
+    cap_seconds: float,
+) -> tuple[Any, list[str]]:
+    """Nullify spurious ``latency`` / ``host_latency`` values.
+
+    Naemon/Livestatus sometimes writes a Unix-timestamp-shaped value
+    (~1.7e9) into a host row's latency column.  Surfacing that verbatim
+    misleads LLM clients into reporting decades of latency
+    (issue #202).
+
+    Walks *payload* (a single dict or a list of dicts — anything else is
+    returned untouched), replaces any ``latency`` / ``host_latency``
+    value strictly greater than *cap_seconds* with ``None``, and returns
+    a single aggregated human-readable warning naming up to
+    :data:`_LATENCY_WARN_SAMPLE` affected hosts.
+
+    The field key is preserved (set to ``null``) rather than removed, so
+    callers depending on the row shape do not break.
+    """
+    affected: list[str] = []
+
+    def _patch(row: dict[str, Any]) -> None:
+        for key in _LATENCY_KEYS:
+            value = row.get(key)
+            if (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and value > cap_seconds
+            ):
+                row[key] = None
+                # Prefer host_name (service row) then name (host row);
+                # fall back to the literal key to never raise.
+                host = row.get("host_name") or row.get("name") or "<unknown>"
+                affected.append(str(host))
+
+    if isinstance(payload, dict):
+        _patch(payload)
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                _patch(item)
+
+    if not affected:
+        return payload, []
+
+    # Deduplicate while preserving order so the sample is meaningful.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for host in affected:
+        if host not in seen:
+            seen.add(host)
+            unique.append(host)
+
+    sample = ", ".join(unique[:_LATENCY_WARN_SAMPLE])
+    overflow = len(unique) - _LATENCY_WARN_SAMPLE
+    extra = "" if overflow <= 0 else f" (+{overflow} more)"
+    warning = (
+        f"Sanitized {len(affected)} spurious latency value(s) > {cap_seconds:g}s "
+        f"(likely a Naemon/Livestatus bug surfacing a Unix timestamp); "
+        f"affected host(s): {sample}{extra}. See issue #202."
+    )
+    return payload, [warning]
+
+
 def _tool_response(payload: Any, warnings: list[str] | None = None) -> str:
     """Centralised MCP tool JSON response builder.
 
@@ -254,6 +335,7 @@ __all__ = [
     "_get_client",
     "_list_params",
     "_resolve_peer_for_host",
+    "_sanitize_latency",
     "_seg",
     "_tool_response",
     "_ts",
