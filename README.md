@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 43 MCP Tools
+### 49 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
