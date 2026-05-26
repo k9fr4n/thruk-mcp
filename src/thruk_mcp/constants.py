@@ -135,3 +135,46 @@ def _load_noisy_max_alerts(
 
 
 _NOISY_MAX_ALERTS: int = _load_noisy_max_alerts(os.getenv("THRUK_NOISY_MAX_ALERTS"))
+
+
+# ---------------------------------------------------------------------------
+# Latency sanity cap (issue #202)
+# ---------------------------------------------------------------------------
+# Naemon/Livestatus occasionally writes a Unix-timestamp-shaped value
+# (~1.7e9) into the host ``latency`` column instead of a real latency in
+# seconds.  Any value above this cap is treated as spurious and nullified
+# before reaching the LLM client (see ``helpers._sanitize_latency``).
+#
+# The threshold is intentionally generous: real-world Livestatus latencies
+# top out in the tens of seconds even on heavily loaded poller hosts, so
+# a 1-hour cap will only ever match the buggy data, never a legitimate
+# slow check.  Operators with truly pathological setups can raise it via
+# ``THRUK_LATENCY_CAP_SECONDS``.
+
+#: Default ceiling (seconds) above which a latency value is considered
+#: corrupt (likely a Unix timestamp leaked from another column).
+_LATENCY_SANITY_CAP_DEFAULT: float = 3600.0
+
+
+def _load_latency_cap(
+    raw: str | None = None,
+    *,
+    default: float = _LATENCY_SANITY_CAP_DEFAULT,
+) -> float:
+    """Resolve the latency-sanity cap from an env-style string.
+
+    Returns *default* on missing or unparseable input (operator typos
+    should not crash startup).  A non-positive value is also coerced to
+    *default* — disabling the sanitizer entirely would re-expose the
+    Naemon bug to LLM clients.
+    """
+    if raw is None:
+        return default
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+LATENCY_SANITY_CAP_SECONDS: float = _load_latency_cap(os.getenv("THRUK_LATENCY_CAP_SECONDS"))

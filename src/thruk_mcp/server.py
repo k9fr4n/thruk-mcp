@@ -60,6 +60,7 @@ from .constants import (
     DEFAULT_SERVICE_COLUMNS,
     HOST_STATE_INT,
     HOST_STATE_STR,
+    LATENCY_SANITY_CAP_SECONDS,
     SVC_STATE_INT,
     SVC_STATE_STR,
 )
@@ -87,6 +88,7 @@ from .helpers import (
     _client_var,
     _get_client,
     _resolve_peer_for_host,
+    _sanitize_latency,
     _seg,
     _tool_response,
     _ts,
@@ -209,6 +211,13 @@ async def thruk_list_hosts(
     Pagination: ``limit`` (max 1000), ``offset``.
     Sort: e.g. ``'name'``, ``'-state'``.
     Columns: default is a tight subset to save tokens; pass ``''`` for all.
+
+    .. note::
+       The ``latency`` field is sanitised before being returned: values
+       greater than ``THRUK_LATENCY_CAP_SECONDS`` (default 3600 s) are
+       replaced with ``null`` to mitigate a known Naemon/Livestatus bug
+       that occasionally leaks a Unix timestamp into that column.
+       Affected hosts are listed in ``_warnings`` (issue #202).
     """
     params = _list_params(limit, offset, sort, columns, DEFAULT_HOST_COLUMNS)
     if filter is not None:
@@ -218,7 +227,8 @@ async def thruk_list_hosts(
             return _tool_response({"error": str(exc)})
         params.update(compile_filter(filter, "hosts"))
     data = await _get_client().get("/hosts", params=params, backends=_backends(backends))
-    return _tool_response(data)
+    data, warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    return _tool_response(data, warns or None)
 
 
 async def thruk_get_host(host: str, backends: str | None = None) -> str:
@@ -233,18 +243,24 @@ async def thruk_get_host(host: str, backends: str | None = None) -> str:
     - many entries (same hostname on multiple backends) -> the list, with
       a ``_warnings`` entry flagging the collision so the caller can
       disambiguate via ``backends=``.
+
+    .. note::
+       The ``latency`` field is sanitised — see ``thruk_list_hosts`` for
+       details (issue #202).
     """
     data = await _get_client().get(f"/hosts/{_seg(host)}", backends=_backends(backends))
     if not isinstance(data, list):
-        return _tool_response(data)
+        data, warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+        return _tool_response(data, warns or None)
     if not data:
         return _tool_response({"error": f"Host {host!r} not found"})
     if len(data) == 1:
-        return _tool_response(data[0])
-    return _tool_response(
-        data,
-        [f"{len(data)} backends returned a result for host {host!r}; listing all."],
-    )
+        single, warns = _sanitize_latency(data[0], cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+        return _tool_response(single, warns or None)
+    data, lat_warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    warnings = [f"{len(data)} backends returned a result for host {host!r}; listing all."]
+    warnings.extend(lat_warns)
+    return _tool_response(data, warnings)
 
 
 async def thruk_list_services(
@@ -268,6 +284,12 @@ async def thruk_list_services(
     Pagination via ``limit``/``offset``, sort via ``sort``
     (e.g. ``'-last_state_change'``). Default columns are a tight subset;
     pass ``columns=''`` for all.
+
+    .. note::
+       The ``host_latency`` field is sanitised before being returned:
+       values greater than ``THRUK_LATENCY_CAP_SECONDS`` (default 3600 s)
+       are replaced with ``null`` to mitigate a known Naemon/Livestatus
+       bug (issue #202). Service-level ``latency`` is unaffected.
     """
     params = _list_params(limit, offset, sort, columns, DEFAULT_SERVICE_COLUMNS)
     if filter is not None:
@@ -277,7 +299,8 @@ async def thruk_list_services(
             return _tool_response({"error": str(exc)})
         params.update(compile_filter(filter, "services"))
     data = await _get_client().get("/services", params=params, backends=_backends(backends))
-    return _tool_response(data)
+    data, warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    return _tool_response(data, warns or None)
 
 
 async def thruk_get_service(host: str, service: str, backends: str | None = None) -> str:
@@ -287,20 +310,28 @@ async def thruk_get_service(host: str, service: str, backends: str | None = None
     list (one entry per backend in a federated setup). This tool unpacks
     that list so callers get the expected single object — see
     :func:`thruk_get_host` for the exact unpacking rules.
+
+    .. note::
+       The ``host_latency`` field is sanitised — see
+       :func:`thruk_list_services` for details (issue #202).
     """
     data = await _get_client().get(
         f"/services/{_seg(host)}/{_seg(service)}", backends=_backends(backends)
     )
     if not isinstance(data, list):
-        return _tool_response(data)
+        data, warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+        return _tool_response(data, warns or None)
     if not data:
         return _tool_response({"error": f"Service {host!r}/{service!r} not found"})
     if len(data) == 1:
-        return _tool_response(data[0])
-    return _tool_response(
-        data,
-        [f"{len(data)} backends returned a result for service {host!r}/{service!r}; listing all."],
-    )
+        single, warns = _sanitize_latency(data[0], cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+        return _tool_response(single, warns or None)
+    data, lat_warns = _sanitize_latency(data, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    warnings = [
+        f"{len(data)} backends returned a result for service {host!r}/{service!r}; listing all."
+    ]
+    warnings.extend(lat_warns)
+    return _tool_response(data, warnings)
 
 
 async def thruk_host_availability(
