@@ -1148,6 +1148,10 @@ async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_se
     import json
 
     mcp, router = mocked_server
+    # Issue #196: helper resolves peer_key first; ambiguous (no/multiple
+    # entries) falls back to broadcast — return empty so the existing
+    # test exercises the broadcast path.
+    router.get("https://thruk.test/r/hosts/srv01").mock(return_value=ok([]))
     router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
         return_value=ok({"rc": 0})
     )
@@ -1171,6 +1175,77 @@ async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_se
     assert del_host_route.call_count == 1
     assert result["host_downtimes_deleted"][0]["downtime_id"] == 1050
     assert result["host_downtimes_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_resolves_peer_for_host(mocked_server) -> None:
+    """Regression test for issue #196.
+
+    Before the fix, calling ``thruk_delete_downtimes_by_filter`` with only a
+    ``host=`` argument (no ``backends=`` override) broadcast
+    ``DEL_DOWNTIME_BY_HOST_NAME`` to every configured backend — generating
+    N-1 useless commands in a federated setup.
+
+    After the fix, the tool first resolves the owning backend via
+    ``GET /hosts/{name}?columns=peer_key`` and routes both the system command
+    and the host-level enumeration to that peer only.
+    """
+    import json
+
+    mcp, router = mocked_server
+    # Peer resolution: host lives on backend 'wopr-node-01'.
+    peer_route = router.get("https://thruk.test/r/hosts/srv01").mock(
+        return_value=ok([{"peer_key": "wopr-node-01"}])
+    )
+    # The system command must be routed via /r/sites/wopr-node-01/...
+    scoped_cmd = router.post(
+        "https://thruk.test/r/sites/wopr-node-01/system/cmd/del_downtime_by_host_name"
+    ).mock(return_value=ok({"rc": 0}))
+    # Broadcast route (no /sites/ prefix) must NOT be hit.
+    broadcast_cmd = router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
+        return_value=ok({"rc": 0})
+    )
+    # Host-level downtime enumeration also targets the resolved peer only.
+    router.get("https://thruk.test/r/sites/wopr-node-01/downtimes").mock(
+        return_value=ok([{"id": 2042, "service_description": "", "comment": "maint"}])
+    )
+    scoped_del_host = router.post(
+        "https://thruk.test/r/sites/wopr-node-01/hosts/srv01/cmd/del_downtime"
+    ).mock(return_value=ok({"rc": 0}))
+
+    result_raw = await mcp.call_tool(
+        "thruk_delete_downtimes_by_filter", {"host": "srv01", "comment": "maint"}
+    )
+    result = json.loads(result_raw[0].text)
+
+    assert peer_route.called
+    assert scoped_cmd.called
+    assert scoped_del_host.call_count == 1
+    # The critical assertion: the broadcast endpoint was NOT hit.
+    assert broadcast_cmd.call_count == 0
+    assert result["host_downtimes_deleted"][0]["downtime_id"] == 2042
+
+
+@pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_respects_explicit_backends(mocked_server) -> None:
+    """Issue #196: when the caller passes ``backends=`` explicitly, the
+    tool must honour it verbatim and skip peer resolution."""
+    mcp, router = mocked_server
+    # If the resolver fires, this route would log a call — we assert it does not.
+    peer_route = router.get("https://thruk.test/r/hosts/srv01").mock(
+        return_value=ok([{"peer_key": "some-other-peer"}])
+    )
+    scoped_cmd = router.post(
+        "https://thruk.test/r/sites/explicit-peer/system/cmd/del_downtime_by_host_name"
+    ).mock(return_value=ok({"rc": 0}))
+    router.get("https://thruk.test/r/sites/explicit-peer/downtimes").mock(return_value=ok([]))
+
+    await mcp.call_tool(
+        "thruk_delete_downtimes_by_filter",
+        {"host": "srv01", "comment": "maint", "backends": "explicit-peer"},
+    )
+    assert scoped_cmd.called
+    assert peer_route.call_count == 0
 
 
 # ---------------------------------------------------------------- Ack / recheck

@@ -113,6 +113,44 @@ def _backends(backends: str | None) -> tuple[str, ...] | None:
     return parts or None
 
 
+async def _resolve_peer_for_host(client: ThrukClient, host: str) -> tuple[str, ...] | None:
+    """Resolve which backend owns ``host`` so caller commands target it only.
+
+    Used to avoid broadcasting host-scoped commands (e.g.
+    ``DEL_DOWNTIME_BY_HOST_NAME``) to every configured backend when the host
+    is known to only one — see issue #196.
+
+    Performs ``GET /hosts/{host}?columns=peer_key`` with no ``backends=``
+    override (so Thruk fans the query out across every site) and inspects
+    the response:
+
+    - exactly one entry → returns ``(peer_key,)``;
+    - zero or multiple entries (host unknown or ambiguous name collision) →
+      returns ``None`` so the caller falls back to its default behaviour
+      (broadcast, current pre-fix semantics).
+
+    Surfaces ``ThrukError`` verbatim — the caller is responsible for any
+    fallback policy on lookup failure.
+    """
+    raw = await client.get(
+        f"/hosts/{_urlquote(str(host), safe='')}",
+        params={"columns": "peer_key"},
+    )
+    rows: list[Any]
+    if isinstance(raw, list):
+        rows = raw
+    elif isinstance(raw, dict):
+        rows = [raw]
+    else:
+        return None
+    peer_keys: set[str] = {
+        str(row["peer_key"]) for row in rows if isinstance(row, dict) and row.get("peer_key")
+    }
+    if len(peer_keys) != 1:
+        return None
+    return (next(iter(peer_keys)),)
+
+
 def _seg(value: str) -> str:
     """URL-encode a single REST path segment.
 
@@ -215,6 +253,7 @@ __all__ = [
     "_duration_human",
     "_get_client",
     "_list_params",
+    "_resolve_peer_for_host",
     "_seg",
     "_tool_response",
     "_ts",

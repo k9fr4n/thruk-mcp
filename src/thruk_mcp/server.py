@@ -85,6 +85,7 @@ from .helpers import (
     _build_cv_params,
     _client_var,
     _get_client,
+    _resolve_peer_for_host,
     _seg,
     _tool_response,
     _ts,
@@ -2550,6 +2551,17 @@ async def thruk_delete_downtimes_by_filter(
         cmd = "del_downtime_by_host_name"
     else:
         cmd = "del_downtime_by_start_time_comment"
+
+    # Issue #196: when filtering by host without an explicit `backends=`
+    # override, pre-resolve the backend owning the host so the
+    # DEL_DOWNTIME_BY_HOST_NAME command is not broadcast to every Naemon
+    # site (which would log 11/12 useless commands in a typical federation).
+    # Ambiguous lookups (collision / unknown host) fall back to the previous
+    # broadcast behaviour to preserve correctness.
+    if host and not hostgroup and be is None:
+        resolved = await _resolve_peer_for_host(client, host)
+        if resolved is not None:
+            be = resolved
 
     cmd_result = await client.post(f"/system/cmd/{cmd}", data=payload, backends=be)
     result: dict[str, Any] = {"system_command": cmd_result}
