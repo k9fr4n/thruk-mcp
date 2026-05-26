@@ -1143,38 +1143,46 @@ async def test_delete_downtimes_by_filter_picks_hostgroup_cmd(mocked_server) -> 
 
 @pytest.mark.asyncio
 async def test_delete_downtimes_by_filter_host_also_deletes_host_level(mocked_server) -> None:
-    """When filtering by host, host-level downtimes are deleted explicitly
-    in addition to the DEL_DOWNTIME_BY_HOST_NAME system command."""
+    """Issue #197: when filtering by host + comment, both host- and
+    service-level downtimes whose comment **substring-matches** are deleted
+    individually. The exact-match ``DEL_DOWNTIME_BY_HOST_NAME`` system command
+    is NOT invoked (it would silently no-op on partial matches)."""
     import json
 
     mcp, router = mocked_server
-    # Issue #196: helper resolves peer_key first; ambiguous (no/multiple
-    # entries) falls back to broadcast — return empty so the existing
-    # test exercises the broadcast path.
+    # Issue #196: peer resolver — ambiguous → broadcast fallback.
     router.get("https://thruk.test/r/hosts/srv01").mock(return_value=ok([]))
-    router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
+    # The exact-match system command must NOT be called on the substring path.
+    sys_cmd = router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
         return_value=ok({"rc": 0})
     )
-    # Two downtimes: one host-level, one service-level.
+    # Two downtimes: one host-level, one service-level — both match "maint".
     router.get("https://thruk.test/r/downtimes").mock(
         return_value=ok(
             [
-                {"id": 1050, "service_description": "", "comment": "maint"},
-                {"id": 1051, "service_description": "CPU", "comment": "maint"},
+                {"id": 1050, "service_description": "", "comment": "scheduled maint window"},
+                {"id": 1051, "service_description": "CPU", "comment": "scheduled maint window"},
             ]
         )
     )
     del_host_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
         return_value=ok({"rc": 0})
     )
+    del_svc_route = router.post("https://thruk.test/r/services/srv01/CPU/cmd/del_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
     result_raw = await mcp.call_tool(
         "thruk_delete_downtimes_by_filter", {"host": "srv01", "comment": "maint"}
     )
     result = json.loads(result_raw[0].text)
-    # Only host-level downtime (1050) should be deleted explicitly.
+    assert sys_cmd.call_count == 0, "exact-match system cmd must be skipped on substring path"
     assert del_host_route.call_count == 1
+    assert del_svc_route.call_count == 1
+    assert result["match_mode"] == "substring"
     assert result["host_downtimes_deleted"][0]["downtime_id"] == 1050
+    assert result["service_downtimes_deleted"][0]["downtime_id"] == 1051
     assert result["host_downtimes_errors"] == []
+    assert result["service_downtimes_errors"] == []
 
 
 @pytest.mark.asyncio
@@ -1197,17 +1205,17 @@ async def test_delete_downtimes_by_filter_resolves_peer_for_host(mocked_server) 
     peer_route = router.get("https://thruk.test/r/hosts/srv01").mock(
         return_value=ok([{"peer_key": "wopr-node-01"}])
     )
-    # The system command must be routed via /r/sites/wopr-node-01/...
-    scoped_cmd = router.post(
-        "https://thruk.test/r/sites/wopr-node-01/system/cmd/del_downtime_by_host_name"
-    ).mock(return_value=ok({"rc": 0}))
-    # Broadcast route (no /sites/ prefix) must NOT be hit.
+    # Issue #197: substring path no longer issues the system command, but
+    # peer routing must still apply to all per-id deletes.
     broadcast_cmd = router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
         return_value=ok({"rc": 0})
     )
-    # Host-level downtime enumeration also targets the resolved peer only.
+    scoped_cmd = router.post(
+        "https://thruk.test/r/sites/wopr-node-01/system/cmd/del_downtime_by_host_name"
+    ).mock(return_value=ok({"rc": 0}))
+    # Downtime enumeration targets the resolved peer only.
     router.get("https://thruk.test/r/sites/wopr-node-01/downtimes").mock(
-        return_value=ok([{"id": 2042, "service_description": "", "comment": "maint"}])
+        return_value=ok([{"id": 2042, "service_description": "", "comment": "scheduled maint"}])
     )
     scoped_del_host = router.post(
         "https://thruk.test/r/sites/wopr-node-01/hosts/srv01/cmd/del_downtime"
@@ -1219,33 +1227,128 @@ async def test_delete_downtimes_by_filter_resolves_peer_for_host(mocked_server) 
     result = json.loads(result_raw[0].text)
 
     assert peer_route.called
-    assert scoped_cmd.called
     assert scoped_del_host.call_count == 1
     # The critical assertion: the broadcast endpoint was NOT hit.
     assert broadcast_cmd.call_count == 0
+    # And: on the substring path, the system command must not be issued at all.
+    assert scoped_cmd.call_count == 0
     assert result["host_downtimes_deleted"][0]["downtime_id"] == 2042
 
 
 @pytest.mark.asyncio
 async def test_delete_downtimes_by_filter_respects_explicit_backends(mocked_server) -> None:
     """Issue #196: when the caller passes ``backends=`` explicitly, the
-    tool must honour it verbatim and skip peer resolution."""
+    tool must honour it verbatim and skip peer resolution. On the substring
+    path (issue #197), this means the ``/downtimes`` enumeration is scoped
+    to that backend."""
+    import json
+
     mcp, router = mocked_server
     # If the resolver fires, this route would log a call — we assert it does not.
     peer_route = router.get("https://thruk.test/r/hosts/srv01").mock(
         return_value=ok([{"peer_key": "some-other-peer"}])
     )
-    scoped_cmd = router.post(
-        "https://thruk.test/r/sites/explicit-peer/system/cmd/del_downtime_by_host_name"
+    scoped_list = router.get("https://thruk.test/r/sites/explicit-peer/downtimes").mock(
+        return_value=ok([{"id": 9001, "service_description": "", "comment": "maint window"}])
+    )
+    scoped_del = router.post(
+        "https://thruk.test/r/sites/explicit-peer/hosts/srv01/cmd/del_downtime"
     ).mock(return_value=ok({"rc": 0}))
-    router.get("https://thruk.test/r/sites/explicit-peer/downtimes").mock(return_value=ok([]))
 
-    await mcp.call_tool(
+    result_raw = await mcp.call_tool(
         "thruk_delete_downtimes_by_filter",
         {"host": "srv01", "comment": "maint", "backends": "explicit-peer"},
     )
-    assert scoped_cmd.called
+    result = json.loads(result_raw[0].text)
+    assert scoped_list.called
+    assert scoped_del.call_count == 1
     assert peer_route.call_count == 0
+    assert result["host_downtimes_deleted"][0]["downtime_id"] == 9001
+
+
+@pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_substring_comment_match(mocked_server) -> None:
+    """Regression test for issue #197.
+
+    Before the fix:
+        thruk_delete_downtimes_by_filter(host="X", comment="TEST MCP")
+        → sent DEL_DOWNTIME_BY_HOST_NAME with comment="TEST MCP" (exact match)
+        → Naemon's external command does exact-string compare on the comment
+        → if stored comment was "TEST MCP host_services_downtime",
+          ZERO downtimes were deleted, yet the response said
+          {"message": "Command successfully submitted"} (silent no-op).
+
+    After the fix: the tool client-side substring-matches on ``comment``
+    (case-insensitive) and issues per-id DEL_*_DOWNTIME against the right
+    endpoint — so partial matches actually delete the matching downtimes.
+    """
+    import json
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/ecrmut-ad-01").mock(return_value=ok([]))
+    # Realistic mix: two match (one host-, one service-level), one doesn't.
+    router.get("https://thruk.test/r/downtimes").mock(
+        return_value=ok(
+            [
+                {
+                    "id": 5001,
+                    "service_description": "",
+                    "comment": "TEST MCP host_services_downtime",
+                },
+                {
+                    "id": 5002,
+                    "service_description": "Disk /",
+                    "comment": "test mcp service downtime",  # different case
+                },
+                {
+                    "id": 5003,
+                    "service_description": "RAM",
+                    "comment": "unrelated maintenance",
+                },
+            ]
+        )
+    )
+    del_host = router.post("https://thruk.test/r/hosts/ecrmut-ad-01/cmd/del_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
+    del_svc = router.post(
+        "https://thruk.test/r/services/ecrmut-ad-01/Disk%20%2F/cmd/del_downtime"
+    ).mock(return_value=ok({"rc": 0}))
+    del_ram = router.post("https://thruk.test/r/services/ecrmut-ad-01/RAM/cmd/del_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
+
+    result_raw = await mcp.call_tool(
+        "thruk_delete_downtimes_by_filter",
+        {"host": "ecrmut-ad-01", "comment": "TEST MCP"},
+    )
+    result = json.loads(result_raw[0].text)
+
+    assert result["match_mode"] == "substring"
+    assert result["matched"] == 2
+    assert del_host.call_count == 1
+    assert del_svc.call_count == 1, "case-insensitive substring match must apply"
+    assert del_ram.call_count == 0, "non-matching downtime must NOT be deleted"
+    assert {d["downtime_id"] for d in result["host_downtimes_deleted"]} == {5001}
+    assert {d["downtime_id"] for d in result["service_downtimes_deleted"]} == {5002}
+
+
+@pytest.mark.asyncio
+async def test_delete_downtimes_by_filter_comment_only_keeps_exact_path(mocked_server) -> None:
+    """Issue #197: when ``host`` is not provided, the tool keeps the
+    ``del_downtime_by_start_time_comment`` system command (no client-side
+    fallback available without scanning every downtime). The docstring
+    documents this exact-match limitation."""
+    mcp, router = mocked_server
+    cmd_route = router.post(
+        "https://thruk.test/r/system/cmd/del_downtime_by_start_time_comment"
+    ).mock(return_value=ok({"rc": 0}))
+    await mcp.call_tool(
+        "thruk_delete_downtimes_by_filter", {"comment": "ticket-123", "start_time": "1700000000"}
+    )
+    assert cmd_route.called
+    body = cmd_route.calls.last.request.content.decode()
+    assert "comment=ticket-123" in body
 
 
 # ---------------------------------------------------------------- Ack / recheck
