@@ -2073,6 +2073,55 @@
     }
   },
   {
+    "name": "thruk_delete_comment",
+    "description": "Delete a host or service comment by its id. Closes the CRUD loop together with thruk_list_comments and thruk_add_comment (issue #169). host is required so Thruk can route the command to the correct backend; provide service for service-scoped comments. Uses the command-based path (POST /hosts/{host}/cmd/del_host_comment or POST /services/{host}/{svc}/cmd/del_svc_comment) with payload comment_id, which is portable across Thruk versions.",
+    "inputSchema": {
+      "properties": {
+        "comment_id": {
+          "description": "Numeric comment id (as returned by thruk_list_comments).",
+          "title": "Comment Id",
+          "type": "integer"
+        },
+        "host": {
+          "description": "Host name owning the comment.",
+          "title": "Host",
+          "type": "string"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends.",
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "comment_id",
+        "host"
+      ],
+      "title": "thruk_delete_commentArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_remove_acknowledgement",
     "description": "Remove an acknowledgement.",
     "inputSchema": {

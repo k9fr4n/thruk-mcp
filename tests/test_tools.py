@@ -969,6 +969,55 @@ async def test_add_comment_author_and_persistent_forwarded(mocked_server) -> Non
 
 
 @pytest.mark.asyncio
+async def test_delete_comment_host(mocked_server) -> None:
+    """Host comment must POST to del_host_comment with comment_id payload (issue #169)."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_delete_comment",
+        {"comment_id": 4242, "host": "srv01"},
+    )
+    assert route.called, "thruk_delete_comment must POST to /hosts/{host}/cmd/del_host_comment"
+    body = post_params(route.calls.last)
+    assert body["comment_id"] == "4242"
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_service(mocked_server) -> None:
+    """Service comment must POST to del_svc_comment under /services/{host}/{svc}/cmd/."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/del_svc_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_delete_comment",
+        {"comment_id": 99, "host": "srv01", "service": "ssh"},
+    )
+    assert route.called, "service comment must POST to /services/{host}/{svc}/cmd/del_svc_comment"
+    body = post_params(route.calls.last)
+    assert body["comment_id"] == "99"
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_id_forwarded_as_string(mocked_server) -> None:
+    """comment_id arrives as int from MCP and must be serialised as string for Thruk."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_comment").mock(
+        return_value=ok({"rc": 0})
+    )
+    await mcp.call_tool(
+        "thruk_delete_comment",
+        {"comment_id": 1, "host": "srv01"},
+    )
+    body = post_params(route.calls.last)
+    assert body["comment_id"] == "1"
+    # Pre-fix reproducer: with no thruk_delete_comment tool, mcp.call_tool would
+    # have raised an UnknownToolError instead of reaching this assertion.
+
+
+@pytest.mark.asyncio
 async def test_remove_acknowledgement(mocked_server) -> None:
     mcp, router = mocked_server
     route = router.post("https://thruk.test/r/hosts/srv01/cmd/remove_host_acknowledgement").mock(
