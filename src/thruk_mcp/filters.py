@@ -48,6 +48,7 @@ __all__ = [
     "compile_filter_problems",
     "extract_log_lookup_fields",
     "filter_schema_property",
+    "infer_alert_type_regex",
     "validate_filter",
 ]
 
@@ -431,6 +432,96 @@ def extract_log_lookup_fields(
         return {"type": "group", "operator": "and", "conditions": nodes}
 
     return _wrap(direct_nodes), _wrap(lookup_leaves)
+
+
+# ---------------------------------------------------------------------------
+# Alerts: state-aware HOST/SERVICE narrowing (issue #198)
+# ---------------------------------------------------------------------------
+
+#: Host-only state name strings (Livestatus host states).
+_HOST_ONLY_STATE_NAMES: frozenset[str] = frozenset({"up", "down", "unreachable"})
+
+#: Service-only state name strings (Livestatus service states).
+_SVC_ONLY_STATE_NAMES: frozenset[str] = frozenset({"ok", "warning", "critical", "unknown"})
+
+
+def infer_alert_type_regex(node: dict[str, Any] | None) -> str | None:
+    """Infer a narrowed ``type[~]`` regex for an alerts query from the filter tree.
+
+    Naemon Livestatus packs both host states (``DOWN=1``) and service states
+    (``WARNING=1``) into the same integer ``state`` column.  A naive
+    ``state=down`` filter therefore matches both HOST ALERT DOWN and
+    SERVICE ALERT WARNING rows (issue #198).
+
+    To disambiguate, this helper inspects every ``state`` leaf in the
+    AND-portion of the filter tree:
+
+    - If every state value is a *host-only* state name (``up``, ``down``,
+      ``unreachable``) → return ``"^HOST ALERT"``.
+    - If every state value is a *service-only* state name (``ok``,
+      ``warning``, ``critical``, ``unknown``) → return ``"^SERVICE ALERT"``.
+    - Otherwise (no state filter, numeric value, ``neq``/``gte``/``lte``
+      operator, mixed classifications, or a state leaf inside an OR
+      subtree) → return ``None`` so the caller keeps the default
+      ``^(HOST|SERVICE) ALERT`` regex.
+
+    The narrowing is purely additive (it only restricts results that were
+    semantically inconsistent before) and never widens the query.
+    """
+    if node is None:
+        return None
+
+    classes: set[str] = set()
+
+    def _classify(val: Any) -> str:
+        if isinstance(val, str):
+            v = val.lower()
+            if v in _HOST_ONLY_STATE_NAMES:
+                return "host"
+            if v in _SVC_ONLY_STATE_NAMES:
+                return "service"
+        return "ambiguous"
+
+    def _contains_state(n: dict[str, Any]) -> bool:
+        if n.get("type") == "leaf":
+            return n.get("field") == "state"
+        return any(_contains_state(c) for c in n.get("conditions", []))
+
+    def _walk(n: dict[str, Any]) -> None:
+        node_type = n.get("type")
+        if node_type == "leaf":
+            if n.get("field") != "state":
+                return
+            op = n.get("op")
+            value = n.get("value")
+            if op == "eq":
+                classes.add(_classify(value))
+            elif op == "in" and isinstance(value, list):
+                for v in value:
+                    classes.add(_classify(v))
+            else:
+                # neq/gte/lte/regex on state → cannot narrow safely.
+                classes.add("ambiguous")
+            return
+        if node_type == "group":
+            if n.get("operator") == "or":
+                # OR semantics across heterogeneous branches → bail out
+                # if any branch references state at all.
+                if _contains_state(n):
+                    classes.add("ambiguous")
+                return
+            for child in n.get("conditions", []):
+                _walk(child)
+
+    _walk(node)
+
+    if not classes or "ambiguous" in classes:
+        return None
+    if classes == {"host"}:
+        return "^HOST ALERT"
+    if classes == {"service"}:
+        return "^SERVICE ALERT"
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -577,6 +577,91 @@ async def test_list_alerts_with_state(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_alerts_state_down_narrows_type_to_host_alert(mocked_server) -> None:
+    """Regression for issue #198.
+
+    Before the fix, ``state=down`` mapped to integer ``1`` while
+    ``type[~]`` remained ``^(HOST|SERVICE) ALERT``.  SERVICE ALERT WARNING
+    rows (also ``state=1``) leaked through.  After the fix, the server-side
+    ``type[~]`` regex is narrowed to ``^HOST ALERT`` whenever every state
+    filter uses host-only names.
+    """
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "down"}},
+    )
+    p = post_params(route.calls.last)
+    assert p["state"] == "1"
+    assert p["type[~]"] == "^HOST ALERT", (
+        "state=down must narrow type[~] to ^HOST ALERT to exclude SERVICE "
+        "ALERT WARNING (issue #198)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_alerts_state_warning_narrows_type_to_service_alert(mocked_server) -> None:
+    """state=warning must narrow type[~] to ^SERVICE ALERT (issue #198)."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "warning"}},
+    )
+    p = post_params(route.calls.last)
+    assert p["state"] == "1"
+    assert p["type[~]"] == "^SERVICE ALERT"
+
+
+@pytest.mark.asyncio
+async def test_list_alerts_no_state_keeps_combined_type_regex(mocked_server) -> None:
+    """No state filter → keep the default ^(HOST|SERVICE) ALERT regex."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {"filter": {"type": "leaf", "field": "host", "op": "eq", "value": "srv01"}},
+    )
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+
+
+@pytest.mark.asyncio
+async def test_list_alerts_numeric_state_keeps_combined_type_regex(mocked_server) -> None:
+    """Integer state value is ambiguous → keep the default regex."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": 1}},
+    )
+    p = post_params(route.calls.last)
+    assert p["state"] == "1"
+    assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+
+
+@pytest.mark.asyncio
+async def test_list_alerts_state_in_host_states_narrows_to_host_alert(mocked_server) -> None:
+    """op=in with only host-state names must still narrow to ^HOST ALERT."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_alerts",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "state",
+                "op": "in",
+                "value": ["down", "unreachable"],
+            }
+        },
+    )
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^HOST ALERT"
+
+
+@pytest.mark.asyncio
 async def test_list_alerts_filters_class_zero_system_entries(mocked_server) -> None:
     """Regression for issue #176.
 
