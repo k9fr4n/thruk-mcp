@@ -78,6 +78,7 @@ from .filters import (
     compile_filter_problems,
     extract_log_lookup_fields,
     filter_schema_property,
+    infer_alert_type_regex,
     validate_filter,
 )
 from .helpers import (
@@ -1605,11 +1606,21 @@ async def thruk_list_alerts(
     ``filter`` fields: ``host``, ``service``, ``state``
     (up/down/unreachable for hosts, ok/warning/critical/unknown for services),
     ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts lookup).
+
+    Note: Naemon Livestatus packs host and service states into the same
+    integer ``state`` column (``DOWN=1`` collides with ``WARNING=1``).  When
+    every ``state`` filter uses host-only names (``up``/``down``/``unreachable``)
+    the server-side ``type[~]`` regex is narrowed to ``^HOST ALERT``; when
+    every state value is service-only (``ok``/``warning``/``critical``/
+    ``unknown``) it is narrowed to ``^SERVICE ALERT``.  Numeric values or
+    mixed inputs fall back to ``^(HOST|SERVICE) ALERT`` (issue #198).
     """
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_ALERTS, backends)
     if errs:
         return _tool_response({"error": errs[0]})
-    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Disambiguate HOST DOWN (state=1) from SERVICE WARNING (state=1) by
+    # narrowing the type regex when the filter uses unambiguous state names.
+    extra["type[~]"] = infer_alert_type_regex(filter) or "^(HOST|SERVICE) ALERT"
     # Defence-in-depth: Naemon Livestatus does not exclude rows where ``type`` is
     # NULL/empty from regex filters, so class=0 system messages (e.g. "Auto-save
     # of retention data completed successfully.") slip past ``type[~]``. All
