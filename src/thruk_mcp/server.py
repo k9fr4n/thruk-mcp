@@ -1065,6 +1065,11 @@ async def thruk_flap_summary(
         return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Defence-in-depth (issues #176 / #193): Naemon Livestatus does not exclude
+    # type=NULL rows from regex filters, so class=0 system messages (e.g.
+    # "Auto-save of retention data completed successfully.") leak past ``type[~]``
+    # and inflate transition counts. All HOST/SERVICE ALERT rows have class=1.
+    extra["class"] = "1"
     if since:
         extra["time[gte]"] = since
     if until:
@@ -1235,6 +1240,10 @@ async def thruk_alert_heatmap(
         return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Defence-in-depth (issues #176 / #193): drop class=0 system messages and
+    # class=5/6 external-command / current-state rows that Naemon Livestatus
+    # leaks past ``type[~]`` because their ``type`` column is NULL/distinct.
+    extra["class"] = "1"
     if since:
         extra["time[gte]"] = since
     if until:
@@ -1377,6 +1386,11 @@ async def thruk_recurring_problems(
         return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Defence-in-depth (issues #176 / #193): without ``class=1`` Naemon
+    # Livestatus returns rows with ``type=NULL`` (class=0 system messages,
+    # class=5 external commands, class=6 current-state snapshots) that pass
+    # the ``type[~]`` regex and inflate the per-object alert count.
+    extra["class"] = "1"
     if since:
         extra["time[gte]"] = since
     if until:
@@ -1700,6 +1714,11 @@ async def thruk_recent_events(
         return _tool_response({"error": errs[0]})
     if only_alerts:
         extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+        # Defence-in-depth (issues #176 / #193): pair the regex with a
+        # server-side class=1 cut so class=0 system messages do not leak
+        # past ``type[~]`` (Naemon Livestatus does not exclude rows with
+        # ``type=NULL`` from the regex filter).
+        extra["class"] = "1"
     if "time[gte]" not in extra:
         extra["time[gte]"] = f"-{hours}h"
     data, warnings = await _fetch_logs(
@@ -2808,6 +2827,12 @@ async def thruk_concurrent_failures(
         return _tool_response({"error": errs[0]})
 
     extra["type[~]"] = "^HOST ALERT"
+    # Defence-in-depth (issues #176 / #193): Naemon Livestatus does not
+    # exclude rows with ``type=NULL`` from regex filters, so class=0/5/6
+    # entries can leak past ``type[~]``. ``class=1`` keeps the result set
+    # strictly ALERT rows even when other constraints (e.g. ``state[gte]``)
+    # match an unrelated row.
+    extra["class"] = "1"
     extra["state[gte]"] = "1"  # exclude state 0 (UP / recovery)
     if "time[gte]" not in extra and since:
         extra["time[gte]"] = since

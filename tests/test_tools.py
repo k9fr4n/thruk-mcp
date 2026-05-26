@@ -2190,3 +2190,65 @@ async def test_top_noisy_hosts_invalid_hours_raises_thruk_error(mocked_server) -
     mcp, _ = mocked_server
     with pytest.raises(ThrukError, match="positive integer"):
         await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 0})
+
+
+# ---------------------------------------------------------------------------
+# Issue #193 — defence-in-depth ``class=1`` filter on every ALERT-restricted
+# /logs query. The issue #176 fix was originally only applied to
+# ``thruk_list_alerts``; this regression suite asserts the same server-side
+# cut is now POSTed by every sibling tool that filters by
+# ``type[~]=^(HOST|SERVICE) ALERT`` (or ``^HOST ALERT``), so class=0 system
+# messages, class=5 external commands and class=6 current-state snapshots
+# can no longer leak past the regex via Naemon Livestatus' NULL-row quirk.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "tool_name, args, expected_type_regex",
+    [
+        ("thruk_flap_summary", {"since": "-6h", "min_transitions": 3}, "^(HOST|SERVICE) ALERT"),
+        (
+            "thruk_recent_events",
+            {"only_alerts": True, "hours": 2},
+            "^(HOST|SERVICE) ALERT",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_alert_restricted_tools_post_class_one(
+    mocked_server, tool_name: str, args: dict, expected_type_regex: str
+) -> None:
+    """Regression for issue #193 (sibling of #176).
+
+    Before the fix, only ``thruk_list_alerts`` paired ``type[~]`` with a
+    server-side ``class=1`` cut. Every other ALERT-restricted tool was
+    vulnerable to the same Naemon Livestatus leak (rows with ``type=NULL``
+    pass through ``type[~]`` regex filters), inflating downstream counts.
+    """
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool(tool_name, args)
+    assert route.called, f"{tool_name} must POST to /logs"
+    p = post_params(route.calls.last)
+    assert p.get("type[~]") == expected_type_regex, (
+        f"{tool_name}: expected type[~]={expected_type_regex!r}, got {p.get('type[~]')!r}"
+    )
+    assert p.get("class") == "1", (
+        f"{tool_name}: must POST class=1 server-side cut (issue #193, sibling of #176) "
+        "to drop class=0 system messages that leak past type[~]."
+    )
+
+
+@pytest.mark.asyncio
+async def test_recent_events_without_only_alerts_does_not_force_class(mocked_server) -> None:
+    """``thruk_recent_events`` without ``only_alerts`` is a generic log feed
+    and must NOT inject ``class=1`` — that would hide notifications, downtimes
+    and external commands the user explicitly asked to see."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_recent_events", {"hours": 1})
+    p = post_params(route.calls.last)
+    assert p.get("class") is None, (
+        "recent_events(only_alerts=False) must not force class=1 — it is a generic feed."
+    )
+    assert p.get("type[~]") is None
