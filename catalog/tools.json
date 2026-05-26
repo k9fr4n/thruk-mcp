@@ -645,6 +645,35 @@
     }
   },
   {
+    "name": "thruk_get_contact",
+    "description": "Get a single Nagios/Naemon contact by name. Hits GET /thruk/r/contacts/{name} and returns the full record (email, pager, notification commands and timeperiods, host/service notification flags, contact groups, custom variables). Raises ThrukError (404 surfaced verbatim) if the contact does not exist.",
+    "inputSchema": {
+      "properties": {
+        "contact": {
+          "title": "Contact",
+          "type": "string"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "required": [
+        "contact"
+      ],
+      "title": "thruk_get_contactArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_problems",
     "description": "List all current unhandled host/service problems (not acknowledged, not in downtime). Sorted by worst state first. Default columns are tight; pass `columns=''` for all. Optional `custom_vars` restricts by Nagios custom variables; `host_custom_vars` restricts service problems by host-level custom variables.",
     "inputSchema": {
