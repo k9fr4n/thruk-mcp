@@ -1087,6 +1087,13 @@ async def thruk_alert_heatmap(
     Returns a wrapped object: ``since``, ``until``, ``bucket``,
     ``total_alerts``, ``results`` list of ``{bucket_start, count}``
     ordered chronologically. Empty buckets are filled with ``count=0``.
+
+    When the underlying log fetch hits the ``_NOISY_MAX_ALERTS`` cap, the
+    response also carries ``truncated_after`` (ISO-UTC timestamp of the last
+    fetched event) and every bucket starting *after* the bucket that contains
+    that event is marked as ``{"count": null, "truncated": true}`` so the
+    consumer can distinguish "no alerts in this bucket" from "bucket not
+    covered by the capped fetch".
     """
     bucket_secs = _BUCKET_SIZES.get(bucket)
     if bucket_secs is None:
@@ -1165,14 +1172,39 @@ async def thruk_alert_heatmap(
         "total_alerts": total,
         "results": results,
     }
+
+    # When the log cap is hit, sort=time ascending means we got the *earliest*
+    # entries only — buckets past the last fetched timestamp would silently
+    # show count=0. Mark them as null+truncated so consumers (LLM or human)
+    # do not confuse "missing data" with "quiet period".
+    log_capped = len(data) >= _NOISY_MAX_ALERTS
+    if log_capped and raw_counts:
+        last_ts = max(int(e["time"]) for e in data if e.get("time"))
+        last_bucket = (last_ts // bucket_secs) * bucket_secs
+        truncated_after_iso = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["truncated_after"] = truncated_after_iso
+        for bucket_obj in results:
+            bs_str = bucket_obj["bucket_start"]
+            bs_epoch = int(
+                datetime.strptime(bs_str, "%Y-%m-%dT%H:%M:%SZ")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+            if bs_epoch > last_bucket:
+                bucket_obj["count"] = None
+                bucket_obj["truncated"] = True
+
     if host_truncated:
         payload["_warning"] = (
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
-    elif len(data) >= _NOISY_MAX_ALERTS:
+    elif log_capped:
         payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
+            "Buckets after 'truncated_after' are reported as count=null (data not fetched)."
         )
     if warnings:
         payload["_warnings"] = warnings
