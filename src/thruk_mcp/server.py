@@ -1764,6 +1764,74 @@ async def thruk_notifications(
     return _tool_response({"action": action, "target": target, "results": results})
 
 
+async def thruk_checks(
+    host: str,
+    enabled: bool,
+    service: str | None = None,
+    cascade: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Enable or disable active checks for a host or service.
+
+    ``enabled=True``  → enable active checks.
+    ``enabled=False`` → disable active checks.
+
+    When ``service`` is omitted the command targets the host itself.
+    Set ``cascade=True`` to also apply the same command to **all services**
+    of the host (ignored when ``service`` is specified).
+
+    Thruk commands used:
+    - host:    ``enable_host_checks`` / ``disable_host_checks``
+    - service: ``enable_svc_checks``  / ``disable_svc_checks``
+
+    This tool does **not** schedule a downtime and does **not** acknowledge
+    any problem — it only controls whether Thruk runs active checks. Passive
+    check submissions are unaffected.
+    """
+    client = _get_client()
+    be = _backends(backends)
+    results: list[Any] = []
+
+    if service:
+        # Single service — cascade is irrelevant
+        verb = "enable_svc_checks" if enabled else "disable_svc_checks"
+        endpoint = f"/services/{_seg(host)}/{_seg(service)}/cmd/{verb}"
+        results.append(await client.post(endpoint, backends=be))
+    else:
+        # Host-level command
+        verb_host = "enable_host_checks" if enabled else "disable_host_checks"
+        results.append(await client.post(f"/hosts/{_seg(host)}/cmd/{verb_host}", backends=be))
+
+        if cascade:
+            # Apply to every service of this host
+            verb_svc = "enable_svc_checks" if enabled else "disable_svc_checks"
+            svc_data = await client.get(
+                f"/hosts/{_seg(host)}/services",
+                params={"columns": "description"},
+                backends=be,
+            )
+            services: list[str] = []
+            if isinstance(svc_data, list):
+                services = [
+                    s["description"]
+                    for s in svc_data
+                    if isinstance(s, dict) and s.get("description")
+                ]
+            svc_results = await asyncio.gather(
+                *(
+                    client.post(f"/services/{_seg(host)}/{_seg(svc)}/cmd/{verb_svc}", backends=be)
+                    for svc in services
+                )
+            )
+            results.extend(svc_results)
+
+    action = "enabled" if enabled else "disabled"
+    target = f"{host}/{service}" if service else host
+    if cascade and not service:
+        target = f"{host} (host + all services)"
+    return _tool_response({"action": action, "target": target, "results": results})
+
+
 async def thruk_delete_downtime(
     downtime_id: int, host: str, service: str | None = None, backends: str | None = None
 ) -> str:
@@ -3149,6 +3217,32 @@ TOOL_REGISTRY: list[ToolSpec] = [
             host=_str("Host name"),
             service=_OPT_STR,
             forced=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_checks",
+        fn=thruk_checks,
+        schema=_s(
+            "host",
+            "enabled",
+            host=_str("Host name"),
+            enabled=_bool(
+                "True to enable active checks, False to disable.",
+            ),
+            service={
+                **_OPT_STR,
+                "description": (
+                    "Service description. Omit to target the host only "
+                    "(use cascade=true to also cover all its services)."
+                ),
+            },
+            cascade=_bool(
+                "When true and no service is specified, also apply to all services "
+                "of the host. Ignored when service is set.",
+                default=False,
+            ),
             backends=_BACKENDS,
         ),
         is_write=True,

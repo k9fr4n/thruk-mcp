@@ -2101,6 +2101,56 @@
     }
   },
   {
+    "name": "thruk_checks",
+    "description": "Enable or disable active checks for a host or service. Set enabled=true to enable, enabled=false to disable. When service is omitted the command targets the host itself. Set cascade=true to also apply to all services of the host (ignored when service is specified). Does not affect passive check submissions.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "host",
+        "enabled"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Host name"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "True to enable active checks, False to disable."
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Service description. Omit to target the host only (use cascade=true to also cover all its services)."
+        },
+        "cascade": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true and no service is specified, also apply to all services of the host. Ignored when service is set."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_notifications",
     "description": "Enable or disable notifications for a host or service. Set enabled=true to enable, enabled=false to disable. When service is omitted the command targets the host itself. Set cascade=true to also apply to all services of the host (ignored when service is specified).",
     "inputSchema": {
