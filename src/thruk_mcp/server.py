@@ -1770,7 +1770,12 @@ async def thruk_schedule_downtime(
     backends: str | None = None,
 ) -> str:
     """Schedule a host or service downtime. Time accepts 'now', relative ('+2h', '+30m')
-    or ISO 8601. If `duration_minutes` is set it overrides `end_time`."""
+    or ISO 8601. If `duration_minutes` is set it overrides `end_time`.
+
+    Note: Naemon processes scheduling commands asynchronously through its
+    command pipe. A newly scheduled downtime may not be immediately visible
+    in Livestatus queries (`thruk_list_downtimes`, `thruk_delete_active_downtimes`,
+    ...). Allow ~5-10 seconds before querying or deleting (issue #194)."""
     if duration_minutes:
         end_time = f"+{duration_minutes}m"
     endpoint = (
@@ -2303,7 +2308,10 @@ async def thruk_schedule_host_services_downtime(
 ) -> str:
     """Schedule a downtime on ALL services of the given host
     (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host
-    itself or for one specific service."""
+    itself or for one specific service.
+
+    Note: Naemon processes scheduling commands asynchronously; new downtimes
+    may not be immediately visible in Livestatus (issue #194)."""
     payload = _downtime_payload(comment, author, start_time, end_time, duration_minutes, fixed, 0)
     return _tool_response(
         await _get_client().post(
@@ -2405,37 +2413,68 @@ async def thruk_delete_active_downtimes(
     host: str,
     service: str | None = None,
     backends: str | None = None,
+    retry_on_empty: bool = True,
+    retry_delay_seconds: float = 2.0,
 ) -> str:
     """Remove ALL currently active downtimes for a host (or one specific
     service when `service` is given). Fetches all active downtime IDs first,
     then submits one DEL_*_DOWNTIME per ID. Partial failures are reported
-    individually in `errors` instead of aborting the whole batch."""
+    individually in `errors` instead of aborting the whole batch.
+
+    Naemon processes scheduling commands asynchronously through its command
+    pipe (issue #194): a downtime created by ``thruk_schedule_downtime`` /
+    ``thruk_schedule_host_services_downtime`` may not be visible in
+    Livestatus for a few seconds. When the initial ``/downtimes`` lookup
+    returns zero matches and ``retry_on_empty=True`` (the default), the
+    tool waits ``retry_delay_seconds`` and re-queries once. If still empty,
+    the response includes a structured ``_warning`` so callers can detect
+    the lag instead of assuming there is nothing to delete."""
     client = _get_client()
     be = _backends(backends)
 
     # Query active downtimes: started and not yet ended (same logic as thruk_list_downtimes).
-    now = _now_utc_epoch()
-    params: dict[str, Any] = {
-        "host_name": host,
-        "start_time[lte]": now,
-        "end_time[gte]": now,
-        "columns": "id,service_description,author,comment",
-    }
-    if service:
-        params["service_description"] = service
+    def _build_params() -> dict[str, Any]:
+        p: dict[str, Any] = {
+            "host_name": host,
+            "start_time[lte]": _now_utc_epoch(),
+            "end_time[gte]": _now_utc_epoch(),
+            "columns": "id,service_description,author,comment",
+        }
+        if service:
+            p["service_description"] = service
+        return p
 
-    raw = await client.get("/downtimes", params=params, backends=be)
-    all_dts: list[dict[str, Any]] = raw if isinstance(raw, list) else ([raw] if raw else [])
+    async def _fetch_matching() -> list[dict[str, Any]]:
+        raw = await client.get("/downtimes", params=_build_params(), backends=be)
+        all_dts: list[dict[str, Any]] = raw if isinstance(raw, list) else ([raw] if raw else [])
+        # Keep only the right type: host-level (empty service_desc) or the requested service.
+        if service:
+            return [d for d in all_dts if d.get("service_description") == service]
+        return [d for d in all_dts if not d.get("service_description")]
 
-    # Keep only the right type: host-level (empty service_desc) or the requested service.
-    if service:
-        downtimes = [d for d in all_dts if d.get("service_description") == service]
-    else:
-        downtimes = [d for d in all_dts if not d.get("service_description")]
+    downtimes = await _fetch_matching()
+
+    # Issue #194: Naemon command pipe is async — a freshly-scheduled downtime
+    # may not yet be visible in Livestatus. Retry once after a short backoff
+    # before giving up, unless the caller explicitly opts out.
+    if not downtimes and retry_on_empty and retry_delay_seconds > 0:
+        await asyncio.sleep(retry_delay_seconds)
+        downtimes = await _fetch_matching()
 
     if not downtimes:
         return _tool_response(
-            {"deleted": [], "errors": [], "count": 0, "message": "No active downtimes found."}
+            {
+                "deleted": [],
+                "errors": [],
+                "count": 0,
+                "message": "No active downtimes found.",
+                "_warning": (
+                    "No active downtimes visible in Livestatus. Naemon processes "
+                    "scheduling commands asynchronously through its command pipe — "
+                    "if a downtime was just created, retry in a few seconds. "
+                    "See issue #194."
+                ),
+            }
         )
 
     # Thruk REST exposes only `del_downtime` (not `del_svc_downtime` /
@@ -3606,6 +3645,22 @@ TOOL_REGISTRY: list[ToolSpec] = [
             host=_str(),
             service=_OPT_STR,
             backends=_BACKENDS,
+            retry_on_empty=_bool(
+                desc=(
+                    "Retry the /downtimes lookup once after a short delay if the first "
+                    "query returns no matches. Works around Naemon's async command pipe "
+                    "(issue #194). Default: True."
+                ),
+                default=True,
+            ),
+            retry_delay_seconds={
+                "type": "number",
+                "default": 2.0,
+                "description": (
+                    "Seconds to wait before the retry when retry_on_empty=True. "
+                    "Set to 0 to disable the wait. Default: 2.0."
+                ),
+            },
         ),
         is_write=True,
     ),
