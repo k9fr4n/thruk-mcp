@@ -107,8 +107,8 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
-`thruk_list_hostgroups`, `thruk_list_servicegroups`, `thruk_problems`, `thruk_stats`,
-`thruk_sites`.
+`thruk_list_hostgroups`, `thruk_list_servicegroups`, `thruk_list_contacts`, `thruk_get_contact`,
+`thruk_problems`, `thruk_stats`, `thruk_sites`.
 
 **Read — history & comments**
 `thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`, `thruk_recent_events`,
@@ -147,7 +147,10 @@ All three accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` short
 `thruk_delete_downtimes_by_filter`.
 
 **Write — problem handling**
-`thruk_acknowledge`, `thruk_remove_acknowledgement`, `thruk_recheck`,
+`thruk_acknowledge`, `thruk_bulk_acknowledge` (acknowledge multiple hosts/services in one call),
+`thruk_remove_acknowledgement`, `thruk_recheck`,
+`thruk_add_comment`, `thruk_delete_comment`,
+`thruk_checks` (enable/disable active checks for a host or service),
 `thruk_notifications` (enable/disable host or service notifications, with optional
 cascade to all services of a host).
 
