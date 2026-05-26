@@ -1805,3 +1805,145 @@ async def test_resolve_hosts_truncation_warning_top_noisy_hosts(mocked_server) -
     payload = json.loads(result[0].text)
     assert "_warning" in payload, "truncation warning must appear in _warning"
     assert "truncated" in payload["_warning"].lower()
+
+
+# ---------------------------------------------------------------- Bulk ack (issue #170)
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_state_filter_critical(mocked_server) -> None:
+    """state='critical' must skip /hosts entirely and ack only service problems.
+
+    Regression for issue #170: a state in {critical,warning,unknown} is
+    service-only; querying /hosts in that case would mis-report DOWN hosts
+    as 'critical' targets.
+    """
+    mcp, router = mocked_server
+    svc_route = router.get("https://thruk.test/r/services").mock(
+        return_value=ok(
+            [
+                {"host_name": "srv01", "description": "http", "state": 2},
+                {"host_name": "srv02", "description": "ssh", "state": 2},
+            ]
+        )
+    )
+    host_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    ack1 = router.post("https://thruk.test/r/services/srv01/http/cmd/acknowledge_svc_problem").mock(
+        return_value=ok({"rc": 0})
+    )
+    ack2 = router.post("https://thruk.test/r/services/srv02/ssh/cmd/acknowledge_svc_problem").mock(
+        return_value=ok({"rc": 0})
+    )
+
+    raw = await mcp.call_tool(
+        "thruk_bulk_acknowledge",
+        {"state": "critical", "comment": "incident-42", "author": "oncall"},
+    )
+    payload = json.loads(raw[0].text)
+
+    assert svc_route.called
+    assert not host_route.called, "state=critical must NOT query /hosts"
+    assert ack1.call_count == 1
+    assert ack2.call_count == 1
+    assert payload["acknowledged"] == 2
+    assert payload["failed"] == 0
+    assert {t["host"] for t in payload["targets"]} == {"srv01", "srv02"}
+    # Verify state was forwarded to /services as the canonical int (2 = CRITICAL).
+    assert svc_route.calls.last.request.url.params["state"] == "2"
+    # Verify payload keys are the Thruk-canonical ones.
+    body = post_params(ack1.calls.last)
+    assert body["comment_data"] == "incident-42"
+    assert body["comment_author"] == "oncall"
+    assert body["sticky_ack"] == "1"
+    assert body["send_notification"] == "1"
+    assert body["persistent_comment"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_hostgroup_filter(mocked_server) -> None:
+    """hostgroup filter must be forwarded as Livestatus groups[gte] / host_groups[gte]."""
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "h1", "state": 1}])
+    )
+    svc_route = router.get("https://thruk.test/r/services").mock(
+        return_value=ok([{"host_name": "h2", "description": "disk", "state": 2}])
+    )
+    router.post("https://thruk.test/r/hosts/h1/cmd/acknowledge_host_problem").mock(
+        return_value=ok({"rc": 0})
+    )
+    router.post("https://thruk.test/r/services/h2/disk/cmd/acknowledge_svc_problem").mock(
+        return_value=ok({"rc": 0})
+    )
+
+    raw = await mcp.call_tool("thruk_bulk_acknowledge", {"hostgroup": "HG_PROD"})
+    payload = json.loads(raw[0].text)
+
+    assert host_route.calls.last.request.url.params["groups[gte]"] == "HG_PROD"
+    assert svc_route.calls.last.request.url.params["host_groups[gte]"] == "HG_PROD"
+    # Default state=None must yield state[gte]=1 on both queries.
+    assert host_route.calls.last.request.url.params["state[gte]"] == "1"
+    assert svc_route.calls.last.request.url.params["state[gte]"] == "1"
+    assert payload["acknowledged"] == 2
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_hosts_only(mocked_server) -> None:
+    """hosts_only=True must skip /services entirely."""
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "down01", "state": 1}])
+    )
+    svc_route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    ack = router.post("https://thruk.test/r/hosts/down01/cmd/acknowledge_host_problem").mock(
+        return_value=ok({"rc": 0})
+    )
+
+    raw = await mcp.call_tool("thruk_bulk_acknowledge", {"hosts_only": True})
+    payload = json.loads(raw[0].text)
+
+    assert host_route.called
+    assert not svc_route.called, "hosts_only must NOT query /services"
+    assert ack.call_count == 1
+    assert payload["acknowledged"] == 1
+    assert payload["targets"][0] == {"host": "down01", "service": None, "state": "DOWN"}
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_empty_result_no_ack(mocked_server) -> None:
+    """Zero matching problems is informational (not an error) and fires no POST."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    # If a POST happened respx would record it; we don't even register a route.
+
+    raw = await mcp.call_tool("thruk_bulk_acknowledge", {})
+    payload = json.loads(raw[0].text)
+
+    assert payload["acknowledged"] == 0
+    assert payload["failed"] == 0
+    assert payload["targets"] == []
+    assert "_warning" in payload
+    assert "nothing to acknowledge" in payload["_warning"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_invalid_state_returns_error(mocked_server) -> None:
+    """Unknown state strings must produce an error payload, not a Thruk roundtrip."""
+    mcp, _router = mocked_server
+    # No routes registered: any HTTP call would raise.
+
+    raw = await mcp.call_tool("thruk_bulk_acknowledge", {"state": "bogus"})
+    payload = json.loads(raw[0].text)
+    assert "error" in payload
+    assert "bogus" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_acknowledge_mutually_exclusive_flags(mocked_server) -> None:
+    """hosts_only and services_only together is a guard-rail error."""
+    mcp, _ = mocked_server
+    raw = await mcp.call_tool("thruk_bulk_acknowledge", {"hosts_only": True, "services_only": True})
+    payload = json.loads(raw[0].text)
+    assert "error" in payload
+    assert "mutually exclusive" in payload["error"]

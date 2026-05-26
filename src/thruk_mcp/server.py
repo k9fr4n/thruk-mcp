@@ -1670,6 +1670,192 @@ async def thruk_acknowledge(
     )
 
 
+async def thruk_bulk_acknowledge(
+    author: str = "thruk-mcp",
+    comment: str = "bulk acknowledged via MCP",
+    hostgroup: str | None = None,
+    state: str | None = None,
+    hosts_only: bool = False,
+    services_only: bool = False,
+    sticky: bool = True,
+    notify: bool = True,
+    persistent: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Acknowledge every unhandled problem matching the given filters in one call.
+
+    Collects all currently unhandled (not acknowledged, not in downtime) host
+    and/or service problems matching the optional ``hostgroup`` / ``state``
+    filters, then fires every ``acknowledge_{host,svc}_problem`` POST
+    concurrently via ``asyncio.gather``.
+
+    Parameters:
+    - ``state``: one of ``"down"``, ``"unreachable"`` (hosts) or
+      ``"critical"``, ``"warning"``, ``"unknown"`` (services). ``None`` =
+      every non-OK state.  Numeric strings ("0".."3") are also accepted via
+      the canonical state-int maps.
+    - ``hosts_only``: skip service problems entirely.
+    - ``services_only``: skip host problems entirely.
+    - ``hostgroup``: restrict to members of this hostgroup (resolved via
+      Livestatus ``groups[gte]`` / ``host_groups[gte]`` — same semantics as
+      ``thruk_problems``).
+    - ``sticky`` / ``notify`` / ``persistent``: forwarded verbatim to
+      ``acknowledge_*_problem`` (payload keys ``sticky_ack``,
+      ``send_notification``, ``persistent_comment``).
+
+    Returns a JSON summary:
+
+    .. code-block:: json
+
+        {
+          "acknowledged": 12,
+          "failed": 0,
+          "targets": [{"host": "srv01", "service": null, "state": "DOWN"}, ...],
+          "errors": []
+        }
+
+    When zero targets match, returns ``acknowledged=0`` plus a ``_warning``
+    note — it is not an error.
+    """
+    if hosts_only and services_only:
+        return _tool_response({"error": "hosts_only and services_only are mutually exclusive"})
+
+    # Resolve state filter to host / service int (None = any non-OK).
+    host_state_int: int | None = None
+    svc_state_int: int | None = None
+    skip_hosts = services_only
+    skip_services = hosts_only
+    if state is not None:
+        key = state.lower()
+        if key in HOST_STATE_INT and HOST_STATE_INT[key] != 0:
+            host_state_int = HOST_STATE_INT[key]
+            skip_services = True  # host-only state
+        elif key in SVC_STATE_INT and SVC_STATE_INT[key] != 0:
+            svc_state_int = SVC_STATE_INT[key]
+            skip_hosts = True  # service-only state
+        else:
+            return _tool_response(
+                {
+                    "error": (
+                        f"invalid state {state!r}: expected one of "
+                        "down, unreachable, critical, warning, unknown"
+                    )
+                }
+            )
+
+    be = _backends(backends)
+
+    async def _collect_hosts() -> list[dict[str, Any]]:
+        if skip_hosts:
+            return []
+        params: dict[str, Any] = {
+            "acknowledged": 0,
+            "scheduled_downtime_depth": 0,
+            "columns": "name,state,peer_name",
+        }
+        if host_state_int is not None:
+            params["state"] = host_state_int
+        else:
+            params["state[gte]"] = 1
+        if hostgroup:
+            params["groups[gte]"] = hostgroup
+        rows: list[dict[str, Any]] = []
+        async for row in _get_client().get_all("/hosts", params=params, backends=be):
+            if isinstance(row, dict) and row.get("name"):
+                rows.append(row)
+        return rows
+
+    async def _collect_services() -> list[dict[str, Any]]:
+        if skip_services:
+            return []
+        params: dict[str, Any] = {
+            "acknowledged": 0,
+            "scheduled_downtime_depth": 0,
+            "columns": "host_name,description,state,peer_name",
+        }
+        if svc_state_int is not None:
+            params["state"] = svc_state_int
+        else:
+            params["state[gte]"] = 1
+        if hostgroup:
+            params["host_groups[gte]"] = hostgroup
+        rows: list[dict[str, Any]] = []
+        async for row in _get_client().get_all("/services", params=params, backends=be):
+            if isinstance(row, dict) and row.get("host_name") and row.get("description"):
+                rows.append(row)
+        return rows
+
+    hosts, services = await asyncio.gather(_collect_hosts(), _collect_services())
+
+    targets: list[dict[str, Any]] = []
+    coros: list[Coroutine[Any, Any, Any]] = []
+    payload = {
+        "comment_data": comment,
+        "comment_author": author,
+        "sticky_ack": "1" if sticky else "0",
+        "send_notification": "1" if notify else "0",
+        "persistent_comment": "1" if persistent else "0",
+    }
+
+    for h in hosts:
+        name = str(h.get("name", ""))
+        targets.append(
+            {
+                "host": name,
+                "service": None,
+                "state": HOST_STATE_STR.get(int(h.get("state", -1)), str(h.get("state", ""))),
+            }
+        )
+        coros.append(
+            _get_client().post(
+                f"/hosts/{_seg(name)}/cmd/acknowledge_host_problem",
+                data=payload,
+                backends=be,
+            )
+        )
+    for s in services:
+        h_name = str(s.get("host_name", ""))
+        svc = str(s.get("description", ""))
+        targets.append(
+            {
+                "host": h_name,
+                "service": svc,
+                "state": SVC_STATE_STR.get(int(s.get("state", -1)), str(s.get("state", ""))),
+            }
+        )
+        coros.append(
+            _get_client().post(
+                f"/services/{_seg(h_name)}/{_seg(svc)}/cmd/acknowledge_svc_problem",
+                data=payload,
+                backends=be,
+            )
+        )
+
+    result: dict[str, Any] = {
+        "acknowledged": 0,
+        "failed": 0,
+        "targets": targets,
+        "errors": [],
+    }
+
+    if not coros:
+        result["_warning"] = "no matching unhandled problems found — nothing to acknowledge"
+        return _tool_response(result)
+
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    errors: list[dict[str, Any]] = []
+    ok_count = 0
+    for tgt, res in zip(targets, results, strict=True):
+        if isinstance(res, Exception):
+            errors.append({**tgt, "error": str(res)})
+        else:
+            ok_count += 1
+    result["acknowledged"] = ok_count
+    result["failed"] = len(errors)
+    result["errors"] = errors
+    return _tool_response(result)
+
+
 async def thruk_add_comment(
     host: str,
     comment: str,
@@ -3276,6 +3462,30 @@ TOOL_REGISTRY: list[ToolSpec] = [
             service=_OPT_STR,
             comment=_str(),
             author=_str(),
+            sticky=_bool(default=True),
+            notify=_bool(default=True),
+            persistent=_bool(default=False),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_bulk_acknowledge",
+        fn=thruk_bulk_acknowledge,
+        schema=_s(
+            author=_str(),
+            comment=_str(),
+            hostgroup=_OPT_STR,
+            state={
+                **_OPT_STR,
+                "description": (
+                    "Restrict to a single state: 'down' / 'unreachable' (hosts) or "
+                    "'critical' / 'warning' / 'unknown' (services). "
+                    "None (default) matches every non-OK problem."
+                ),
+            },
+            hosts_only=_bool(default=False),
+            services_only=_bool(default=False),
             sticky=_bool(default=True),
             notify=_bool(default=True),
             persistent=_bool(default=False),
