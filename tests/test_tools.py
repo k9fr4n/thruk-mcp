@@ -940,15 +940,129 @@ async def test_delete_active_downtimes_service_filters_correctly(mocked_server) 
 
 @pytest.mark.asyncio
 async def test_delete_active_downtimes_none_found(mocked_server) -> None:
-    """Returns count=0 and a message when no active downtimes exist."""
+    """Returns count=0 and a message when no active downtimes exist.
+
+    ``retry_on_empty=False`` disables the issue #194 Naemon-lag retry so this
+    test stays fast and exercises the original control path."""
     import json
 
     mcp, router = mocked_server
     router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
-    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result_raw = await mcp.call_tool(
+        "thruk_delete_active_downtimes",
+        {"host": "srv01", "retry_on_empty": False},
+    )
     result = json.loads(result_raw[0].text)
     assert result["count"] == 0
     assert "No active downtimes found" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_retries_when_naemon_lags(mocked_server, monkeypatch) -> None:
+    """Regression test for issue #194.
+
+    Naemon processes scheduling commands asynchronously: a downtime created
+    via thruk_schedule_downtime may not yet be visible to Livestatus when
+    thruk_delete_active_downtimes immediately queries ``/downtimes``. Before
+    the fix the first empty result was returned as ``count: 0`` and the
+    delete was silently skipped. After the fix the tool retries once with a
+    short backoff and then deletes the downtime that has become visible.
+    """
+    import json as _json
+
+    import thruk_mcp.server as srv
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+
+    mcp, router = mocked_server
+    # 1st GET -> empty (Naemon hasn't processed the schedule yet).
+    # 2nd GET -> downtime now visible.
+    router.get("https://thruk.test/r/downtimes").mock(
+        side_effect=[
+            ok([]),
+            ok(
+                [
+                    {
+                        "id": 454995,
+                        "service_description": "",
+                        "author": "thruk-mcp",
+                        "comment": "TEST",
+                    }
+                ]
+            ),
+        ]
+    )
+    del_route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_downtime").mock(
+        return_value=ok({"rc": 0})
+    )
+
+    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result = _json.loads(result_raw[0].text)
+
+    assert sleep_calls == [2.0], "exactly one backoff sleep at the default delay"
+    assert del_route.call_count == 1, "the downtime found on retry must be deleted"
+    assert result["count"] == 1
+    assert result["deleted"][0]["downtime_id"] == 454995
+    assert "_warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_warns_when_still_empty(mocked_server, monkeypatch) -> None:
+    """Issue #194 - when the retry also returns empty, surface a structured warning."""
+    import json as _json
+
+    import thruk_mcp.server as srv
+
+    async def _fake_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+
+    result_raw = await mcp.call_tool("thruk_delete_active_downtimes", {"host": "srv01"})
+    result = _json.loads(result_raw[0].text)
+
+    assert result["count"] == 0
+    assert result["deleted"] == []
+    assert "_warning" in result
+    assert "asynchronously" in result["_warning"]
+
+
+@pytest.mark.asyncio
+async def test_delete_active_downtimes_opt_out_no_retry(mocked_server, monkeypatch) -> None:
+    """retry_on_empty=False short-circuits without sleeping / re-querying."""
+    import json as _json
+
+    import thruk_mcp.server as srv
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+
+    mcp, router = mocked_server
+    dt_route = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+
+    result_raw = await mcp.call_tool(
+        "thruk_delete_active_downtimes",
+        {"host": "srv01", "retry_on_empty": False},
+    )
+    result = _json.loads(result_raw[0].text)
+
+    assert dt_route.call_count == 1, "no retry when retry_on_empty=False"
+    assert sleep_calls == []
+    assert result["count"] == 0
+    # Warning still helpful so callers learn about the lag.
+    assert "_warning" in result
 
 
 @pytest.mark.asyncio
