@@ -285,6 +285,40 @@ async def test_list_servicegroups(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_contacts(mocked_server) -> None:
+    """Issue #172: thruk_list_contacts hits GET /contacts with default columns."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/contacts").mock(
+        return_value=ok([{"name": "alice", "email": "alice@example.com"}])
+    )
+    await mcp.call_tool("thruk_list_contacts", {})
+    assert route.called
+    p = route.calls.last.request.url.params
+    # Default columns must be forwarded
+    assert "name" in p["columns"]
+    assert "email" in p["columns"]
+    assert p["limit"] == "100"
+    assert p["sort"] == "name"
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_pagination_and_columns(mocked_server) -> None:
+    """Issue #172: pagination + custom columns are forwarded."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/contacts").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_contacts",
+        {"limit": 25, "offset": 50, "sort": "-name", "columns": "name,email"},
+    )
+    assert route.called
+    p = route.calls.last.request.url.params
+    assert p["limit"] == "25"
+    assert p["offset"] == "50"
+    assert p["columns"] == "name,email"
+    assert p["sort"] == "-name"
+
+
+@pytest.mark.asyncio
 async def test_problems(mocked_server) -> None:
     mcp, router = mocked_server
     r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))

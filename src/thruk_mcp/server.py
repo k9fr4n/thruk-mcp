@@ -50,6 +50,7 @@ from .constants import (
 )
 from .constants import (
     DEFAULT_COMMENT_COLUMNS,
+    DEFAULT_CONTACT_COLUMNS,
     DEFAULT_DOWNTIME_COLUMNS,
     DEFAULT_GROUP_COLUMNS,
     DEFAULT_HOST_COLUMNS,
@@ -474,6 +475,27 @@ async def thruk_list_servicegroups(
     """List service groups. Default columns return name/alias and counts only."""
     params = _list_params(limit, offset, sort, columns, DEFAULT_GROUP_COLUMNS)
     data = await _get_client().get("/servicegroups", params=params, backends=_backends(backends))
+    return _tool_response(data)
+
+
+async def thruk_list_contacts(
+    limit: int = 100,
+    offset: int = 0,
+    sort: str = "name",
+    columns: str | None = None,
+    backends: str | None = None,
+) -> str:
+    """List configured Nagios/Naemon contacts (notification targets).
+
+    Useful for on-call lookup ("who gets paged if host X goes DOWN?") and
+    notification routing audits. Hits ``GET /thruk/r/contacts``.
+
+    Default columns: ``name,alias,email,pager,host_notifications_enabled,
+    service_notifications_enabled``. Pass ``columns=''`` for the full
+    Thruk contact record (notification commands, timeperiods, custom vars).
+    """
+    params = _list_params(limit, offset, sort, columns, DEFAULT_CONTACT_COLUMNS)
+    data = await _get_client().get("/contacts", params=params, backends=_backends(backends))
     return _tool_response(data)
 
 
@@ -3185,6 +3207,17 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_list_servicegroups",
         fn=thruk_list_servicegroups,
+        schema=_s(
+            limit=_int(default=100),
+            offset=_int(default=0),
+            sort=_str(),
+            columns=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_list_contacts",
+        fn=thruk_list_contacts,
         schema=_s(
             limit=_int(default=100),
             offset=_int(default=0),

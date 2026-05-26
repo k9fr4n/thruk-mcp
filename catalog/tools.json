@@ -596,6 +596,55 @@
     }
   },
   {
+    "name": "thruk_list_contacts",
+    "description": "List configured Nagios/Naemon contacts (notification targets). Default columns: name, alias, email, pager, host_notifications_enabled, service_notifications_enabled. Pass `columns=''` for the full contact record.",
+    "inputSchema": {
+      "properties": {
+        "limit": {
+          "default": 100,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "title": "Offset",
+          "type": "integer"
+        },
+        "sort": {
+          "default": "name",
+          "title": "Sort",
+          "type": "string"
+        },
+        "columns": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Columns"
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Backends"
+        }
+      },
+      "title": "thruk_list_contactsArguments",
+      "type": "object"
+    }
+  },
+  {
     "name": "thruk_problems",
     "description": "List all current unhandled host/service problems (not acknowledged, not in downtime). Sorted by worst state first. Default columns are tight; pass `columns=''` for all. Optional `custom_vars` restricts by Nagios custom variables; `host_custom_vars` restricts service problems by host-level custom variables.",
     "inputSchema": {
