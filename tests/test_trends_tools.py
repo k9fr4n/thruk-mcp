@@ -212,6 +212,86 @@ async def test_heatmap_cap_warning(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_heatmap_truncated_buckets_marked_null(mocked_server) -> None:
+    """Regression test for issue #178.
+
+    BEFORE FIX (broken):
+        With sort=time ascending and limit=_NOISY_MAX_ALERTS, when the cap is
+        hit the fetch returns only the earliest entries. All buckets past
+        the last fetched timestamp showed `count=0`, indistinguishable from
+        genuine quiet periods. Pre-fix assertion would have been:
+
+            assert payload["results"][2]["count"] == 0   # MISLEADING
+
+    AFTER FIX:
+        Buckets strictly after the bucket containing the last fetched entry
+        are reported as `count=null, truncated=true`, and the payload exposes
+        `truncated_after` (ISO-UTC of the last fetched event).
+    """
+    mcp, router = mocked_server
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    hour = 3600
+    # Cram _NOISY_MAX_ALERTS entries into the first 2 hours of a 24h window.
+    # Window: [BASE_TS, BASE_TS + 24h]. Cap reached before hour 2 ends.
+    big_data = [_log(BASE_TS + (i % (2 * hour))) for i in range(_NOISY_MAX_ALERTS)]
+    # Force the largest timestamp to fall in bucket #1 (the 2nd hour) for
+    # determinism — modulo above can shuffle order but max remains bucket #1.
+    big_data[-1] = _log(BASE_TS + hour + 1234)
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
+
+    since = str(BASE_TS)
+    until = str(BASE_TS + 24 * hour)
+
+    result = await mcp.call_tool(
+        "thruk_alert_heatmap",
+        {"since": since, "until": until, "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["total_alerts"] == _NOISY_MAX_ALERTS
+    assert "truncated_after" in payload, "Expected truncated_after top-level field"
+    assert payload["truncated_after"].endswith("Z")
+    assert "_warning" in payload
+
+    # 24h window @ 1h bucket => 25 buckets (inclusive of both ends).
+    assert len(payload["results"]) == 25
+
+    # Bucket 0 and 1 contain real data (count is an int, not None).
+    assert isinstance(payload["results"][0]["count"], int)
+    assert payload["results"][0]["count"] > 0
+    assert isinstance(payload["results"][1]["count"], int)
+    assert payload["results"][1]["count"] > 0
+    # Bucket containing last fetched event must not be marked truncated.
+    assert not payload["results"][1].get("truncated", False)
+
+    # Buckets 2..24 (after the last fetched bucket) must be null + truncated.
+    for bucket in payload["results"][2:]:
+        assert bucket["count"] is None, f"Expected null count, got {bucket}"
+        assert bucket["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_heatmap_no_truncation_when_cap_not_hit(mocked_server) -> None:
+    """No `truncated_after` field when the fetch stays below the cap."""
+    mcp, router = mocked_server
+
+    hour = 3600
+    entries = [_log(BASE_TS + 10), _log(BASE_TS + hour + 10)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+
+    result = await mcp.call_tool(
+        "thruk_alert_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + 2 * hour), "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+    assert "truncated_after" not in payload
+    for bucket in payload["results"]:
+        assert bucket["count"] is not None
+        assert "truncated" not in bucket
+
+
+@pytest.mark.asyncio
 async def test_heatmap_invalid_filter(mocked_server) -> None:
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
