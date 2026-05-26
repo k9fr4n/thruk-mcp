@@ -347,7 +347,7 @@ async def test_sites(mocked_server) -> None:
     "tool_name, extra_params",
     [
         ("thruk_list_logs", {}),
-        ("thruk_list_alerts", {"type[~]": "^(HOST|SERVICE) ALERT"}),
+        ("thruk_list_alerts", {"type[~]": "^(HOST|SERVICE) ALERT", "class": "1"}),
         ("thruk_list_notifications", {"class": "3"}),
         ("thruk_recent_events", {}),
     ],
@@ -407,6 +407,44 @@ async def test_list_alerts_with_state(mocked_server) -> None:
     )
     p = post_params(route.calls.last)
     assert p["state"] == "1"  # service warning → numeric 1
+
+
+@pytest.mark.asyncio
+async def test_list_alerts_filters_class_zero_system_entries(mocked_server) -> None:
+    """Regression for issue #176.
+
+    Before the fix, ``thruk_list_alerts`` only set ``type[~]=^(HOST|SERVICE) ALERT``.
+    Naemon Livestatus does not exclude rows where ``type`` is NULL/empty from regex
+    filters, so class=0 system messages (e.g. retention auto-save) leaked through
+    and were returned to the caller, polluting the alert stream and consuming the
+    user-provided ``limit``.
+
+    The fix adds a server-side ``class=1`` filter to the POST body. This test asserts
+    the POST contains ``class=1`` so the upstream Thruk/Livestatus query already drops
+    the system rows before they reach the tool's pagination window.
+    """
+    mcp, router = mocked_server
+    # Simulate what Thruk would return *if* the server-side filter wasn't applied:
+    # a mix of class=0 system rows (type=null) and proper class=1 ALERT rows.
+    # With the fix, our POST asks for class=1 so Thruk wouldn't actually return
+    # the class=0 rows — but mounting them here proves the assertion bites on the
+    # request side regardless of what the mock returns.
+    mixed_payload = [
+        {"class": 0, "type": None, "host_name": "", "message": "Auto-save completed."},
+        {"class": 1, "type": "HOST ALERT", "host_name": "srv01", "state": 1},
+        {"class": 1, "type": "SERVICE ALERT", "host_name": "srv01", "state": 2},
+    ]
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(mixed_payload))
+    await mcp.call_tool("thruk_list_alerts", {"limit": 50})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p.get("class") == "1", (
+        "thruk_list_alerts must POST class=1 to drop class=0 system messages "
+        "server-side (issue #176)."
+    )
+    assert p.get("type[~]") == "^(HOST|SERVICE) ALERT", (
+        "Existing type regex filter must still be present as defence-in-depth."
+    )
 
 
 @pytest.mark.asyncio

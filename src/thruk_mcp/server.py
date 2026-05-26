@@ -1434,6 +1434,12 @@ async def thruk_list_alerts(
     if errs:
         return _tool_response({"error": errs[0]})
     extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Defence-in-depth: Naemon Livestatus does not exclude rows where ``type`` is
+    # NULL/empty from regex filters, so class=0 system messages (e.g. "Auto-save
+    # of retention data completed successfully.") slip past ``type[~]``. All
+    # HOST/SERVICE ALERT rows have class=1, so a server-side class filter is a
+    # cheap and reliable cut. See issue #176.
+    extra["class"] = "1"
     if "time[gte]" not in extra and since:
         extra["time[gte]"] = since
     if "time[lte]" not in extra and until:
