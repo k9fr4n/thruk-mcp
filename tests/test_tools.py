@@ -268,6 +268,94 @@ async def test_get_service(mocked_server) -> None:
     assert route.called
 
 
+# ---------------------------------------------------------------- issue #179
+# thruk_get_host / thruk_get_service must unpack Thruk's per-backend list
+# into a single object. Before the fix the raw list was forwarded, breaking
+# the "single object" contract advertised by both tools.
+
+
+@pytest.mark.asyncio
+async def test_get_host_unpacks_single_element_list(mocked_server) -> None:
+    """Pre-fix: returned [{"name": "srv01"}]. Post-fix: returns the dict."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/srv01").mock(
+        return_value=ok([{"name": "srv01", "state": 0}])
+    )
+    result = await mcp.call_tool("thruk_get_host", {"host": "srv01"})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict), "single-backend response must be unpacked to a dict"
+    assert payload == {"name": "srv01", "state": 0}
+
+
+@pytest.mark.asyncio
+async def test_get_host_empty_list_returns_not_found(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/missing").mock(return_value=ok([]))
+    result = await mcp.call_tool("thruk_get_host", {"host": "missing"})
+    payload = json.loads(result[0].text)
+    assert payload == {"error": "Host 'missing' not found"}
+
+
+@pytest.mark.asyncio
+async def test_get_host_multi_backend_returns_list_with_warning(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hosts/dup").mock(
+        return_value=ok(
+            [
+                {"name": "dup", "peer_name": "A"},
+                {"name": "dup", "peer_name": "B"},
+            ]
+        )
+    )
+    result = await mcp.call_tool("thruk_get_host", {"host": "dup"})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict)
+    assert payload["data"] == [
+        {"name": "dup", "peer_name": "A"},
+        {"name": "dup", "peer_name": "B"},
+    ]
+    assert payload["_warnings"] and "2 backends" in payload["_warnings"][0]
+
+
+@pytest.mark.asyncio
+async def test_get_service_unpacks_single_element_list(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/services/srv01/ssh").mock(
+        return_value=ok([{"description": "ssh", "state": 2}])
+    )
+    result = await mcp.call_tool("thruk_get_service", {"host": "srv01", "service": "ssh"})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict)
+    assert payload == {"description": "ssh", "state": 2}
+
+
+@pytest.mark.asyncio
+async def test_get_service_empty_list_returns_not_found(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/services/srv01/nope").mock(return_value=ok([]))
+    result = await mcp.call_tool("thruk_get_service", {"host": "srv01", "service": "nope"})
+    payload = json.loads(result[0].text)
+    assert payload == {"error": "Service 'srv01'/'nope' not found"}
+
+
+@pytest.mark.asyncio
+async def test_get_service_multi_backend_returns_list_with_warning(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/services/dup/svc").mock(
+        return_value=ok(
+            [
+                {"description": "svc", "peer_name": "A"},
+                {"description": "svc", "peer_name": "B"},
+            ]
+        )
+    )
+    result = await mcp.call_tool("thruk_get_service", {"host": "dup", "service": "svc"})
+    payload = json.loads(result[0].text)
+    assert isinstance(payload, dict)
+    assert len(payload["data"]) == 2
+    assert payload["_warnings"] and "2 backends" in payload["_warnings"][0]
+
+
 @pytest.mark.asyncio
 async def test_list_hostgroups(mocked_server) -> None:
     mcp, router = mocked_server
