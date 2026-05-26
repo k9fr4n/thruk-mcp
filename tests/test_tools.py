@@ -2114,3 +2114,79 @@ async def test_bulk_acknowledge_mutually_exclusive_flags(mocked_server) -> None:
     payload = json.loads(raw[0].text)
     assert "error" in payload
     assert "mutually exclusive" in payload["error"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: issue #191 — legacy `hours` parameter backward-compat shim
+#
+# Pre-fix reproduction (would raise TypeError):
+#
+#     await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 24, "limit": 5})
+#     # → TypeError: thruk_top_noisy_hosts() got an unexpected keyword
+#     #   argument 'hours'
+#
+# Fix: each of the three trend tools now accepts `hours: int | None = None`
+# and translates it to `since="-{hours}h"` (emitting a DeprecationWarning).
+# Schema continues to advertise since/until (per issue #177).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_hours_shim_translates_to_since(mocked_server) -> None:
+    """Legacy `hours=6` must be accepted and translated to time[gte]=-6h."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    with pytest.warns(DeprecationWarning, match="hours"):
+        result = await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 6, "limit": 5})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["time[gte]"] == "-6h"
+    payload = json.loads(result[0].text)
+    assert payload["since"] == "-6h"
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_services_hours_shim_translates_to_since(mocked_server) -> None:
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    with pytest.warns(DeprecationWarning, match="hours"):
+        result = await mcp.call_tool("thruk_top_noisy_services", {"hours": 12})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["time[gte]"] == "-12h"
+    payload = json.loads(result[0].text)
+    assert payload["since"] == "-12h"
+
+
+@pytest.mark.asyncio
+async def test_flap_summary_hours_shim_translates_to_since(mocked_server) -> None:
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    with pytest.warns(DeprecationWarning, match="hours"):
+        result = await mcp.call_tool("thruk_flap_summary", {"hours": 3})
+    assert route.called
+    p = post_params(route.calls.last)
+    assert p["time[gte]"] == "-3h"
+    payload = json.loads(result[0].text)
+    assert payload["since"] == "-3h"
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_explicit_since_wins_over_hours(mocked_server) -> None:
+    """Explicit non-default `since` must take precedence over deprecated `hours`."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    with pytest.warns(DeprecationWarning):
+        await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 6, "since": "-48h"})
+    p = post_params(route.calls.last)
+    assert p["time[gte]"] == "-48h", "explicit since must win over legacy hours"
+
+
+@pytest.mark.asyncio
+async def test_top_noisy_hosts_invalid_hours_raises_thruk_error(mocked_server) -> None:
+    """Non-positive `hours` must raise ThrukError (mapped to tool error by SDK)."""
+    from thruk_mcp.client import ThrukError
+
+    mcp, _ = mocked_server
+    with pytest.raises(ThrukError, match="positive integer"):
+        await mcp.call_tool("thruk_top_noisy_hosts", {"hours": 0})
