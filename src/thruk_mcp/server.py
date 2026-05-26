@@ -22,6 +22,7 @@ import contextlib
 import fnmatch
 import logging
 import re
+import warnings
 from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -825,12 +826,53 @@ async def _aggregate_alerts(
     return rows, warnings, len(data) >= _NOISY_MAX_ALERTS
 
 
+# ---------------------------------------------------------------------------
+# Backward-compat shim for issue #191 (legacy `hours` parameter)
+#
+# Issue #177 aligned the *schema* of the three trend tools (top_noisy_hosts /
+# top_noisy_services / flap_summary) to use `since` / `until` instead of the
+# legacy `hours: int` parameter. However, deployed Docker MCP Gateways and
+# any cached `metadata.json` snapshots may still advertise `hours`, so callers
+# honoring those stale schemas pass `hours=24` and trigger:
+#
+#   TypeError: thruk_top_noisy_hosts() got an unexpected keyword argument 'hours'
+#
+# This shim accepts `hours` for backward compatibility and translates it to
+# the canonical `since="-{N}h"`. An explicit `since` always wins over `hours`.
+# ---------------------------------------------------------------------------
+_DEFAULT_SINCE = "-24h"
+
+
+def _coerce_hours_to_since(hours: int | None, since: str | None, tool_name: str) -> str | None:
+    """Translate the deprecated ``hours`` kwarg to a ``since`` relative window.
+
+    Returns the resolved ``since`` value. If ``hours`` is set, it is used only
+    when the caller did not override the default ``since``; otherwise the
+    explicit ``since`` wins. Emits a ``DeprecationWarning`` when ``hours`` is
+    supplied so clients migrate to ``since``/``until``.
+    """
+    if hours is None:
+        return since
+    if hours <= 0:
+        raise ThrukError(f"{tool_name}: 'hours' must be a positive integer (got {hours!r})")
+    warnings.warn(
+        f"{tool_name}: parameter 'hours' is deprecated; use since=\"-{hours}h\" instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    # Explicit, non-default `since` wins over the legacy `hours` shim.
+    if since not in (None, _DEFAULT_SINCE):
+        return since
+    return f"-{hours}h"
+
+
 async def thruk_top_noisy_hosts(
-    since: str | None = "-24h",
+    since: str | None = _DEFAULT_SINCE,
     until: str | None = None,
     limit: int = 10,
     filter: dict[str, Any] | None = None,
     backends: str | None = None,
+    hours: int | None = None,
 ) -> str:
     """Return the top N hosts ranked by HOST ALERT count over a time window.
 
@@ -844,11 +886,16 @@ async def thruk_top_noisy_hosts(
     ``filter`` fields: ``host`` (eq/regex), ``hostgroup``, ``custom_var``
     (host-level Nagios variable, resolved via /hosts lookup).
 
+    ``hours`` is **deprecated** (issue #191 backward-compat shim): clients
+    still using the legacy ``hours: int`` schema have it translated to
+    ``since="-{hours}h"``. Prefer ``since`` / ``until`` for new code.
+
     Returns a wrapped object:
     ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
+    since = _coerce_hours_to_since(hours, since, "thruk_top_noisy_hosts")
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
         return _tool_response({"error": errs[0]})
@@ -897,11 +944,12 @@ async def thruk_top_noisy_hosts(
 
 
 async def thruk_top_noisy_services(
-    since: str | None = "-24h",
+    since: str | None = _DEFAULT_SINCE,
     until: str | None = None,
     limit: int = 10,
     filter: dict[str, Any] | None = None,
     backends: str | None = None,
+    hours: int | None = None,
 ) -> str:
     """Return the top N services ranked by SERVICE ALERT count over a time window.
 
@@ -916,11 +964,16 @@ async def thruk_top_noisy_services(
     ``hostgroup``, ``custom_var`` (host-level Nagios variable, resolved via
     /hosts lookup).
 
+    ``hours`` is **deprecated** (issue #191 backward-compat shim): clients
+    still using the legacy ``hours: int`` schema have it translated to
+    ``since="-{hours}h"``. Prefer ``since`` / ``until`` for new code.
+
     Returns a wrapped object:
     ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
     ``results`` list sorted by ``alert_count`` desc, each entry containing
     ``host``, ``service``, ``alert_count``, ``last_state``, ``last_alert_time``.
     """
+    since = _coerce_hours_to_since(hours, since, "thruk_top_noisy_services")
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return _tool_response({"error": errs[0]})
@@ -970,12 +1023,13 @@ async def thruk_top_noisy_services(
 
 
 async def thruk_flap_summary(
-    since: str | None = "-24h",
+    since: str | None = _DEFAULT_SINCE,
     until: str | None = None,
     limit: int = 10,
     min_transitions: int = 3,
     filter: dict[str, Any] | None = None,
     backends: str | None = None,
+    hours: int | None = None,
 ) -> str:
     """Return hosts and services with the most state transitions (flapping) over a time window.
 
@@ -994,6 +1048,10 @@ async def thruk_flap_summary(
     ``filter`` fields: ``host`` (eq/regex), ``service`` (eq/regex),
     ``hostgroup``, ``custom_var``.
 
+    ``hours`` is **deprecated** (issue #191 backward-compat shim): clients
+    still using the legacy ``hours: int`` schema have it translated to
+    ``since="-{hours}h"``. Prefer ``since`` / ``until`` for new code.
+
     Returns a wrapped object:
     ``since``, ``until``, ``min_transitions``, ``total_flapping_objects``,
     ``results`` list sorted by ``transition_count`` desc, each entry containing
@@ -1001,6 +1059,7 @@ async def thruk_flap_summary(
     ``states_seen`` (sorted unique set of state names), ``last_state``,
     ``last_alert_time``.
     """
+    since = _coerce_hours_to_since(hours, since, "thruk_flap_summary")
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
         return _tool_response({"error": errs[0]})
