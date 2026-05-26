@@ -1713,6 +1713,48 @@ async def thruk_add_comment(
     )
 
 
+async def thruk_delete_comment(
+    comment_id: int,
+    host: str,
+    service: str | None = None,
+    backends: str | None = None,
+) -> str:
+    """Delete a host or service comment by its id.
+
+    Closes the CRUD loop for operator notes: ``thruk_list_comments`` exposes
+    comment ids, ``thruk_add_comment`` creates them, and this tool deletes
+    them.  Typical use-cases:
+
+    - remove a stale investigation note after the incident is resolved,
+    - clean up comments created by an LLM assistant during an incident.
+
+    Thruk commands used (the command-based path is selected because the REST
+    ``DELETE /comments/{id}`` endpoint is not guaranteed across Thruk
+    versions):
+
+    - host:    ``POST /hosts/{host}/cmd/del_host_comment``
+    - service: ``POST /services/{host}/{svc}/cmd/del_svc_comment``
+
+    Payload key forwarded to Thruk:
+
+    - ``comment_id`` — the numeric id returned by ``thruk_list_comments``.
+
+    ``host`` is required so Thruk can route the command to the correct
+    backend.  ``service`` selects the service-scoped command path; omit it
+    for host comments.
+    """
+    endpoint = (
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/del_svc_comment"
+        if service
+        else f"/hosts/{_seg(host)}/cmd/del_host_comment"
+    )
+    return _tool_response(
+        await _get_client().post(
+            endpoint, data={"comment_id": str(comment_id)}, backends=_backends(backends)
+        )
+    )
+
+
 async def thruk_remove_acknowledgement(
     host: str, service: str | None = None, backends: str | None = None
 ) -> str:
@@ -3252,6 +3294,19 @@ TOOL_REGISTRY: list[ToolSpec] = [
             service=_OPT_STR,
             author=_str(),
             persistent=_bool(default=True),
+            backends=_BACKENDS,
+        ),
+        is_write=True,
+    ),
+    ToolSpec(
+        name="thruk_delete_comment",
+        fn=thruk_delete_comment,
+        schema=_s(
+            "comment_id",
+            "host",
+            comment_id=_int("Numeric comment id (as returned by thruk_list_comments)."),
+            host=_str("Host name owning the comment."),
+            service=_OPT_STR,
             backends=_BACKENDS,
         ),
         is_write=True,
