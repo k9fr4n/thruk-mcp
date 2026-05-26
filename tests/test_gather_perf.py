@@ -316,6 +316,9 @@ async def test_delete_downtimes_by_filter_host_gather_all_ids_fired(mocked_serve
     After #141:  ``asyncio.gather`` fires all host-level DEL requests at once.
     """
     mcp, router = mocked_server
+    # Issue #196: peer resolver returns empty → broadcast fallback (preserves
+    # the parallelism property this test asserts).
+    router.get("https://thruk.test/r/hosts/web01").mock(return_value=ok([]))
     router.post("https://thruk.test/r/system/cmd/del_downtime_by_host_name").mock(
         return_value=ok({"rc": 0})
     )
