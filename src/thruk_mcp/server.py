@@ -74,6 +74,7 @@ from .filters import (
     FIELDS_NOTIFICATIONS,
     FIELDS_PROBLEMS,
     FIELDS_SERVICES,
+    FIELDS_TOTALS,
     FilterError,
     build_tool_schema,
     compile_filter,
@@ -773,6 +774,75 @@ async def thruk_stats(
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts/stats", params=host_params or None, backends=be),
         _get_client().get("/services/stats", params=svc_params or None, backends=be),
+    )
+    return _tool_response({"hosts": hosts, "services": services})
+
+
+def _strip_filter_field(node: dict[str, Any], field: str) -> dict[str, Any] | None:
+    """Return a deep-copied filter tree with every leaf on ``field`` removed.
+
+    Used by :func:`thruk_totals` to drop the ``servicegroup`` leaf before
+    compiling the host-side params (``/hosts/totals`` has no service-group
+    scope and would otherwise emit a stray ``groups[gte]=`` colliding with
+    a ``hostgroup`` leaf).
+
+    Returns ``None`` when the pruned tree would be empty (no remaining
+    leaves) so the caller can short-circuit and skip filter compilation.
+    Empty groups produced by pruning are also collapsed.
+    """
+    if node.get("type") == "leaf":
+        return None if node.get("field") == field else dict(node)
+    pruned_children: list[dict[str, Any]] = []
+    for child in node.get("conditions", []):
+        kept = _strip_filter_field(child, field)
+        if kept is not None:
+            pruned_children.append(kept)
+    if not pruned_children:
+        return None
+    if len(pruned_children) == 1:
+        # Collapse a single-child group to the child itself.
+        return pruned_children[0]
+    return {
+        "type": "group",
+        "operator": node["operator"],
+        "conditions": pruned_children,
+    }
+
+
+async def thruk_totals(
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """Compact host+service totals — 16 fields versus ~100 from ``thruk_stats``.
+
+    Calls ``/hosts/totals`` and ``/services/totals`` concurrently and returns
+    a merged ``{"hosts": {...}, "services": {...}}`` payload, ideal for a
+    quick "how is everything?" overview.
+
+    Optional ``filter`` is a structured AND/OR tree scoping both endpoints.
+    Supported fields:
+
+    - ``hostgroup``   → ``groups[gte]=`` on ``/hosts/totals`` and
+      ``host_groups[gte]=`` on ``/services/totals``.
+    - ``servicegroup`` → ``groups[gte]=`` on ``/services/totals`` only
+      (stripped from the host-side params — it has no meaning there).
+    - ``custom_var``  → ``_VARNAME=value`` on both endpoints.
+    """
+    host_params: dict[str, Any] = {}
+    svc_params: dict[str, Any] = {}
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_TOTALS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_filter = _strip_filter_field(filter, "servicegroup")
+        if host_filter is not None:
+            host_params = compile_filter(host_filter, "hosts")
+        svc_params = compile_filter(filter, "services")
+    be = _backends(backends)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts/totals", params=host_params or None, backends=be),
+        _get_client().get("/services/totals", params=svc_params or None, backends=be),
     )
     return _tool_response({"hosts": hosts, "services": services})
 
@@ -3743,6 +3813,15 @@ TOOL_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_HOST_STATS,
             filter=filter_schema_property(FIELDS_HOST_STATS),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_totals",
+        fn=thruk_totals,
+        schema=build_tool_schema(
+            FIELDS_TOTALS,
+            filter=filter_schema_property(FIELDS_TOTALS),
             backends=_BACKENDS,
         ),
     ),
