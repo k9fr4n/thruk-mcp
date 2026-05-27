@@ -36,6 +36,7 @@ from .constants import HOST_STATE_INT, SVC_STATE_INT
 __all__ = [
     "FIELDS_ALERTS",
     "FIELDS_HOSTS",
+    "FIELDS_HOST_STATS",
     "FIELDS_LOGS",
     "FIELDS_NOISY_HOSTS",
     "FIELDS_NOISY_SERVICES",
@@ -84,6 +85,9 @@ FIELDS_NOTIFICATIONS: frozenset[str] = frozenset(
 FIELDS_PROBLEMS: frozenset[str] = frozenset({"state", "hostgroup", "custom_var", "host_custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
+#: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.
+#: ``servicegroup`` is intentionally excluded (meaningless on ``/hosts/stats``).
+FIELDS_HOST_STATS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})

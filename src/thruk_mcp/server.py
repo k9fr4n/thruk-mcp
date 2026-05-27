@@ -66,6 +66,7 @@ from .constants import (
 )
 from .filters import (
     FIELDS_ALERTS,
+    FIELDS_HOST_STATS,
     FIELDS_HOSTS,
     FIELDS_LOGS,
     FIELDS_NOISY_HOSTS,
@@ -744,12 +745,34 @@ async def thruk_problems(
     return _tool_response(result)
 
 
-async def thruk_stats(backends: str | None = None) -> str:
-    """Aggregated host/service statistics."""
+async def thruk_stats(
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """Aggregated host/service statistics.
+
+    Optional ``filter`` is a structured AND/OR tree scoping the underlying
+    ``/hosts/stats`` and ``/services/stats`` calls. Supported fields:
+    ``hostgroup``, ``custom_var`` (e.g. ``{"var":"ENV","val":"prod"}``).
+
+    The filter is compiled twice — once with ``context='hosts'`` (yielding
+    ``groups[gte]=`` on ``/hosts/stats``) and once with ``context='services'``
+    (yielding ``host_groups[gte]=`` on ``/services/stats``). The output
+    shape is unchanged from the unfiltered call (issue #221).
+    """
+    host_params: dict[str, Any] = {}
+    svc_params: dict[str, Any] = {}
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_HOST_STATS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_params = compile_filter(filter, "hosts")
+        svc_params = compile_filter(filter, "services")
     be = _backends(backends)
     hosts, services = await asyncio.gather(
-        _get_client().get("/hosts/stats", backends=be),
-        _get_client().get("/services/stats", backends=be),
+        _get_client().get("/hosts/stats", params=host_params or None, backends=be),
+        _get_client().get("/services/stats", params=svc_params or None, backends=be),
     )
     return _tool_response({"hosts": hosts, "services": services})
 
@@ -3714,7 +3737,15 @@ TOOL_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
-    ToolSpec(name="thruk_stats", fn=thruk_stats, schema=_s(backends=_BACKENDS)),
+    ToolSpec(
+        name="thruk_stats",
+        fn=thruk_stats,
+        schema=build_tool_schema(
+            FIELDS_HOST_STATS,
+            filter=filter_schema_property(FIELDS_HOST_STATS),
+            backends=_BACKENDS,
+        ),
+    ),
     # ---------------------------------------------------------------- downtime / comment
     ToolSpec(
         name="thruk_list_downtimes",

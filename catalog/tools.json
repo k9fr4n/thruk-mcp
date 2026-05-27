@@ -758,9 +758,137 @@
   },
   {
     "name": "thruk_stats",
-    "description": "Aggregated host/service statistics.",
+    "description": "Aggregated host/service statistics. Optional `filter` (structured AND/OR tree) scopes both /hosts/stats and /services/stats. Fields: hostgroup, custom_var.",
     "inputSchema": {
+      "type": "object",
+      "$defs": {
+        "FilterLeaf": {
+          "type": "object",
+          "required": [
+            "type",
+            "field",
+            "op",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "leaf"
+            },
+            "field": {
+              "type": "string",
+              "enum": [
+                "custom_var",
+                "hostgroup"
+              ],
+              "description": "The monitoring attribute to filter on."
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq",
+                "gte",
+                "in",
+                "lte",
+                "neq",
+                "regex"
+              ],
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+            },
+            "value": {
+              "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "var"
+                  ],
+                  "properties": {
+                    "var": {
+                      "type": "string",
+                      "description": "Custom variable name (auto-uppercased)."
+                    },
+                    "val": {
+                      "type": "string",
+                      "description": "Expected value."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "FilterGroup": {
+          "type": "object",
+          "required": [
+            "type",
+            "operator",
+            "conditions"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "group"
+            },
+            "operator": {
+              "type": "string",
+              "enum": [
+                "and",
+                "or"
+              ],
+              "description": "Logical operator applied to all conditions."
+            },
+            "conditions": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Sub-conditions (leaf or nested group nodes).",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/FilterLeaf"
+                  },
+                  {
+                    "$ref": "#/$defs/FilterGroup"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
       "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterLeaf"
+            },
+            {
+              "$ref": "#/$defs/FilterGroup"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: hostgroup, custom_var. Compiled twice -- groups[gte] on /hosts/stats, host_groups[gte] on /services/stats; custom_var -> _VARNAME on both."
+        },
         "backends": {
           "anyOf": [
             {
@@ -771,11 +899,9 @@
             }
           ],
           "default": null,
-          "title": "Backends"
+          "description": "Comma-separated backend names (sites). Omit for all backends."
         }
-      },
-      "title": "thruk_statsArguments",
-      "type": "object"
+      }
     }
   },
   {
