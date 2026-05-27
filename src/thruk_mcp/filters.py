@@ -43,6 +43,7 @@ __all__ = [
     "FIELDS_NOTIFICATIONS",
     "FIELDS_PROBLEMS",
     "FIELDS_SERVICES",
+    "FIELDS_TOTALS",
     "FilterError",
     "build_tool_schema",
     "compile_filter",
@@ -88,6 +89,10 @@ FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup
 #: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.
 #: ``servicegroup`` is intentionally excluded (meaningless on ``/hosts/stats``).
 FIELDS_HOST_STATS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
+#: ``thruk_totals`` scopes ``/hosts/totals`` + ``/services/totals``. ``servicegroup``
+#: is accepted but only forwarded to ``/services/totals`` (it has no meaning on
+#: ``/hosts/totals`` and is stripped from the host-side params at compile time).
+FIELDS_TOTALS: frozenset[str] = frozenset({"hostgroup", "servicegroup", "custom_var"})
 
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})

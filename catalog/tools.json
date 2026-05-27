@@ -905,6 +905,94 @@
     }
   },
   {
+    "name": "thruk_totals",
+    "description": "Compact host+service counts (16 fields vs ~100 from thruk_stats). Calls /hosts/totals and /services/totals concurrently. Optional `filter` (AND/OR tree). Fields: hostgroup, servicegroup, custom_var. servicegroup is only forwarded to /services/totals.",
+    "inputSchema": {
+      "type": "object",
+      "$defs": {
+        "FilterLeaf": {
+          "type": "object",
+          "required": ["type", "field", "op", "value"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {"const": "leaf"},
+            "field": {
+              "type": "string",
+              "enum": ["custom_var", "hostgroup", "servicegroup"],
+              "description": "The monitoring attribute to filter on."
+            },
+            "op": {
+              "type": "string",
+              "enum": ["eq", "gte", "in", "lte", "neq", "regex"],
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+            },
+            "value": {
+              "description": "Comparison value. Use a list for op='in'. For custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
+              "oneOf": [
+                {"type": "string"},
+                {"type": "integer"},
+                {"type": "number"},
+                {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                {
+                  "type": "object",
+                  "required": ["var"],
+                  "properties": {
+                    "var": {"type": "string", "description": "Custom variable name (auto-uppercased)."},
+                    "val": {"type": "string", "description": "Expected value."}
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "FilterGroup": {
+          "type": "object",
+          "required": ["type", "operator", "conditions"],
+          "additionalProperties": false,
+          "properties": {
+            "type": {"const": "group"},
+            "operator": {
+              "type": "string",
+              "enum": ["and", "or"],
+              "description": "Logical operator applied to all conditions."
+            },
+            "conditions": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Sub-conditions (leaf or nested group nodes).",
+              "items": {
+                "oneOf": [
+                  {"$ref": "#/$defs/FilterLeaf"},
+                  {"$ref": "#/$defs/FilterGroup"}
+                ]
+              }
+            }
+          }
+        }
+      },
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {"$ref": "#/$defs/FilterLeaf"},
+            {"$ref": "#/$defs/FilterGroup"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: hostgroup, servicegroup, custom_var. hostgroup -> groups[gte] on /hosts/totals and host_groups[gte] on /services/totals; servicegroup -> groups[gte] on /services/totals only (stripped from host-side params); custom_var -> _VARNAME on both."
+        },
+        "backends": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_list_downtimes",
     "description": "List scheduled downtimes.",
     "inputSchema": {
