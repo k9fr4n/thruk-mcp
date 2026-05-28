@@ -72,6 +72,7 @@ from .filters import (
     FIELDS_NOISY_HOSTS,
     FIELDS_NOISY_SERVICES,
     FIELDS_NOTIFICATIONS,
+    FIELDS_OLDEST_PROBLEMS,
     FIELDS_PROBLEM_COUNTS,
     FIELDS_PROBLEMS,
     FIELDS_SERVICES,
@@ -3009,6 +3010,7 @@ async def _delete_downtimes_by_host_comment(
 
 async def thruk_oldest_problems(
     limit: int = 20,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Unhandled problems sorted by age (oldest first).
@@ -3020,9 +3022,17 @@ async def thruk_oldest_problems(
 
     Returns a flat list of ``{host, service, state, since, duration_human}``
     (at most ``limit`` items, default 20).
+
+    Optional ``filter`` is a structured AND/OR tree scoping both underlying
+    ``/hosts`` and ``/services`` calls. Supported fields (see issue #226):
+    ``hostgroup`` (``groups[gte]=`` on hosts, ``host_groups[gte]=`` on
+    services) and ``custom_var`` (``_VARNAME=value`` on both). ``state`` and
+    ``host`` are intentionally not exposed — the tool is already constrained
+    to non-OK states and per-host filtering would duplicate
+    ``thruk_list_hosts``.
     """
     now = _now_utc_epoch()
-    host_params = {
+    host_params: dict[str, Any] = {
         "state[gte]": 1,
         "acknowledged": 0,
         "scheduled_downtime_depth": 0,
@@ -3030,7 +3040,7 @@ async def thruk_oldest_problems(
         "columns": "name,state,last_state_change,peer_name",
         "limit": limit,
     }
-    svc_params = {
+    svc_params: dict[str, Any] = {
         "state[gte]": 1,
         "acknowledged": 0,
         "scheduled_downtime_depth": 0,
@@ -3038,6 +3048,13 @@ async def thruk_oldest_problems(
         "columns": "host_name,description,state,last_state_change,peer_name",
         "limit": limit,
     }
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_OLDEST_PROBLEMS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_params.update(compile_filter(filter, "hosts"))
+        svc_params.update(compile_filter(filter, "services"))
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts", params=host_params, backends=be),
@@ -4268,8 +4285,10 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_oldest_problems",
         fn=thruk_oldest_problems,
-        schema=_s(
+        schema=build_tool_schema(
+            FIELDS_OLDEST_PROBLEMS,
             limit=_int("Maximum number of results (default 20).", default=20),
+            filter=filter_schema_property(FIELDS_OLDEST_PROBLEMS),
             backends=_BACKENDS,
         ),
     ),

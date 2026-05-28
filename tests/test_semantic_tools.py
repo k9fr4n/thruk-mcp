@@ -114,6 +114,100 @@ async def test_oldest_problems_query_params(mocked_server) -> None:
 
 
 # ---------------------------------------------------------------------------
+# thruk_oldest_problems — filter support (issue #226)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oldest_problems_no_filter_unchanged(mocked_server) -> None:
+    """Without ``filter`` the call must not emit any group/custom_var param.
+
+    Regression guard: before issue #226 the tool had no filter parameter at
+    all; the unfiltered behaviour must remain bit-for-bit identical.
+    """
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    svc_route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_oldest_problems", {"limit": 5})
+
+    host_params = host_route.calls.last.request.url.params
+    svc_params = svc_route.calls.last.request.url.params
+    for params in (host_params, svc_params):
+        assert "groups[gte]" not in params
+        assert "host_groups[gte]" not in params
+        # No custom-var key leaked either.
+        assert not any(k.startswith("_") for k in params)
+
+
+@pytest.mark.asyncio
+async def test_oldest_problems_hostgroup_filter(mocked_server) -> None:
+    """``hostgroup`` filter → ``groups[gte]`` on hosts, ``host_groups[gte]`` on services."""
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    svc_route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+
+    await mcp.call_tool(
+        "thruk_oldest_problems",
+        {
+            "limit": 5,
+            "filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "prod"},
+        },
+    )
+
+    host_params = host_route.calls.last.request.url.params
+    svc_params = svc_route.calls.last.request.url.params
+    assert host_params["groups[gte]"] == "prod"
+    assert svc_params["host_groups[gte]"] == "prod"
+    # Pre-existing constraints are preserved.
+    assert host_params["acknowledged"] == "0"
+    assert svc_params["state[gte]"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_oldest_problems_custom_var_filter(mocked_server) -> None:
+    """``custom_var`` filter → ``_VARNAME`` forwarded to both hosts + services queries."""
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    svc_route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+
+    await mcp.call_tool(
+        "thruk_oldest_problems",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "ENV", "val": "prod"},
+            },
+        },
+    )
+
+    host_params = host_route.calls.last.request.url.params
+    svc_params = svc_route.calls.last.request.url.params
+    assert host_params["_ENV"] == "prod"
+    assert svc_params["_ENV"] == "prod"
+
+
+@pytest.mark.asyncio
+async def test_oldest_problems_invalid_filter_field(mocked_server) -> None:
+    """Unsupported field (e.g. ``state``) → structured error, no HTTP call."""
+    mcp, router = mocked_server
+    host_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    svc_route = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_oldest_problems",
+        {"filter": {"type": "leaf", "field": "state", "op": "eq", "value": "down"}},
+    )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "state" in payload["error"]
+    assert not host_route.called
+    assert not svc_route.called
+
+
+# ---------------------------------------------------------------------------
 # thruk_unacked_critical
 # ---------------------------------------------------------------------------
 

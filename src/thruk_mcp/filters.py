@@ -41,6 +41,7 @@ __all__ = [
     "FIELDS_NOISY_HOSTS",
     "FIELDS_NOISY_SERVICES",
     "FIELDS_NOTIFICATIONS",
+    "FIELDS_OLDEST_PROBLEMS",
     "FIELDS_PROBLEMS",
     "FIELDS_PROBLEM_COUNTS",
     "FIELDS_SERVICES",
@@ -85,6 +86,11 @@ FIELDS_NOTIFICATIONS: frozenset[str] = frozenset(
     {"host", "service", "state", "contact", "hostgroup", "custom_var", "since", "until"}
 )
 FIELDS_PROBLEMS: frozenset[str] = frozenset({"state", "hostgroup", "custom_var", "host_custom_var"})
+#: ``thruk_oldest_problems`` scopes the unhandled-problem view across
+#: ``/hosts`` + ``/services``. ``state`` and ``host`` are intentionally excluded:
+#: the tool is already constrained to non-OK states, and per-host filtering
+#: would duplicate ``thruk_list_hosts``. See issue #226.
+FIELDS_OLDEST_PROBLEMS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
 #: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.
