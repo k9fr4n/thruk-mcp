@@ -66,6 +66,7 @@ from .constants import (
 )
 from .filters import (
     FIELDS_ALERTS,
+    FIELDS_DOWNTIMES,
     FIELDS_HOST_STATS,
     FIELDS_HOSTS,
     FIELDS_LOGS,
@@ -852,7 +853,7 @@ async def thruk_totals(
 
 
 async def thruk_list_downtimes(
-    host: str | None = None,
+    filter: dict[str, Any] | None = None,
     active_only: bool = True,
     limit: int = 100,
     offset: int = 0,
@@ -860,16 +861,37 @@ async def thruk_list_downtimes(
     columns: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """List scheduled downtimes."""
+    """List scheduled downtimes.
+
+    ``filter`` fields: ``host`` (forwarded directly to ``/downtimes`` as
+    ``host_name[...]=``), ``hostgroup`` and ``custom_var`` (resolved via a
+    secondary ``/hosts`` lookup and applied as ``host_name[regex]=...``).
+    OR on ``hostgroup`` / ``custom_var`` is not supported (same constraint
+    as the log-family tools). See issue #229.
+    """
+    # issue #229: replace the bare ``host: str | None`` param with the
+    # structured ``filter`` tree shared by the rest of the read tools.
+    # Pre-fix the only way to scope downtimes by hostgroup was to fetch
+    # everything and filter client-side; ``_resolve_log_filter`` reuses the
+    # ``/hosts`` lookup pattern to compile hostgroup/custom_var filters into
+    # a single ``host_name[regex]=...`` parameter.
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_DOWNTIMES, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
     params = _list_params(limit, offset, sort, columns, DEFAULT_DOWNTIME_COLUMNS)
-    if host:
-        params["host_name"] = host
+    params.update(extra)
     if active_only:
         now = _now_utc_epoch()
         params["start_time[lte]"] = now
         params["end_time[gte]"] = now
     data = await _get_client().get("/downtimes", params=params, backends=_backends(backends))
-    return _tool_response(data)
+    warnings_: list[str] = []
+    if host_truncated:
+        warnings_.append(
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    return _tool_response(data, warnings_ or None)
 
 
 async def thruk_list_comments(
@@ -3926,8 +3948,9 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_list_downtimes",
         fn=thruk_list_downtimes,
-        schema=_s(
-            host=_OPT_STR,
+        schema=build_tool_schema(
+            FIELDS_DOWNTIMES,
+            filter=filter_schema_property(FIELDS_DOWNTIMES),
             active_only=_bool(default=True),
             limit=_int(default=100),
             offset=_int(default=0),
