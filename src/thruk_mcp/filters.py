@@ -42,6 +42,7 @@ __all__ = [
     "FIELDS_NOISY_SERVICES",
     "FIELDS_NOTIFICATIONS",
     "FIELDS_PROBLEMS",
+    "FIELDS_PROBLEM_COUNTS",
     "FIELDS_SERVICES",
     "FIELDS_TOTALS",
     "FilterError",
@@ -93,6 +94,11 @@ FIELDS_HOST_STATS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 #: is accepted but only forwarded to ``/services/totals`` (it has no meaning on
 #: ``/hosts/totals`` and is stripped from the host-side params at compile time).
 FIELDS_TOTALS: frozenset[str] = frozenset({"hostgroup", "servicegroup", "custom_var"})
+#: ``thruk_problem_counts`` shares the same filter contract as ``thruk_totals``
+#: — it is a problem-state-only projection over ``/hosts/totals`` +
+#: ``/services/totals``. Kept as a distinct constant so callers / catalog
+#: generators can advertise the tool's accepted fields independently.
+FIELDS_PROBLEM_COUNTS: frozenset[str] = FIELDS_TOTALS
 
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})

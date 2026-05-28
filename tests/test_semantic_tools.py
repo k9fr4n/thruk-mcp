@@ -1,5 +1,8 @@
 """Tests for semantic problem-management tools (issue #52):
-thruk_oldest_problems, thruk_unacked_critical, thruk_stale_acks, thruk_problems_by_hostgroup.
+thruk_oldest_problems, thruk_unacked_critical, thruk_stale_acks.
+
+Note: ``thruk_problems_by_hostgroup`` was removed in issue #223 and replaced by
+``thruk_problem_counts`` (see ``test_thruk_problem_counts.py``).
 """
 
 from __future__ import annotations
@@ -233,87 +236,6 @@ async def test_stale_acks_threshold_param(mocked_server) -> None:
 
     lte = int(route.calls.last.request.url.params["entry_time[lte]"])
     assert before - 14 * 86400 - 2 <= lte <= after - 14 * 86400 + 2
-
-
-# ---------------------------------------------------------------------------
-# thruk_problems_by_hostgroup
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_problems_by_hostgroup_basic(mocked_server) -> None:
-    """Groups with 0 problems excluded; remaining sorted by severity (DOWN > CRIT > WARN)."""
-    mcp, router = mocked_server
-
-    route = router.get("https://thruk.test/r/hostgroups").mock(
-        return_value=ok(
-            [
-                {
-                    "name": "hg-web",
-                    "alias": "Web",
-                    "num_hosts_down": 2,
-                    "num_hosts_unreachable": 0,
-                    "num_services_warn": 1,
-                    "num_services_crit": 3,
-                    "num_services_unknown": 0,
-                },
-                {
-                    "name": "hg-db",
-                    "alias": "DB",
-                    "num_hosts_down": 0,
-                    "num_hosts_unreachable": 0,
-                    "num_services_warn": 0,
-                    "num_services_crit": 0,
-                    "num_services_unknown": 0,
-                },
-                {
-                    "name": "hg-app",
-                    "alias": "App",
-                    "num_hosts_down": 0,
-                    "num_hosts_unreachable": 0,
-                    "num_services_warn": 5,
-                    "num_services_crit": 1,
-                    "num_services_unknown": 0,
-                },
-            ]
-        )
-    )
-
-    result = await mcp.call_tool("thruk_problems_by_hostgroup", {})
-    assert route.called
-    assert "num_hosts_down" in route.calls.last.request.url.params["columns"]
-
-    payload = json.loads(result[0].text)
-    names = [r["hostgroup"] for r in payload]
-    assert "hg-db" not in names
-    assert len(payload) == 2
-    assert payload[0]["hostgroup"] == "hg-web"
-    assert payload[0]["hosts_down"] == 2
-    assert payload[0]["services_crit"] == 3
-    assert payload[1]["hostgroup"] == "hg-app"
-
-
-@pytest.mark.asyncio
-async def test_problems_by_hostgroup_empty(mocked_server) -> None:
-    """All-green infra returns empty list."""
-    mcp, router = mocked_server
-    router.get("https://thruk.test/r/hostgroups").mock(
-        return_value=ok(
-            [
-                {
-                    "name": "hg-ok",
-                    "alias": "All good",
-                    "num_hosts_down": 0,
-                    "num_hosts_unreachable": 0,
-                    "num_services_warn": 0,
-                    "num_services_crit": 0,
-                    "num_services_unknown": 0,
-                }
-            ]
-        )
-    )
-    result = await mcp.call_tool("thruk_problems_by_hostgroup", {})
-    assert json.loads(result[0].text) == []
 
 
 # ---------------------------------------------------------------------------
