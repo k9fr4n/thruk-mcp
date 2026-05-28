@@ -72,6 +72,7 @@ from .filters import (
     FIELDS_NOISY_HOSTS,
     FIELDS_NOISY_SERVICES,
     FIELDS_NOTIFICATIONS,
+    FIELDS_PROBLEM_COUNTS,
     FIELDS_PROBLEMS,
     FIELDS_SERVICES,
     FIELDS_TOTALS,
@@ -3181,49 +3182,81 @@ async def thruk_stale_acks(
     return _tool_response(rows)
 
 
-async def thruk_problems_by_hostgroup(
+#: Problem-state subset of ``/hosts/totals`` returned by :func:`thruk_problem_counts`.
+_HOST_PROBLEM_KEYS: tuple[str, ...] = (
+    "down",
+    "unreachable",
+    "down_and_unhandled",
+    "unreachable_and_unhandled",
+)
+#: Problem-state subset of ``/services/totals`` returned by :func:`thruk_problem_counts`.
+_SVC_PROBLEM_KEYS: tuple[str, ...] = (
+    "warning",
+    "critical",
+    "unknown",
+    "warning_and_unhandled",
+    "critical_and_unhandled",
+    "unknown_and_unhandled",
+)
+
+
+def _project_problem_counts(payload: Any, keys: tuple[str, ...]) -> dict[str, int]:
+    """Project a ``/totals`` response down to the problem-state keys.
+
+    Missing keys default to ``0`` so the response shape stays stable when
+    Thruk omits zero-valued fields. Non-dict payloads (the empty-backend
+    edge case) collapse to an all-zero dict.
+    """
+    src = payload if isinstance(payload, dict) else {}
+    return {k: int(src.get(k) or 0) for k in keys}
+
+
+async def thruk_problem_counts(
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
-    """Problem count aggregated per hostgroup.
+    """Flat aggregate of unhealthy-state counts across hosts and services.
 
-    Returns ``[{hostgroup, alias, hosts_down, services_crit, services_warn,
-    services_unknown}]`` sorted by severity (DOWN > CRIT > WARN). Only groups
-    with at least one problem are included.
+    Generic replacement for the old ``thruk_problems_by_hostgroup`` —
+    rather than hard-coding the grouping dimension in the tool name, this
+    tool exposes a structured ``filter`` and returns a stable flat shape
+    suitable for any scope (hostgroup, servicegroup, custom_var, or no
+    filter at all = global).
+
+    Calls ``/hosts/totals`` and ``/services/totals`` concurrently and
+    projects the response down to the non-OK / non-pending fields only:
+
+    - hosts: ``down``, ``unreachable``, ``down_and_unhandled``,
+      ``unreachable_and_unhandled``
+    - services: ``warning``, ``critical``, ``unknown``,
+      ``warning_and_unhandled``, ``critical_and_unhandled``,
+      ``unknown_and_unhandled``
+
+    Filter contract is identical to :func:`thruk_totals` (same fields,
+    same param forwarding rules — see :data:`FIELDS_PROBLEM_COUNTS`).
     """
-    params: dict[str, Any] = {
-        "columns": (
-            "name,alias,"
-            "num_hosts_down,num_hosts_unreachable,"
-            "num_services_warn,num_services_crit,num_services_unknown"
-        ),
-    }
-    data = await _get_client().get("/hostgroups", params=params, backends=_backends(backends))
-
-    rows: list[dict[str, Any]] = []
-    for hg in data or []:
-        hosts_down = int(hg.get("num_hosts_down") or 0) + int(hg.get("num_hosts_unreachable") or 0)
-        services_crit = int(hg.get("num_services_crit") or 0)
-        services_warn = int(hg.get("num_services_warn") or 0)
-        services_unknown = int(hg.get("num_services_unknown") or 0)
-        total = hosts_down + services_crit + services_warn + services_unknown
-        if total == 0:
-            continue
-        rows.append(
-            {
-                "hostgroup": hg.get("name", ""),
-                "alias": hg.get("alias", ""),
-                "hosts_down": hosts_down,
-                "services_crit": services_crit,
-                "services_warn": services_warn,
-                "services_unknown": services_unknown,
-            }
-        )
-
-    rows.sort(
-        key=lambda r: r["hosts_down"] * 10000 + r["services_crit"] * 100 + r["services_warn"],
-        reverse=True,
+    host_params: dict[str, Any] = {}
+    svc_params: dict[str, Any] = {}
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_PROBLEM_COUNTS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_filter = _strip_filter_field(filter, "servicegroup")
+        if host_filter is not None:
+            host_params = compile_filter(host_filter, "hosts")
+        svc_params = compile_filter(filter, "services")
+    be = _backends(backends)
+    hosts, services = await asyncio.gather(
+        _get_client().get("/hosts/totals", params=host_params or None, backends=be),
+        _get_client().get("/services/totals", params=svc_params or None, backends=be),
     )
-    return _tool_response(rows)
+    return _tool_response(
+        {
+            "hosts": _project_problem_counts(hosts, _HOST_PROBLEM_KEYS),
+            "services": _project_problem_counts(services, _SVC_PROBLEM_KEYS),
+        }
+    )
 
 
 async def thruk_concurrent_failures(
@@ -4260,9 +4293,13 @@ TOOL_REGISTRY: list[ToolSpec] = [
         ),
     ),
     ToolSpec(
-        name="thruk_problems_by_hostgroup",
-        fn=thruk_problems_by_hostgroup,
-        schema=_s(backends=_BACKENDS),
+        name="thruk_problem_counts",
+        fn=thruk_problem_counts,
+        schema=build_tool_schema(
+            FIELDS_PROBLEM_COUNTS,
+            filter=filter_schema_property(FIELDS_PROBLEM_COUNTS),
+            backends=_BACKENDS,
+        ),
     ),
     # -------------------------------------------------- concurrent failure detection (issue #54)
     ToolSpec(
