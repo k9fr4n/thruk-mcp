@@ -103,12 +103,13 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 49 MCP Tools
+### 50 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
 `thruk_list_hostgroups`, `thruk_list_servicegroups`, `thruk_list_contacts`, `thruk_get_contact`,
-`thruk_problems`, `thruk_stats`, `thruk_sites`.
+`thruk_problems`, `thruk_stats`, `thruk_totals` (compact 16-field host+service totals, faster
+than `thruk_stats`), `thruk_sites`.
 
 **Read — history & comments**
 `thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`, `thruk_recent_events`,
@@ -123,7 +124,8 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 `thruk_oldest_problems` (unhandled problems sorted by age, oldest first),
 `thruk_unacked_critical` (CRITICAL/DOWN not acknowledged for > N minutes),
 `thruk_stale_acks` (acknowledgements older than N days — forgotten problems),
-`thruk_problems_by_hostgroup` (problem counts aggregated per hostgroup).
+`thruk_problem_counts` (flat aggregate of unhealthy-state counts, filterable by hostgroup,
+custom vars or any structured filter — replaces the former thruk_problems_by_hostgroup).
 
 **Read — analytics**
 `thruk_alert_heatmap` (alert counts bucketed by time, useful for spotting recurring
