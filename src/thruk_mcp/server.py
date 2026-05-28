@@ -66,6 +66,7 @@ from .constants import (
 )
 from .filters import (
     FIELDS_ALERTS,
+    FIELDS_COMMENTS,
     FIELDS_DOWNTIMES,
     FIELDS_HOST_STATS,
     FIELDS_HOSTS,
@@ -895,19 +896,40 @@ async def thruk_list_downtimes(
 
 
 async def thruk_list_comments(
-    host: str | None = None,
+    filter: dict[str, Any] | None = None,
     limit: int = 100,
     offset: int = 0,
     sort: str = "-entry_time",
     columns: str | None = None,
     backends: str | None = None,
 ) -> str:
-    """List comments (acknowledgements appear here too)."""
+    """List comments (acknowledgements appear here too).
+
+    ``filter`` fields: ``host`` (forwarded directly to ``/comments`` as
+    ``host_name[...]=``), ``hostgroup`` and ``custom_var`` (resolved via a
+    secondary ``/hosts`` lookup and applied as ``host_name[regex]=...``).
+    OR on ``hostgroup`` / ``custom_var`` is not supported (same constraint
+    as the log-family tools). See issue #230.
+    """
+    # issue #230: replace the bare ``host: str | None`` param with the
+    # structured ``filter`` tree shared by the rest of the read tools.
+    # Pre-fix the only way to scope comments by hostgroup was to fetch
+    # everything and filter client-side; ``_resolve_log_filter`` reuses the
+    # ``/hosts`` lookup pattern to compile hostgroup/custom_var filters into
+    # a single ``host_name[regex]=...`` parameter.
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_COMMENTS, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
     params = _list_params(limit, offset, sort, columns, DEFAULT_COMMENT_COLUMNS)
-    if host:
-        params["host_name"] = host
+    params.update(extra)
     data = await _get_client().get("/comments", params=params, backends=_backends(backends))
-    return _tool_response(data)
+    warnings_: list[str] = []
+    if host_truncated:
+        warnings_.append(
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    return _tool_response(data, warnings_ or None)
 
 
 async def thruk_sites() -> str:
@@ -3967,8 +3989,9 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_list_comments",
         fn=thruk_list_comments,
-        schema=_s(
-            host=_OPT_STR,
+        schema=build_tool_schema(
+            FIELDS_COMMENTS,
+            filter=filter_schema_property(FIELDS_COMMENTS),
             limit=_int(default=100),
             offset=_int(default=0),
             sort=_str(),

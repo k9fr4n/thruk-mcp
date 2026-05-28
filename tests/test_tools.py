@@ -635,10 +635,92 @@ async def test_get_downtime_multi_backend_returns_list_with_warning(mocked_serve
 
 @pytest.mark.asyncio
 async def test_list_comments(mocked_server) -> None:
+    """Case 1 (issue #230): no filter — bare ``/comments`` call.
+
+    Pre-fix, the tool accepted ``host: str | None``; post-fix the bare
+    ``host`` param is gone and callers must pass a structured ``filter``.
+    With no filter the request must contain no ``host_name`` param.
+    """
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
     await mcp.call_tool("thruk_list_comments", {})
     assert route.called
+    p = route.calls.last.request.url.params
+    assert "host_name" not in p
+    assert "host_name[regex]" not in p
+
+
+@pytest.mark.asyncio
+async def test_list_comments_host_filter_eq(mocked_server) -> None:
+    """Case 2 (issue #230): ``host`` leaf is forwarded as ``host_name``.
+
+    Pre-fix, this was the bare ``host="srv01"`` kwarg. Post-fix the same
+    intent is expressed as a filter leaf and produces the same query param.
+    """
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_comments",
+        {"filter": {"type": "leaf", "field": "host", "op": "eq", "value": "srv01"}},
+    )
+    p = route.calls.last.request.url.params
+    assert p["host_name"] == "srv01"
+
+
+@pytest.mark.asyncio
+async def test_list_comments_hostgroup_filter_resolves_via_hosts(mocked_server) -> None:
+    """Case 3 (issue #230): ``hostgroup`` leaf triggers a /hosts lookup.
+
+    The ``/comments`` endpoint exposes neither ``host_groups`` nor
+    custom-variable columns, so hostgroup filters must be resolved by
+    fetching the matching host names from ``/hosts`` and applying them
+    as ``host_name[regex]=...`` on the comments query.
+    """
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "srv01"}, {"name": "srv02"}])
+    )
+    r_cm = router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_comments",
+        {"filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_AGILE"}},
+    )
+    assert r_hosts.called
+    hp = r_hosts.calls.last.request.url.params
+    assert hp["groups[gte]"] == "HG_AGILE"
+    cp = r_cm.calls.last.request.url.params
+    assert "host_name[regex]" in cp
+    regex = cp["host_name[regex]"]
+    assert "srv01" in regex and "srv02" in regex
+
+
+@pytest.mark.asyncio
+async def test_list_comments_custom_var_filter_resolves_via_hosts(mocked_server) -> None:
+    """Case 4 (issue #230): ``custom_var`` leaf uses the same two-step lookup.
+
+    The ``custom_var`` leaf compiles to the ``_VARNAME=`` syntax on the
+    ``/hosts`` query; the resolved host names are then applied on the
+    comments query as ``host_name[regex]=...``.
+    """
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "win01"}]))
+    r_cm = router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_comments",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "KERNEL", "val": "windows"},
+            },
+        },
+    )
+    assert r_hosts.called
+    hp = r_hosts.calls.last.request.url.params
+    assert hp["_KERNEL"] == "windows"
+    cp = r_cm.calls.last.request.url.params
+    assert cp["host_name[regex]"] == "^(win01)$"
 
 
 @pytest.mark.asyncio
