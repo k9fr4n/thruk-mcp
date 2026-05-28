@@ -3290,7 +3290,7 @@
   },
   {
     "name": "thruk_stale_acks",
-    "description": "Acknowledgements older than N days (potentially forgotten). Queries /comments with entry_type=4. Returns [{host, service, ack_author, ack_comment, ack_since_days}] sorted by age descending.",
+    "description": "Acknowledgements older than N days (potentially forgotten). Queries /comments with entry_type=4. Returns [{host, service, ack_author, ack_comment, ack_since_days}] sorted by age descending. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes the review to a perimeter via a concurrent /hosts resolution (host-name intersection).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3303,6 +3303,14 @@
           "type": "integer",
           "default": 100,
           "description": "Maximum number of results (default 100)."
+        },
+        "filter": {
+          "anyOf": [
+            {"type": "object"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
         },
         "backends": {
           "anyOf": [

@@ -427,6 +427,111 @@ async def test_stale_acks_threshold_param(mocked_server) -> None:
 
 
 # ---------------------------------------------------------------------------
+# thruk_stale_acks — filter support (issue #228)
+# ---------------------------------------------------------------------------
+#
+# Before the fix: thruk_stale_acks had no `filter` argument and returned every
+# stale ACK across the infrastructure. In multi-tenant environments, callers
+# could not scope the review to their own perimeter (hostgroup / custom var).
+#
+# After the fix: an optional structured `filter` (fields: hostgroup,
+# custom_var) is forwarded to a concurrent `/hosts` resolution, and the
+# returned host-name set is intersected against the comments rows.
+
+
+@pytest.mark.asyncio
+async def test_stale_acks_no_filter_skips_hosts_call(mocked_server) -> None:
+    """No filter → behave as before: single /comments call, no /hosts lookup."""
+    mcp, router = mocked_server
+    comments_route = router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+    hosts_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_stale_acks", {"min_days": 7})
+
+    assert comments_route.called
+    assert not hosts_route.called
+
+
+@pytest.mark.asyncio
+async def test_stale_acks_hostgroup_filter_forwards_groups_gte(mocked_server) -> None:
+    """hostgroup filter → /hosts call gets `groups[gte]=<name>`; rows are
+    intersected against the resolved host-name set."""
+    mcp, router = mocked_server
+    now = int(time.time())
+    old = now - 20 * 86400
+
+    hosts_route = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "h1", "peer_name": "local"}])
+    )
+    router.get("https://thruk.test/r/comments").mock(
+        return_value=ok(
+            [
+                {
+                    "host_name": "h1",
+                    "service_description": "",
+                    "author": "alice",
+                    "comment": "in scope",
+                    "entry_time": old,
+                    "peer_name": "local",
+                },
+                {
+                    "host_name": "h2",
+                    "service_description": "svc",
+                    "author": "bob",
+                    "comment": "out of scope",
+                    "entry_time": old,
+                    "peer_name": "local",
+                },
+            ]
+        )
+    )
+
+    flt = {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_AGILE"}
+    result = await mcp.call_tool("thruk_stale_acks", {"min_days": 7, "filter": flt})
+
+    assert hosts_route.called
+    assert hosts_route.calls.last.request.url.params["groups[gte]"] == "HG_AGILE"
+
+    payload = json.loads(result[0].text)
+    assert [r["host"] for r in payload] == ["h1"]
+    assert payload[0]["ack_comment"] == "in scope"
+
+
+@pytest.mark.asyncio
+async def test_stale_acks_custom_var_filter_forwards_underscore_var(mocked_server) -> None:
+    """custom_var filter → /hosts call gets `_VARNAME=value`."""
+    mcp, router = mocked_server
+    hosts_route = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+
+    flt = {
+        "type": "leaf",
+        "field": "custom_var",
+        "op": "eq",
+        "value": {"var": "KERNEL", "val": "windows"},
+    }
+    await mcp.call_tool("thruk_stale_acks", {"min_days": 7, "filter": flt})
+
+    assert hosts_route.called
+    assert hosts_route.calls.last.request.url.params["_KERNEL"] == "windows"
+
+
+@pytest.mark.asyncio
+async def test_stale_acks_invalid_filter_returns_error(mocked_server) -> None:
+    """Unknown field (e.g. ``state``) → FilterError surfaced as {'error': ...}."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/comments").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+
+    flt = {"type": "leaf", "field": "state", "op": "eq", "value": "down"}
+    result = await mcp.call_tool("thruk_stale_acks", {"min_days": 7, "filter": flt})
+
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "state" in payload["error"]
+
+
+# ---------------------------------------------------------------------------
 # thruk_concurrent_failures
 # ---------------------------------------------------------------------------
 

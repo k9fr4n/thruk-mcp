@@ -45,6 +45,7 @@ __all__ = [
     "FIELDS_PROBLEMS",
     "FIELDS_PROBLEM_COUNTS",
     "FIELDS_SERVICES",
+    "FIELDS_STALE_ACKS",
     "FIELDS_TOTALS",
     "FIELDS_UNACKED",
     "FilterError",
@@ -97,6 +98,14 @@ FIELDS_OLDEST_PROBLEMS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 #: hardcoded to CRITICAL/DOWN by design. ``host`` is excluded to avoid ambiguity
 #: with the internal host-name resolution logic. See issue #227.
 FIELDS_UNACKED: frozenset[str] = frozenset({"hostgroup", "custom_var"})
+#: ``thruk_stale_acks`` scopes the forgotten-acknowledgement review across the
+#: ``/comments`` endpoint. Since ``/comments`` does not natively accept hostgroup
+#: or custom-variable filters, the matching host set is resolved server-side via
+#: ``/hosts`` and applied as a host-name intersection on the comments rows.
+#: ``state`` and ``host`` are intentionally excluded — the tool is already
+#: constrained to acknowledgement comments and per-host filtering would
+#: duplicate ``thruk_list_comments``. See issue #228.
+FIELDS_STALE_ACKS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
 #: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.

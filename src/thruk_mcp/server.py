@@ -76,6 +76,7 @@ from .filters import (
     FIELDS_PROBLEM_COUNTS,
     FIELDS_PROBLEMS,
     FIELDS_SERVICES,
+    FIELDS_STALE_ACKS,
     FIELDS_TOTALS,
     FIELDS_UNACKED,
     FilterError,
@@ -3175,6 +3176,7 @@ async def thruk_unacked_critical(
 async def thruk_stale_acks(
     min_days: int = 7,
     limit: int = 100,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """Acknowledgements older than N days (potentially forgotten ones).
@@ -3186,6 +3188,14 @@ async def thruk_stale_acks(
 
     Returns ``[{host, service, ack_author, ack_comment, ack_since_days}]``
     sorted by age descending (stalest first).
+
+    Optional ``filter`` is a structured AND/OR tree scoping the review to a
+    given perimeter. Supported fields (see issue #228): ``hostgroup`` and
+    ``custom_var``. Because Thruk's ``/comments`` endpoint does not accept
+    hostgroup / custom-variable filters directly, the matching host set is
+    resolved via a concurrent ``/hosts`` query (``groups[gte]=`` /
+    ``_VARNAME=``) and applied as a host-name intersection on the comments
+    rows.
     """
     now = _now_utc_epoch()
     threshold_ts = now - min_days * 86400
@@ -3197,14 +3207,34 @@ async def thruk_stale_acks(
         "limit": limit,
         "sort": "entry_time",
     }
-    data = await _get_client().get("/comments", params=params, backends=_backends(backends))
+
+    scope_hosts: set[str] | None = None
+    be = _backends(backends)
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_STALE_ACKS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_params: dict[str, Any] = {"columns": "name,peer_name"}
+        host_params.update(compile_filter(filter, "hosts"))
+        # Resolve scope and fetch comments concurrently to avoid extra latency.
+        hosts_resp, data = await asyncio.gather(
+            _get_client().get("/hosts", params=host_params, backends=be),
+            _get_client().get("/comments", params=params, backends=be),
+        )
+        scope_hosts = {h.get("name", "") for h in (hosts_resp or []) if h.get("name")}
+    else:
+        data = await _get_client().get("/comments", params=params, backends=be)
 
     rows: list[dict[str, Any]] = []
     for c in data or []:
+        host_name = c.get("host_name", "")
+        if scope_hosts is not None and host_name not in scope_hosts:
+            continue
         et = int(c.get("entry_time") or 0)
         rows.append(
             {
-                "host": c.get("host_name", ""),
+                "host": host_name,
                 "service": c.get("service_description") or None,
                 "ack_author": c.get("author", ""),
                 "ack_comment": c.get("comment", ""),
@@ -4324,9 +4354,11 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_stale_acks",
         fn=thruk_stale_acks,
-        schema=_s(
+        schema=build_tool_schema(
+            FIELDS_STALE_ACKS,
             min_days=_int("Minimum acknowledgement age in days (default 7).", default=7),
             limit=_int("Maximum number of results (default 100).", default=100),
+            filter=filter_schema_property(FIELDS_STALE_ACKS),
             backends=_BACKENDS,
         ),
     ),
