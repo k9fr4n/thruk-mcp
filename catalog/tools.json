@@ -3222,7 +3222,7 @@
   },
   {
     "name": "thruk_oldest_problems",
-    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending \u2014 oldest first. Returns [{host, service, state, since, duration_human}].",
+    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending \u2014 oldest first. Returns [{host, service, state, since, duration_human}]. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3230,6 +3230,14 @@
           "type": "integer",
           "default": 20,
           "description": "Maximum number of results (default 20)."
+        },
+        "filter": {
+          "anyOf": [
+            {"type": "object"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
         },
         "backends": {
           "anyOf": [
