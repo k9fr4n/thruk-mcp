@@ -475,12 +475,104 @@ async def test_stats(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_list_downtimes(mocked_server) -> None:
+    """Case 1 (issue #229): no filter, active_only defaults to True.
+
+    Pre-fix, the tool accepted ``host: str | None``; post-fix the bare
+    ``host`` param is gone and callers must pass a structured ``filter``.
+    Behaviour with no filter is unchanged: ``start_time[lte]`` /
+    ``end_time[gte]`` are populated from ``active_only=True``.
+    """
     mcp, router = mocked_server
     route = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
-    await mcp.call_tool("thruk_list_downtimes", {"host": "srv01", "active_only": False})
+    await mcp.call_tool("thruk_list_downtimes", {})
+    p = route.calls.last.request.url.params
+    assert "host_name" not in p
+    assert "host_name[regex]" not in p
+    assert "start_time[lte]" in p  # active_only=True default
+    assert "end_time[gte]" in p
+
+
+@pytest.mark.asyncio
+async def test_list_downtimes_host_filter_eq(mocked_server) -> None:
+    """Case 2 (issue #229): ``host`` leaf is forwarded as ``host_name``.
+
+    Pre-fix, this was the bare ``host="srv01"`` kwarg. Post-fix the same
+    intent is expressed as a filter leaf and produces the same query param.
+    """
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_downtimes",
+        {
+            "filter": {"type": "leaf", "field": "host", "op": "eq", "value": "srv01"},
+            "active_only": False,
+        },
+    )
     p = route.calls.last.request.url.params
     assert p["host_name"] == "srv01"
     assert "start_time[lte]" not in p  # active_only=False removes time filter
+
+
+@pytest.mark.asyncio
+async def test_list_downtimes_hostgroup_filter_resolves_via_hosts(mocked_server) -> None:
+    """Case 3 (issue #229): ``hostgroup`` leaf triggers a /hosts lookup.
+
+    The ``/downtimes`` endpoint exposes neither ``host_groups`` nor
+    custom-variable columns, so hostgroup filters must be resolved by
+    fetching the matching host names from ``/hosts`` and applying them
+    as ``host_name[regex]=...`` on the downtimes query.
+    """
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "srv01"}, {"name": "srv02"}])
+    )
+    r_dt = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_downtimes",
+        {
+            "filter": {"type": "leaf", "field": "hostgroup", "op": "eq", "value": "HG_AGILE"},
+            "active_only": False,
+        },
+    )
+    # /hosts called with the compiled hostgroup filter
+    assert r_hosts.called
+    hp = r_hosts.calls.last.request.url.params
+    assert hp["groups[gte]"] == "HG_AGILE"
+    # /downtimes invoked with the resulting host_name[regex] intersection
+    dp = r_dt.calls.last.request.url.params
+    assert "host_name[regex]" in dp
+    regex = dp["host_name[regex]"]
+    assert "srv01" in regex and "srv02" in regex
+
+
+@pytest.mark.asyncio
+async def test_list_downtimes_custom_var_filter_resolves_via_hosts(mocked_server) -> None:
+    """Case 4 (issue #229): ``custom_var`` leaf uses the same two-step lookup.
+
+    The ``custom_var`` leaf compiles to the ``_VARNAME=`` syntax on the
+    ``/hosts`` query; the resolved host names are then applied on the
+    downtimes query as ``host_name[regex]=...``.
+    """
+    mcp, router = mocked_server
+    r_hosts = router.get("https://thruk.test/r/hosts").mock(return_value=ok([{"name": "win01"}]))
+    r_dt = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
+    await mcp.call_tool(
+        "thruk_list_downtimes",
+        {
+            "filter": {
+                "type": "leaf",
+                "field": "custom_var",
+                "op": "eq",
+                "value": {"var": "KERNEL", "val": "windows"},
+            },
+            "active_only": False,
+        },
+    )
+    assert r_hosts.called
+    hp = r_hosts.calls.last.request.url.params
+    assert hp["_KERNEL"] == "windows"
+    dp = r_dt.calls.last.request.url.params
+    assert dp["host_name[regex]"] == "^(win01)$"
 
 
 @pytest.mark.asyncio

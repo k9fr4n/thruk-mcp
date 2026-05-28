@@ -35,6 +35,7 @@ from .constants import HOST_STATE_INT, SVC_STATE_INT
 
 __all__ = [
     "FIELDS_ALERTS",
+    "FIELDS_DOWNTIMES",
     "FIELDS_HOSTS",
     "FIELDS_HOST_STATS",
     "FIELDS_LOGS",
@@ -107,6 +108,14 @@ FIELDS_UNACKED: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 #: duplicate ``thruk_list_comments``. See issue #228.
 FIELDS_STALE_ACKS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
+#: ``thruk_list_downtimes`` filters scheduled downtimes by host scope. The
+#: ``/downtimes`` endpoint exposes ``host_name`` natively but not
+#: ``host_groups`` or custom-variable columns; ``hostgroup`` / ``custom_var``
+#: leaves are therefore resolved via a secondary ``/hosts`` lookup and applied
+#: as ``host_name[regex]=...``. ``state`` and ``service`` are intentionally
+#: excluded — downtimes are not state-bearing entities and per-service
+#: downtimes are addressed by ``thruk_get_downtime`` / writes. See issue #229.
+FIELDS_DOWNTIMES: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
 #: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.
 #: ``servicegroup`` is intentionally excluded (meaningless on ``/hosts/stats``).
