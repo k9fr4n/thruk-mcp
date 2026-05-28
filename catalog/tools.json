@@ -3256,7 +3256,7 @@
   },
   {
     "name": "thruk_unacked_critical",
-    "description": "CRITICAL services and DOWN/UNREACHABLE hosts not acknowledged for more than N minutes. Returns [{host, service, state, duration_minutes}] sorted by duration descending.",
+    "description": "CRITICAL services and DOWN/UNREACHABLE hosts not acknowledged for more than N minutes. Returns [{host, service, state, duration_minutes}] sorted by duration descending. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3264,6 +3264,14 @@
           "type": "integer",
           "default": 60,
           "description": "Minimum unacknowledged duration in minutes (default 60)."
+        },
+        "filter": {
+          "anyOf": [
+            {"type": "object"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
         },
         "backends": {
           "anyOf": [

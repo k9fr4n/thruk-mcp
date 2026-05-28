@@ -46,6 +46,7 @@ __all__ = [
     "FIELDS_PROBLEM_COUNTS",
     "FIELDS_SERVICES",
     "FIELDS_TOTALS",
+    "FIELDS_UNACKED",
     "FilterError",
     "build_tool_schema",
     "compile_filter",
@@ -91,6 +92,11 @@ FIELDS_PROBLEMS: frozenset[str] = frozenset({"state", "hostgroup", "custom_var",
 #: the tool is already constrained to non-OK states, and per-host filtering
 #: would duplicate ``thruk_list_hosts``. See issue #226.
 FIELDS_OLDEST_PROBLEMS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
+#: ``thruk_unacked_critical`` scopes the unacknowledged CRITICAL/DOWN view across
+#: ``/hosts`` + ``/services``. ``state`` is intentionally excluded: the tool is
+#: hardcoded to CRITICAL/DOWN by design. ``host`` is excluded to avoid ambiguity
+#: with the internal host-name resolution logic. See issue #227.
+FIELDS_UNACKED: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 FIELDS_NOISY_SERVICES: frozenset[str] = frozenset({"host", "service", "hostgroup", "custom_var"})
 #: ``thruk_stats`` only supports scope filters on ``/hosts/stats`` + ``/services/stats``.

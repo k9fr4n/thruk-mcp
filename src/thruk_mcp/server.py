@@ -77,6 +77,7 @@ from .filters import (
     FIELDS_PROBLEMS,
     FIELDS_SERVICES,
     FIELDS_TOTALS,
+    FIELDS_UNACKED,
     FilterError,
     build_tool_schema,
     compile_filter,
@@ -3094,6 +3095,7 @@ async def thruk_oldest_problems(
 
 async def thruk_unacked_critical(
     threshold_minutes: int = 60,
+    filter: dict[str, Any] | None = None,
     backends: str | None = None,
 ) -> str:
     """CRITICAL services and DOWN hosts not acknowledged for more than N minutes.
@@ -3103,11 +3105,19 @@ async def thruk_unacked_critical(
 
     Returns ``[{host, service, state, duration_minutes}]`` sorted by
     ``duration_minutes`` descending (longest-unacked first).
+
+    Optional ``filter`` is a structured AND/OR tree scoping both underlying
+    ``/hosts`` and ``/services`` calls. Supported fields (see issue #227):
+    ``hostgroup`` (``groups[gte]=`` on hosts, ``host_groups[gte]=`` on
+    services) and ``custom_var`` (``_VARNAME=value`` on both). ``state`` is
+    intentionally not exposed — the tool is hardcoded to CRITICAL/DOWN by
+    design; ``host`` is excluded to avoid ambiguity with the internal
+    host-name resolution logic.
     """
     now = _now_utc_epoch()
     threshold_ts = now - threshold_minutes * 60
 
-    host_params = {
+    host_params: dict[str, Any] = {
         "state[gte]": 1,
         "acknowledged": 0,
         "scheduled_downtime_depth": 0,
@@ -3115,7 +3125,7 @@ async def thruk_unacked_critical(
         "columns": "name,state,last_state_change,peer_name",
         "limit": 500,
     }
-    svc_params = {
+    svc_params: dict[str, Any] = {
         "state": 2,  # CRITICAL only
         "acknowledged": 0,
         "scheduled_downtime_depth": 0,
@@ -3123,6 +3133,13 @@ async def thruk_unacked_critical(
         "columns": "host_name,description,state,last_state_change,peer_name",
         "limit": 500,
     }
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_UNACKED)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+        host_params.update(compile_filter(filter, "hosts"))
+        svc_params.update(compile_filter(filter, "services"))
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts", params=host_params, backends=be),
@@ -4295,10 +4312,12 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec(
         name="thruk_unacked_critical",
         fn=thruk_unacked_critical,
-        schema=_s(
+        schema=build_tool_schema(
+            FIELDS_UNACKED,
             threshold_minutes=_int(
                 "Minimum unacknowledged duration in minutes (default 60).", default=60
             ),
+            filter=filter_schema_property(FIELDS_UNACKED),
             backends=_BACKENDS,
         ),
     ),
