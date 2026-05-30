@@ -1549,11 +1549,16 @@ async def thruk_alert_heatmap(
     ordered chronologically. Empty buckets are filled with ``count=0``.
 
     When the underlying log fetch hits the ``_NOISY_MAX_ALERTS`` cap, the
-    response also carries ``truncated_after`` (ISO-UTC timestamp of the last
-    fetched event) and every bucket starting *after* the bucket that contains
-    that event is marked as ``{"count": null, "truncated": true}`` so the
-    consumer can distinguish "no alerts in this bucket" from "bucket not
+    response also carries ``truncated_before`` (ISO-UTC timestamp of the
+    *earliest* fetched event) and every bucket ending *before* the bucket that
+    contains that event is marked as ``{"count": null, "truncated": true}`` so
+    the consumer can distinguish "no alerts in this bucket" from "bucket not
     covered by the capped fetch".
+
+    The fetch is issued newest-first (``sort="-time"``) so that when the cap is
+    hit it is the *oldest* entries that are dropped, keeping the most recent
+    buckets — the relevant ones for incident analytics — fully populated
+    (issue #250).
     """
     bucket_secs = _BUCKET_SIZES.get(bucket)
     if bucket_secs is None:
@@ -1577,7 +1582,10 @@ async def thruk_alert_heatmap(
 
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
-        "sort": "time",
+        # Newest-first (issue #250): when the cap is hit, drop the *oldest*
+        # entries so recent buckets stay populated. Bucket counting below is
+        # order-independent, so DESC fetch order does not affect aggregation.
+        "sort": "-time",
         "columns": "time",
         **extra,
     }
@@ -1637,18 +1645,19 @@ async def thruk_alert_heatmap(
         "results": results,
     }
 
-    # When the log cap is hit, sort=time ascending means we got the *earliest*
-    # entries only — buckets past the last fetched timestamp would silently
-    # show count=0. Mark them as null+truncated so consumers (LLM or human)
-    # do not confuse "missing data" with "quiet period".
+    # When the log cap is hit, sort=-time (newest first) means we got the
+    # *most recent* entries only — buckets before the earliest fetched
+    # timestamp would silently show count=0. Mark them as null+truncated so
+    # consumers (LLM or human) do not confuse "missing data" with "quiet
+    # period" (issue #250).
     log_capped = len(data) >= _NOISY_MAX_ALERTS
     if log_capped and raw_counts:
-        last_ts = max(int(e["time"]) for e in data if e.get("time"))
-        last_bucket = (last_ts // bucket_secs) * bucket_secs
-        truncated_after_iso = datetime.fromtimestamp(last_ts, tz=timezone.utc).strftime(
+        first_ts = min(int(e["time"]) for e in data if e.get("time"))
+        first_bucket = (first_ts // bucket_secs) * bucket_secs
+        truncated_before_iso = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        payload["truncated_after"] = truncated_after_iso
+        payload["truncated_before"] = truncated_before_iso
         for bucket_obj in results:
             bs_str = bucket_obj["bucket_start"]
             bs_epoch = int(
@@ -1656,7 +1665,7 @@ async def thruk_alert_heatmap(
                 .replace(tzinfo=timezone.utc)
                 .timestamp()
             )
-            if bs_epoch > last_bucket:
+            if bs_epoch < first_bucket:
                 bucket_obj["count"] = None
                 bucket_obj["truncated"] = True
 
@@ -1668,7 +1677,7 @@ async def thruk_alert_heatmap(
     elif log_capped:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
-            "Buckets after 'truncated_after' are reported as count=null (data not fetched)."
+            "Buckets before 'truncated_before' are reported as count=null (data not fetched)."
             + _NOISY_CAP_HINT
         )
     if warnings:
@@ -3448,7 +3457,11 @@ async def thruk_concurrent_failures(
 
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
-        "sort": "time",  # ascending -- needed for the sliding window scan
+        # Newest-first (issue #250): when the cap is hit, keep the *most recent*
+        # DOWN events instead of the oldest, so recent concurrent-failure
+        # bursts are not dropped. The sliding-window scan re-sorts events
+        # ascending client-side below, so DESC fetch order is safe here.
+        "sort": "-time",
         "columns": "host_name,state,time",
         **extra,
     }
