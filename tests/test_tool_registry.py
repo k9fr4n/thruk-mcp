@@ -139,6 +139,52 @@ def test_registry_tool_count() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #262 — TOOL_REGISTRY aggregation moved to ``thruk_mcp.tools``
+#
+# ``server.py`` no longer builds the registry inline; it imports the single
+# aggregated ``TOOL_REGISTRY`` from the ``tools`` package, which splices the
+# per-module registries together. These tests pin the aggregation location and
+# the exact splice order so the derived ``_TOOL_SCHEMAS`` / ``WRITE_TOOLS`` keep
+# identical keys and ordering (the issue's definition-of-done).
+# ---------------------------------------------------------------------------
+
+
+class TestIssue262RegistryAggregation:
+    def test_server_reexports_tools_registry(self) -> None:
+        """``server.TOOL_REGISTRY`` must be the very object from ``tools``."""
+        from thruk_mcp import server, tools
+
+        assert server.TOOL_REGISTRY is tools.TOOL_REGISTRY
+
+    def test_aggregation_order_matches_submodule_splice(self) -> None:
+        """Splice order is byte-for-byte the original server.py ordering."""
+        from thruk_mcp import tools
+
+        expected = [
+            *tools.HISTORY_TRENDS_REGISTRY,
+            *tools.INVENTORY_REGISTRY,
+            *tools.COMMANDS_READ_REGISTRY,
+            *tools.HISTORY_LOGS_REGISTRY,
+            *tools.ESCAPE_REGISTRY,
+            *tools.COMMANDS_WRITE_REGISTRY,
+            *tools.TRIAGE_REGISTRY,
+        ]
+        assert [s.name for s in tools.TOOL_REGISTRY] == [s.name for s in expected]
+
+    def test_escape_registry_holds_raw_query_tools(self) -> None:
+        """The two raw-query tools live in ESCAPE_REGISTRY (moved from server.py)."""
+        from thruk_mcp import tools
+
+        names = [s.name for s in tools.ESCAPE_REGISTRY]
+        assert names == ["thruk_query", "thruk_run_background_query"]
+        # thruk_query must NOT be a write tool (usable for GET in read-only mode);
+        # thruk_run_background_query must be.
+        by_name = {s.name: s for s in tools.ESCAPE_REGISTRY}
+        assert by_name["thruk_query"].is_write is False
+        assert by_name["thruk_run_background_query"].is_write is True
+
+
+# ---------------------------------------------------------------------------
 # ThrukMCPServer interface contract (issue #89: disallow_untyped_defs)
 # ---------------------------------------------------------------------------
 

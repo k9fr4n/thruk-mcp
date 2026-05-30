@@ -172,251 +172,267 @@ from .resources import (
     _service_resource,
     _stats_resource,
 )
-from .tools.base import (
-    _BACKENDS,
-    _OPT_OBJ,
-    ToolSpec,
-    _s,
-    _str,
-)
-
-# Re-exported for backward compat (defined but unused inside server.py itself):
-from .tools.base import (
-    _LOG_CUSTOM_VARS as _LOG_CUSTOM_VARS,
-)
-from .tools.base import (
-    _LOG_HOSTGROUP as _LOG_HOSTGROUP,
-)
-from .tools.base import (
-    _OPT_BOOL as _OPT_BOOL,
-)
-from .tools.base import (
-    _OPT_INT as _OPT_INT,
-)
-from .tools.base import (
-    _OPT_STR as _OPT_STR,
-)
-from .tools.base import (
-    _bool as _bool,
-)
-from .tools.base import (
-    _int as _int,
-)
-
-# Write / command tools moved out of server.py (issue #261, parent #256).
-# ``COMMANDS_READ_REGISTRY`` / ``COMMANDS_WRITE_REGISTRY`` are spliced into
-# ``TOOL_REGISTRY`` below; the tool functions and the
-# ``_delete_downtimes_by_host_comment`` helper are re-exported for backward compat.
-from .tools.commands import COMMANDS_READ_REGISTRY, COMMANDS_WRITE_REGISTRY
-from .tools.commands import (
-    _delete_downtimes_by_host_comment as _delete_downtimes_by_host_comment,
-)
-from .tools.commands import (
-    thruk_acknowledge as thruk_acknowledge,
-)
-from .tools.commands import (
-    thruk_add_comment as thruk_add_comment,
-)
-from .tools.commands import (
-    thruk_bulk_acknowledge as thruk_bulk_acknowledge,
-)
-from .tools.commands import (
-    thruk_checks as thruk_checks,
-)
-from .tools.commands import (
-    thruk_delete_active_downtimes as thruk_delete_active_downtimes,
-)
-from .tools.commands import (
-    thruk_delete_comment as thruk_delete_comment,
-)
-from .tools.commands import (
-    thruk_delete_downtime as thruk_delete_downtime,
-)
-from .tools.commands import (
-    thruk_delete_downtimes_by_filter as thruk_delete_downtimes_by_filter,
-)
-from .tools.commands import (
-    thruk_get_downtime as thruk_get_downtime,
-)
-from .tools.commands import (
-    thruk_notifications as thruk_notifications,
-)
-from .tools.commands import (
-    thruk_recheck as thruk_recheck,
-)
-from .tools.commands import (
-    thruk_remove_acknowledgement as thruk_remove_acknowledgement,
-)
-from .tools.commands import (
-    thruk_schedule_downtime as thruk_schedule_downtime,
-)
-from .tools.commands import (
-    thruk_schedule_host_services_downtime as thruk_schedule_host_services_downtime,
-)
-from .tools.commands import (
-    thruk_schedule_hostgroup_downtime as thruk_schedule_hostgroup_downtime,
-)
-from .tools.commands import (
-    thruk_schedule_propagated_host_downtime as thruk_schedule_propagated_host_downtime,
-)
-from .tools.commands import (
-    thruk_schedule_servicegroup_downtime as thruk_schedule_servicegroup_downtime,
-)
-from .tools.escape import (
+from .tools import (
     _ALLOWED_METHODS as _ALLOWED_METHODS,
 )
-from .tools.escape import (
-    _REST_PATH_PREFIXES as _REST_PATH_PREFIXES,
+from .tools import (
+    _BACKENDS as _BACKENDS,
 )
-from .tools.escape import (
-    _validate_rest_path as _validate_rest_path,
-)
-from .tools.escape import (
-    thruk_query,
-    thruk_run_background_query,
-)
-from .tools.history import (
+from .tools import (
     _BUCKET_SIZES as _BUCKET_SIZES,
 )
-from .tools.history import (
+from .tools import (
     _DEFAULT_SINCE as _DEFAULT_SINCE,
 )
-
-# Logs / history / trends tools moved out of server.py (issue #260, parent
-# #256). ``HISTORY_TRENDS_REGISTRY`` / ``HISTORY_LOGS_REGISTRY`` are spliced
-# into ``TOOL_REGISTRY`` below (preserving the original, non-contiguous
-# registration order); the tool functions and the private helpers
-# (``_resolve_hosts_to_regex``, ``_fetch_logs``, ``_aggregate_alerts``,
-# ``_coerce_hours_to_since``) plus ``_BUCKET_SIZES`` / ``_DEFAULT_SINCE`` are
-# re-exported here for backward compatibility.
-from .tools.history import (
-    HISTORY_LOGS_REGISTRY,
-    HISTORY_TRENDS_REGISTRY,
+from .tools import (
+    _LOG_CUSTOM_VARS as _LOG_CUSTOM_VARS,
 )
-from .tools.history import (
+from .tools import (
+    _LOG_HOSTGROUP as _LOG_HOSTGROUP,
+)
+from .tools import (
+    _OPT_BOOL as _OPT_BOOL,
+)
+from .tools import (
+    _OPT_INT as _OPT_INT,
+)
+from .tools import (
+    _OPT_OBJ as _OPT_OBJ,
+)
+from .tools import (
+    _OPT_STR as _OPT_STR,
+)
+from .tools import (
+    _REST_PATH_PREFIXES as _REST_PATH_PREFIXES,
+)
+
+# All tool functions, co-located ToolSpec registries and the aggregated
+# ``TOOL_REGISTRY`` now live in :mod:`thruk_mcp.tools` (issue #262, parent
+# #256). They are re-exported here so existing
+# ``from thruk_mcp.server import <name>`` imports keep working unchanged.
+from .tools import (
+    COMMANDS_READ_REGISTRY as COMMANDS_READ_REGISTRY,
+)
+from .tools import (
+    COMMANDS_WRITE_REGISTRY as COMMANDS_WRITE_REGISTRY,
+)
+from .tools import (
+    ESCAPE_REGISTRY as ESCAPE_REGISTRY,
+)
+from .tools import (
+    HISTORY_LOGS_REGISTRY as HISTORY_LOGS_REGISTRY,
+)
+from .tools import (
+    HISTORY_REGISTRY as HISTORY_REGISTRY,
+)
+from .tools import (
+    HISTORY_TRENDS_REGISTRY as HISTORY_TRENDS_REGISTRY,
+)
+from .tools import (
+    INVENTORY_REGISTRY as INVENTORY_REGISTRY,
+)
+from .tools import (
+    TOOL_REGISTRY as TOOL_REGISTRY,
+)
+from .tools import (
+    TRIAGE_REGISTRY as TRIAGE_REGISTRY,
+)
+from .tools import (
+    ToolSpec as ToolSpec,
+)
+from .tools import (
     _aggregate_alerts as _aggregate_alerts,
 )
-from .tools.history import (
+from .tools import (
+    _bool as _bool,
+)
+from .tools import (
     _coerce_hours_to_since as _coerce_hours_to_since,
 )
-from .tools.history import (
-    _fetch_logs as _fetch_logs,
-)
-from .tools.history import (
-    _resolve_hosts_to_regex as _resolve_hosts_to_regex,
-)
-from .tools.history import (
-    thruk_alert_heatmap as thruk_alert_heatmap,
-)
-from .tools.history import (
-    thruk_flap_summary as thruk_flap_summary,
-)
-from .tools.history import (
-    thruk_list_alerts as thruk_list_alerts,
-)
-from .tools.history import (
-    thruk_list_logs as thruk_list_logs,
-)
-from .tools.history import (
-    thruk_list_notifications as thruk_list_notifications,
-)
-from .tools.history import (
-    thruk_recent_events as thruk_recent_events,
-)
-from .tools.history import (
-    thruk_recurring_problems as thruk_recurring_problems,
-)
-from .tools.history import (
-    thruk_top_noisy_hosts as thruk_top_noisy_hosts,
-)
-from .tools.history import (
-    thruk_top_noisy_services as thruk_top_noisy_services,
-)
-from .tools.inventory import INVENTORY_REGISTRY
-from .tools.inventory import (
+from .tools import (
     _collect_hostgroup_constraints as _collect_hostgroup_constraints,
 )
-from .tools.inventory import (
+from .tools import (
+    _delete_downtimes_by_host_comment as _delete_downtimes_by_host_comment,
+)
+from .tools import (
     _ensure_columns_param as _ensure_columns_param,
 )
-from .tools.inventory import (
-    _row_matches_hostgroup_constraints as _row_matches_hostgroup_constraints,
+from .tools import (
+    _fetch_logs as _fetch_logs,
 )
-from .tools.inventory import (
-    _strip_filter_field as _strip_filter_field,
+from .tools import (
+    _int as _int,
 )
-from .tools.inventory import (
-    thruk_get_contact as thruk_get_contact,
-)
-from .tools.inventory import (
-    thruk_get_host as thruk_get_host,
-)
-from .tools.inventory import (
-    thruk_get_service as thruk_get_service,
-)
-from .tools.inventory import (
-    thruk_host_availability as thruk_host_availability,
-)
-from .tools.inventory import (
-    thruk_hostgroup_availability as thruk_hostgroup_availability,
-)
-from .tools.inventory import (
-    thruk_list_comments as thruk_list_comments,
-)
-from .tools.inventory import (
-    thruk_list_contacts as thruk_list_contacts,
-)
-from .tools.inventory import (
-    thruk_list_downtimes as thruk_list_downtimes,
-)
-from .tools.inventory import (
-    thruk_list_hostgroups as thruk_list_hostgroups,
-)
-from .tools.inventory import (
-    thruk_list_hosts as thruk_list_hosts,
-)
-from .tools.inventory import (
-    thruk_list_servicegroups as thruk_list_servicegroups,
-)
-from .tools.inventory import (
-    thruk_list_services as thruk_list_services,
-)
-from .tools.inventory import (
-    thruk_problems as thruk_problems,
-)
-from .tools.inventory import (
-    thruk_service_availability as thruk_service_availability,
-)
-from .tools.inventory import (
-    thruk_sites as thruk_sites,
-)
-from .tools.inventory import (
-    thruk_stats as thruk_stats,
-)
-from .tools.inventory import (
-    thruk_totals as thruk_totals,
-)
-
-# Semantic triage / analytics tools moved out of server.py (issue #259, parent
-# #256). ``TRIAGE_REGISTRY`` is spliced into ``TOOL_REGISTRY`` below; the tool
-# functions and ``_project_problem_counts`` are re-exported for backward compat.
-from .tools.triage import TRIAGE_REGISTRY
-from .tools.triage import (
+from .tools import (
     _project_problem_counts as _project_problem_counts,
 )
-from .tools.triage import (
+from .tools import (
+    _resolve_hosts_to_regex as _resolve_hosts_to_regex,
+)
+from .tools import (
+    _row_matches_hostgroup_constraints as _row_matches_hostgroup_constraints,
+)
+from .tools import (
+    _s as _s,
+)
+from .tools import (
+    _str as _str,
+)
+from .tools import (
+    _strip_filter_field as _strip_filter_field,
+)
+from .tools import (
+    _validate_rest_path as _validate_rest_path,
+)
+from .tools import (
+    thruk_acknowledge as thruk_acknowledge,
+)
+from .tools import (
+    thruk_add_comment as thruk_add_comment,
+)
+from .tools import (
+    thruk_alert_heatmap as thruk_alert_heatmap,
+)
+from .tools import (
+    thruk_bulk_acknowledge as thruk_bulk_acknowledge,
+)
+from .tools import (
+    thruk_checks as thruk_checks,
+)
+from .tools import (
     thruk_concurrent_failures as thruk_concurrent_failures,
 )
-from .tools.triage import (
+from .tools import (
+    thruk_delete_active_downtimes as thruk_delete_active_downtimes,
+)
+from .tools import (
+    thruk_delete_comment as thruk_delete_comment,
+)
+from .tools import (
+    thruk_delete_downtime as thruk_delete_downtime,
+)
+from .tools import (
+    thruk_delete_downtimes_by_filter as thruk_delete_downtimes_by_filter,
+)
+from .tools import (
+    thruk_flap_summary as thruk_flap_summary,
+)
+from .tools import (
+    thruk_get_contact as thruk_get_contact,
+)
+from .tools import (
+    thruk_get_downtime as thruk_get_downtime,
+)
+from .tools import (
+    thruk_get_host as thruk_get_host,
+)
+from .tools import (
+    thruk_get_service as thruk_get_service,
+)
+from .tools import (
+    thruk_host_availability as thruk_host_availability,
+)
+from .tools import (
+    thruk_hostgroup_availability as thruk_hostgroup_availability,
+)
+from .tools import (
+    thruk_list_alerts as thruk_list_alerts,
+)
+from .tools import (
+    thruk_list_comments as thruk_list_comments,
+)
+from .tools import (
+    thruk_list_contacts as thruk_list_contacts,
+)
+from .tools import (
+    thruk_list_downtimes as thruk_list_downtimes,
+)
+from .tools import (
+    thruk_list_hostgroups as thruk_list_hostgroups,
+)
+from .tools import (
+    thruk_list_hosts as thruk_list_hosts,
+)
+from .tools import (
+    thruk_list_logs as thruk_list_logs,
+)
+from .tools import (
+    thruk_list_notifications as thruk_list_notifications,
+)
+from .tools import (
+    thruk_list_servicegroups as thruk_list_servicegroups,
+)
+from .tools import (
+    thruk_list_services as thruk_list_services,
+)
+from .tools import (
+    thruk_notifications as thruk_notifications,
+)
+from .tools import (
     thruk_oldest_problems as thruk_oldest_problems,
 )
-from .tools.triage import (
+from .tools import (
     thruk_problem_counts as thruk_problem_counts,
 )
-from .tools.triage import (
+from .tools import (
+    thruk_problems as thruk_problems,
+)
+from .tools import (
+    thruk_query as thruk_query,
+)
+from .tools import (
+    thruk_recent_events as thruk_recent_events,
+)
+from .tools import (
+    thruk_recheck as thruk_recheck,
+)
+from .tools import (
+    thruk_recurring_problems as thruk_recurring_problems,
+)
+from .tools import (
+    thruk_remove_acknowledgement as thruk_remove_acknowledgement,
+)
+from .tools import (
+    thruk_run_background_query as thruk_run_background_query,
+)
+from .tools import (
+    thruk_schedule_downtime as thruk_schedule_downtime,
+)
+from .tools import (
+    thruk_schedule_host_services_downtime as thruk_schedule_host_services_downtime,
+)
+from .tools import (
+    thruk_schedule_hostgroup_downtime as thruk_schedule_hostgroup_downtime,
+)
+from .tools import (
+    thruk_schedule_propagated_host_downtime as thruk_schedule_propagated_host_downtime,
+)
+from .tools import (
+    thruk_schedule_servicegroup_downtime as thruk_schedule_servicegroup_downtime,
+)
+from .tools import (
+    thruk_service_availability as thruk_service_availability,
+)
+from .tools import (
+    thruk_sites as thruk_sites,
+)
+from .tools import (
     thruk_stale_acks as thruk_stale_acks,
 )
-from .tools.triage import (
+from .tools import (
+    thruk_stats as thruk_stats,
+)
+from .tools import (
+    thruk_top_noisy_hosts as thruk_top_noisy_hosts,
+)
+from .tools import (
+    thruk_top_noisy_services as thruk_top_noisy_services,
+)
+from .tools import (
+    thruk_totals as thruk_totals,
+)
+from .tools import (
     thruk_unacked_critical as thruk_unacked_critical,
 )
 
@@ -552,62 +568,12 @@ SVC_STATE_MAP: dict[str, int] = SVC_STATE_INT
 
 
 # ---------------------------------------------------------------------------
-# TOOL_REGISTRY: one entry per tool (issue #85)
+# TOOL_REGISTRY: aggregated in :mod:`thruk_mcp.tools` (issue #262, parent #256)
 # ---------------------------------------------------------------------------
-
-TOOL_REGISTRY: list[ToolSpec] = [
-    # ----------------------------------------------- noisy / flap / trends & history (issue #57)
-    # Noisy / flap / trends ToolSpec entries live in
-    # ``thruk_mcp.tools.history`` (issue #260); spliced here via
-    # ``HISTORY_TRENDS_REGISTRY`` to preserve registration order.
-    *HISTORY_TRENDS_REGISTRY,
-    # ---------------------------------------------------------------- host / service listing
-    # Inventory listing / availability / problems tools live in
-    # ``thruk_mcp.tools.inventory`` (issue #258); their ToolSpec entries are
-    # spliced in here via ``INVENTORY_REGISTRY`` to preserve registration order.
-    *INVENTORY_REGISTRY,
-    *COMMANDS_READ_REGISTRY,
-    # ---------------------------------------------------------------- log / alert / notification
-    # Log / alert / notification ToolSpec entries live in
-    # ``thruk_mcp.tools.history`` (issue #260); spliced here via
-    # ``HISTORY_LOGS_REGISTRY`` to preserve registration order.
-    *HISTORY_LOGS_REGISTRY,
-    # ---------------------------------------------------------------- raw query (read + write)
-    ToolSpec(
-        name="thruk_query",
-        fn=thruk_query,
-        schema=_s(
-            "path",
-            path=_str("Path after /thruk/r, e.g. /hosts/srv01/services"),
-            method=_str(),
-            params=_OPT_OBJ,
-            data=_OPT_OBJ,
-            backends=_BACKENDS,
-        ),
-        # thruk_query serves both reads (GET/HEAD) and writes (POST/PUT/DELETE).
-        # It is intentionally NOT marked is_write=True here so it is never
-        # stripped in read_only mode; _is_auditable_write() handles write-method
-        # auditing at call-time by inspecting the `method` argument.
-    ),
-    ToolSpec(
-        name="thruk_run_background_query",
-        fn=thruk_run_background_query,
-        schema=_s(
-            "path",
-            path=_str("Path after /thruk/r"),
-            method=_str(),
-            params=_OPT_OBJ,
-            data=_OPT_OBJ,
-            backends=_BACKENDS,
-            poll_timeout={"type": "number", "default": 300.0},
-        ),
-        is_write=True,
-    ),
-    *COMMANDS_WRITE_REGISTRY,
-    # Semantic triage / analytics tools (issues #52 / #54) — moved to
-    # tools/triage.py (issue #259). Spliced here to preserve registration order.
-    *TRIAGE_REGISTRY,
-]
+# The single ``TOOL_REGISTRY: list[ToolSpec]`` (one entry per tool, issue #85)
+# is now assembled from the per-module registries in ``tools/__init__.py`` and
+# imported above.  ``server.py`` only derives the dispatch / schema / write-set
+# structures from it below.
 
 # ---------------------------------------------------------------------------
 # Derived structures — auto-generated from TOOL_REGISTRY; never edit manually
