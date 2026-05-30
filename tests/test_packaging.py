@@ -326,6 +326,9 @@ class TestParametrisedTypeHints:
     def _server_source(self) -> str:
         return (self.SRC_DIR / "server.py").read_text(encoding="utf-8")
 
+    def _tools_base_source(self) -> str:
+        return (self.SRC_DIR / "tools" / "base.py").read_text(encoding="utf-8")
+
     def test_no_bare_dict_or_none_annotation(self) -> None:
         """``dict | None`` must not appear anywhere in server.py (use ``dict[str, Any] | None``)."""
         import re
@@ -391,14 +394,18 @@ class TestParametrisedTypeHints:
         )
 
     def test_schema_helpers_return_parametrised_dict(self) -> None:
-        """_s, _str, _int, _bool must declare ``-> dict[str, Any]`` return type in source."""
+        """_s, _str, _int, _bool must declare ``-> dict[str, Any]`` return type in source.
+
+        The helpers were extracted from server.py to ``tools/base.py`` (issue #257),
+        so the definitions are scanned there now.
+        """
         import re
 
-        source = self._server_source()
+        source = self._tools_base_source()
         for fn in ("_s", "_str", "_int", "_bool"):
             pattern = rf"def {re.escape(fn)}\(.*\) -> dict\[str, Any\]:"
             assert re.search(pattern, source), (
-                f"Helper `{fn}` in server.py does not declare `-> dict[str, Any]:` (issue #80)"
+                f"Helper `{fn}` in tools/base.py does not declare `-> dict[str, Any]:` (issue #80)"
             )
 
 
