@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 50 MCP Tools
+### 52 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -112,8 +112,9 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 than `thruk_stats`), `thruk_sites`.
 
 **Read — history & comments**
-`thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`, `thruk_recent_events`,
-`thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`.
+`thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`,
+`thruk_notification_summary` (notifications grouped by contact/host/service/state/command),
+`thruk_recent_events`, `thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`.
 
 **Read — noise & flap analysis**
 `thruk_top_noisy_hosts` (hosts ranked by alert count over a window),
@@ -129,7 +130,9 @@ custom vars or any structured filter — replaces the former thruk_problems_by_h
 
 **Read — analytics**
 `thruk_alert_heatmap` (alert counts bucketed by time, useful for spotting recurring
-patterns), `thruk_concurrent_failures` (windows where multiple hosts failed simultaneously),
+patterns), `thruk_notification_heatmap` (notification counts bucketed by time — spot
+mail/paging storms), `thruk_concurrent_failures` (windows where multiple hosts failed
+simultaneously),
 `thruk_recurring_problems` (hosts/services generating repeated alerts over a window).
 
 **Read — availability / SLA**

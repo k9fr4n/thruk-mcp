@@ -149,8 +149,9 @@ async def thruk_run_background_query(
     backends: str | None = None,
     poll_timeout: float = 300.0,
 ) -> str:
-    """Run a potentially long Thruk REST request via the `background=1`
-    mechanism. The server returns a job id immediately, then we poll
+    """Run a potentially long Thruk REST request via the `background=1` mechanism.
+
+    The server returns a job id immediately, then we poll
     `/thruk/jobs/<id>/output` until completion (default 5 min timeout).
 
     Use this for expensive queries: full config dumps, large availability
