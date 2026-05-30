@@ -13,8 +13,8 @@ os.environ.setdefault(
     "9528fcf6be874daa4084b6fd18d3dbe6172a81d1150926b8c830fd8641077d2a_1",
 )
 
-from thruk_mcp.config import ThrukConfig
 from thruk_mcp.client import ThrukClient, ThrukError
+from thruk_mcp.config import ThrukConfig
 
 results: list[tuple[str, bool, str]] = []
 
@@ -133,7 +133,10 @@ def test_stdio_protocol():
                         schema = tool.get("inputSchema", {})
                         props = schema.get("properties", {})
                         required = schema.get("required", [])
-                        print(f"  {tool['name']}: properties={list(props.keys())}, required={required}")
+                        print(
+                            f"  {tool['name']}: properties="
+                            f"{list(props.keys())}, required={required}"
+                        )
             elif mid == 3:
                 content = msg.get("result", {}).get("content", [])
                 text = content[0].get("text", "") if content else ""

@@ -1,5 +1,4 @@
 """Simulate the MCP stdio protocol and print what tools/list returns."""
-import asyncio
 import json
 import os
 import subprocess
