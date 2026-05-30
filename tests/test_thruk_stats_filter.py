@@ -50,7 +50,12 @@ async def test_stats_hostgroup_filter(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_stats_custom_var_filter(mocked_server) -> None:
-    """custom_var leaf -> _VARNAME=value forwarded to both endpoints."""
+    """custom_var leaf -> _VARNAME on /hosts/stats, _HOSTVARNAME on /services/stats.
+
+    Issue #244 regression: pre-fix the services sub-query was sent
+    ``_ENV=prod`` and silently matched nothing (services have host-level
+    cvs under the ``host_custom_variables`` column = ``_HOST{VAR}``).
+    """
     mcp, router = mocked_server
     r_h = router.get("https://thruk.test/r/hosts/stats").mock(return_value=ok({}))
     r_s = router.get("https://thruk.test/r/services/stats").mock(return_value=ok({}))
@@ -66,7 +71,10 @@ async def test_stats_custom_var_filter(mocked_server) -> None:
         },
     )
     assert r_h.calls.last.request.url.params["_ENV"] == "prod"
-    assert r_s.calls.last.request.url.params["_ENV"] == "prod"
+    assert r_s.calls.last.request.url.params["_HOSTENV"] == "prod"
+    # Regression guard for issue #244: the buggy _ENV must NOT leak through
+    # to /services/stats (it would silently match the empty set there).
+    assert "_ENV" not in r_s.calls.last.request.url.params
 
 
 @pytest.mark.asyncio
@@ -110,4 +118,6 @@ async def test_stats_combined_and_filter(mocked_server) -> None:
     hp = r_h.calls.last.request.url.params
     sp = r_s.calls.last.request.url.params
     assert hp["groups[gte]"] == "linux" and hp["_ENV"] == "prod"
-    assert sp["host_groups[gte]"] == "linux" and sp["_ENV"] == "prod"
+    # Issue #244: host-level cv → _HOST{VAR} on /services/stats.
+    assert sp["host_groups[gte]"] == "linux" and sp["_HOSTENV"] == "prod"
+    assert "_ENV" not in sp

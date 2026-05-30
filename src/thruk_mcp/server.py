@@ -88,6 +88,7 @@ from .filters import (
     extract_log_lookup_fields,
     filter_schema_property,
     infer_alert_type_regex,
+    rewrite_custom_var_to_host_custom_var,
     validate_filter,
 )
 from .helpers import (
@@ -775,7 +776,11 @@ async def thruk_stats(
         except FilterError as exc:
             return _tool_response({"error": str(exc)})
         host_params = compile_filter(filter, "hosts")
-        svc_params = compile_filter(filter, "services")
+        # Issue #244: on /services, a host-level custom_var lives under the
+        # host_custom_variables column (_HOST{VAR}), not _{VAR}. Rewrite the
+        # leaves before compiling so the services sub-query is not silently
+        # empty when the filter contains a custom_var leaf.
+        svc_params = compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services")
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts/stats", params=host_params or None, backends=be),
@@ -844,7 +849,9 @@ async def thruk_totals(
         host_filter = _strip_filter_field(filter, "servicegroup")
         if host_filter is not None:
             host_params = compile_filter(host_filter, "hosts")
-        svc_params = compile_filter(filter, "services")
+        # Issue #244: rewrite host-level custom_var → host_custom_var on the
+        # services side so it compiles to _HOST{VAR} (not _{VAR}).
+        svc_params = compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services")
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts/totals", params=host_params or None, backends=be),
@@ -3100,7 +3107,8 @@ async def thruk_oldest_problems(
         except FilterError as exc:
             return _tool_response({"error": str(exc)})
         host_params.update(compile_filter(filter, "hosts"))
-        svc_params.update(compile_filter(filter, "services"))
+        # Issue #244: host-level custom_var must map to _HOST{VAR} on /services.
+        svc_params.update(compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services"))
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts", params=host_params, backends=be),
@@ -3184,7 +3192,8 @@ async def thruk_unacked_critical(
         except FilterError as exc:
             return _tool_response({"error": str(exc)})
         host_params.update(compile_filter(filter, "hosts"))
-        svc_params.update(compile_filter(filter, "services"))
+        # Issue #244: host-level custom_var must map to _HOST{VAR} on /services.
+        svc_params.update(compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services"))
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts", params=host_params, backends=be),
@@ -3353,7 +3362,8 @@ async def thruk_problem_counts(
         host_filter = _strip_filter_field(filter, "servicegroup")
         if host_filter is not None:
             host_params = compile_filter(host_filter, "hosts")
-        svc_params = compile_filter(filter, "services")
+        # Issue #244: host-level custom_var must map to _HOST{VAR} on /services.
+        svc_params = compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services")
     be = _backends(backends)
     hosts, services = await asyncio.gather(
         _get_client().get("/hosts/totals", params=host_params or None, backends=be),

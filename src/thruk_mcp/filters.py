@@ -57,6 +57,7 @@ __all__ = [
     "extract_log_lookup_fields",
     "filter_schema_property",
     "infer_alert_type_regex",
+    "rewrite_custom_var_to_host_custom_var",
     "validate_filter",
 ]
 
@@ -789,6 +790,45 @@ def _expand_group_in(node: dict[str, Any]) -> dict[str, Any]:
             "conditions": [_expand_group_in(c) for c in node["conditions"]],
         }
     return node
+
+
+def rewrite_custom_var_to_host_custom_var(node: dict[str, Any]) -> dict[str, Any]:
+    """Return a deep copy of ``node`` with every ``custom_var`` leaf rewritten
+    to ``host_custom_var``.
+
+    Use this before compiling the **services-side** params of host-level-cv
+    tools (``thruk_stats``, ``thruk_totals``, ``thruk_oldest_problems``,
+    ``thruk_unacked_critical``, ``thruk_problem_counts``). Their ``filter``
+    contract advertises ``custom_var`` as host-level (applied to both hosts
+    and services), but the ``/services`` endpoint expects the host-level
+    column under ``_HOST{VAR}`` (the ``host_custom_variables`` column), not
+    ``_{VAR}``. Rewriting the leaf to ``host_custom_var`` reuses the existing
+    correct compilation path (``_HOST{VAR}``) without disturbing the generic
+    ``compile_filter(node, "services")`` semantics — ``thruk_list_services``
+    intentionally keeps the service-level ``custom_var`` → ``_{VAR}`` mapping.
+
+    The function never mutates the input tree (it deep-copies every level),
+    so callers can safely compile the *original* tree for the hosts side and
+    the *rewritten* tree for the services side.
+
+    See issue #244.
+    """
+    if node.get("type") == "leaf":
+        copy: dict[str, Any] = dict(node)
+        if copy.get("field") == "custom_var":
+            copy["field"] = "host_custom_var"
+            # ``value`` is the {"var": ..., "val": ...} dict — copy it too so a
+            # later mutation of the rewritten leaf cannot leak into the original.
+            value = copy.get("value")
+            if isinstance(value, dict):
+                copy["value"] = dict(value)
+        return copy
+    # group node
+    return {
+        "type": "group",
+        "operator": node["operator"],
+        "conditions": [rewrite_custom_var_to_host_custom_var(c) for c in node["conditions"]],
+    }
 
 
 def compile_filter(node: dict[str, Any], context: str) -> dict[str, Any]:

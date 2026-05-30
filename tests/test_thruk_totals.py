@@ -106,8 +106,12 @@ async def test_totals_custom_var_filter(mocked_server) -> None:
             }
         },
     )
+    # Issue #244: host-level custom_var on /services/totals must compile to
+    # _HOST{VAR} (host_custom_variables column), not _{VAR} (which would
+    # silently match nothing).
     assert r_h.calls.last.request.url.params["_ENV"] == "prod"
-    assert r_s.calls.last.request.url.params["_ENV"] == "prod"
+    assert r_s.calls.last.request.url.params["_HOSTENV"] == "prod"
+    assert "_ENV" not in r_s.calls.last.request.url.params
 
 
 @pytest.mark.asyncio

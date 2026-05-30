@@ -15,6 +15,7 @@ from thruk_mcp.filters import (
     compile_filter_problems,
     extract_log_lookup_fields,
     filter_schema_property,
+    rewrite_custom_var_to_host_custom_var,
     validate_filter,
 )
 
@@ -636,6 +637,94 @@ def test_problems_and_group():
     assert host_p["_ENV"] == "prod"
     assert svc_p["host_groups[gte]"] == "HG_AGILE"
     assert svc_p["_HOSTENV"] == "prod"
+
+
+# ---------------------------------------------------------------------------
+# rewrite_custom_var_to_host_custom_var  (issue #244)
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_cv_to_hcv_single_leaf():
+    """custom_var leaf → host_custom_var leaf (value preserved)."""
+    src = leaf("custom_var", "eq", {"var": "KERNEL", "val": "windows"})
+    out = rewrite_custom_var_to_host_custom_var(src)
+    assert out == {
+        "type": "leaf",
+        "field": "host_custom_var",
+        "op": "eq",
+        "value": {"var": "KERNEL", "val": "windows"},
+    }
+    # And it must compile to _HOST{VAR} under both services & hosts contexts.
+    assert compile_filter(out, "services") == {"_HOSTKERNEL": "windows"}
+    assert compile_filter(out, "hosts") == {"_HOSTKERNEL": "windows"}
+
+
+def test_rewrite_cv_to_hcv_does_not_mutate_input():
+    """Original tree is untouched — caller can compile both sides safely."""
+    src = leaf("custom_var", "eq", {"var": "ENV", "val": "prod"})
+    out = rewrite_custom_var_to_host_custom_var(src)
+    assert src["field"] == "custom_var"  # input unchanged
+    assert out["field"] == "host_custom_var"
+    # Mutating the rewritten value dict must not bleed into the original.
+    out["value"]["val"] = "tampered"
+    assert src["value"]["val"] == "prod"
+
+
+def test_rewrite_cv_to_hcv_preserves_non_cv_leaves():
+    """Non custom_var leaves are deep-copied verbatim."""
+    src = leaf("hostgroup", "eq", "HG_WIN")
+    out = rewrite_custom_var_to_host_custom_var(src)
+    assert out == src
+    assert out is not src  # still a fresh copy
+
+
+def test_rewrite_cv_to_hcv_handles_nested_and_or():
+    """Recurses into AND/OR groups; only custom_var leaves are rewritten."""
+    src = group(
+        "and",
+        leaf("hostgroup", "eq", "HG_WIN"),
+        group(
+            "or",
+            leaf("custom_var", "eq", {"var": "ENV", "val": "prod"}),
+            leaf("custom_var", "eq", {"var": "TIER", "val": "1"}),
+        ),
+    )
+    out = rewrite_custom_var_to_host_custom_var(src)
+    assert out["conditions"][0]["field"] == "hostgroup"
+    inner = out["conditions"][1]
+    assert inner["operator"] == "or"
+    assert [c["field"] for c in inner["conditions"]] == [
+        "host_custom_var",
+        "host_custom_var",
+    ]
+
+
+def test_rewrite_cv_to_hcv_host_custom_var_passthrough():
+    """An existing host_custom_var leaf is preserved (idempotent)."""
+    src = leaf("host_custom_var", "eq", {"var": "ENV", "val": "prod"})
+    out = rewrite_custom_var_to_host_custom_var(src)
+    assert out["field"] == "host_custom_var"
+    assert compile_filter(out, "services") == {"_HOSTENV": "prod"}
+
+
+def test_rewrite_cv_then_compile_services_emits_hostvar():
+    """End-to-end reproducer of issue #244.
+
+    Before the fix:
+        compile_filter(custom_var=KERNEL=windows, "services")
+            → {"_KERNEL": "windows"}        # silently matches nothing
+
+    After the fix (applied at call sites in server.py):
+        compile_filter(rewrite_cv_to_hcv(...), "services")
+            → {"_HOSTKERNEL": "windows"}    # matches host-level CV correctly
+    """
+    src = leaf("custom_var", "eq", {"var": "KERNEL", "val": "windows"})
+    # Demonstrate the bug: the raw services compile still emits _{VAR} —
+    # this is intentional (thruk_list_services depends on it).
+    assert compile_filter(src, "services") == {"_KERNEL": "windows"}
+    # The host-level-cv tools must apply the rewrite first.
+    rewritten = rewrite_custom_var_to_host_custom_var(src)
+    assert compile_filter(rewritten, "services") == {"_HOSTKERNEL": "windows"}
 
 
 # ---------------------------------------------------------------------------
