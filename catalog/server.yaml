@@ -64,6 +64,9 @@ config:
     - name: THRUK_NOISY_MAX_ALERTS
       example: "50000"
       value: '{{thruk-mcp.noisy_max_alerts}}'
+    - name: THRUK_TIMEOUT
+      example: "30"
+      value: '{{thruk-mcp.timeout}}'
   parameters:
     type: object
     properties:
@@ -102,6 +105,10 @@ config:
           (heatmap, flap, noisy, recurring, concurrent_failures).
           Raise on large infrastructures.
         default: "10000"
+      timeout:
+        type: string
+        description: Per-request HTTP timeout to Thruk, in seconds.
+        default: "30"
     required:
       - base_url
 # allowHosts restricts outbound network access when running under the Docker MCP Gateway.
