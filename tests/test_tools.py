@@ -2220,7 +2220,7 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^HOST ALERT"
     assert p["time[gte]"] == "-6h"
-    assert p["columns"] == "host_name,state,time"
+    assert p["columns"] == "host_name,state,time,type"
 
     payload = json.loads(result[0].text)
     assert payload["since"] == "-6h"
@@ -2311,6 +2311,44 @@ async def test_top_noisy_hosts_unknown_state_friendly_label(mocked_server) -> No
 
 
 @pytest.mark.asyncio
+async def test_top_noisy_hosts_ignores_service_alert_leak(mocked_server) -> None:
+    """Issue #248: a SERVICE ALERT row (service vocabulary, state=3 UNKNOWN)
+    returned alongside genuine HOST ALERT rows must NOT leak into the host
+    aggregation.
+
+    Pre-fix behaviour (regression repro): ``_aggregate_alerts`` trusted Thruk's
+    server-side ``type[~]`` filter alone, so a stray SERVICE ALERT row was
+    counted as a host alert and surfaced ``last_state="UNKNOWN(3)"`` against
+    the host -- mixing host/service state vocabularies.
+    Post-fix: rows whose ``type`` does not match ``^HOST ALERT`` are dropped
+    client-side, leaving only genuine host alerts (and a ``_warnings`` note).
+    """
+    mcp, router = mocked_server
+    raw = [
+        {"host_name": "fw-01", "state": 1, "time": 1_700_000_100, "type": "HOST ALERT"},
+        {"host_name": "fw-01", "state": 1, "time": 1_700_000_200, "type": "HOST ALERT"},
+        # SERVICE ALERT leak: service UNKNOWN=3 on the same host, newest ts.
+        {
+            "host_name": "fw-01",
+            "service_description": "PING",
+            "state": 3,
+            "time": 1_700_000_300,
+            "type": "SERVICE ALERT",
+        },
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-7d", "limit": 5})
+    payload = json.loads(result[0].text)
+    by_host = {r["host"]: r for r in payload["results"]}
+    # Only the two HOST ALERT rows are counted; the SERVICE ALERT row is dropped.
+    assert by_host["fw-01"]["alert_count"] == 2
+    # last_state reflects the host vocabulary (DOWN), never the leaked UNKNOWN(3).
+    assert by_host["fw-01"]["last_state"] == "DOWN"
+    assert payload["total_alerts_in_window"] == 2
+    assert any("cross-type" in w for w in payload.get("_warnings", []))
+
+
+@pytest.mark.asyncio
 async def test_top_noisy_services_basic(mocked_server) -> None:
     """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
     mcp, router = mocked_server
@@ -2327,7 +2365,7 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^SERVICE ALERT"
     assert p["time[gte]"] == "-12h"
-    assert p["columns"] == "host_name,service_description,state,time"
+    assert p["columns"] == "host_name,service_description,state,time,type"
 
     payload = json.loads(result[0].text)
     assert payload["since"] == "-12h"
