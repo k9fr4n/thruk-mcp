@@ -326,12 +326,37 @@ def _tool_response(payload: Any, warnings: list[str] | None = None) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
+def _format_state_label(state: Any, state_map: dict[int, str]) -> str:
+    """Render a Naemon state code as a human-readable label.
+
+    Maps known integer state codes via ``state_map`` (e.g. ``HOST_STATE_STR``
+    or ``SVC_STATE_STR``).  Codes that are not in the map are rendered as
+    ``"UNKNOWN(<n>)"`` rather than a bare integer string, so LLM clients
+    never see a meaningless ``"3"`` for a host state (issue #245).
+
+    Naemon HOST ALERT log lines occasionally carry a ``state`` value of 3
+    (the host state space only spans 0=UP, 1=DOWN, 2=UNREACHABLE).  This
+    helper makes that leak explicit instead of surfacing the raw int.
+
+    Non-int / non-coercible inputs are rendered as ``"UNKNOWN(<raw>)"``.
+    """
+    try:
+        s = int(state)
+    except (TypeError, ValueError):
+        return f"UNKNOWN({state})"
+    label = state_map.get(s)
+    if label is not None:
+        return label
+    return f"UNKNOWN({s})"
+
+
 __all__ = [
     "_backends",
     "_build_cv_params",
     "_client_var",
     "_downtime_payload",
     "_duration_human",
+    "_format_state_label",
     "_get_client",
     "_list_params",
     "_resolve_peer_for_host",
