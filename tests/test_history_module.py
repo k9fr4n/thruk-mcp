@@ -32,6 +32,7 @@ _HISTORY_TOOL_NAMES = [
     "thruk_list_logs",
     "thruk_list_alerts",
     "thruk_list_notifications",
+    "thruk_notification_summary",
     "thruk_recent_events",
 ]
 

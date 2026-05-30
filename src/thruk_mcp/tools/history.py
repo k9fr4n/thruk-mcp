@@ -1083,6 +1083,124 @@ async def thruk_list_notifications(
     return _tool_response(data, warnings)
 
 
+#: Maps the ``group_by`` dimension to its Naemon ``/logs`` column. ``state`` is
+#: kept as the raw log value (host- and service-notification state vocabularies
+#: differ, so a single human-readable map would be ambiguous).
+_NOTIF_GROUP_FIELDS: dict[str, str] = {
+    "contact": "contact_name",
+    "host": "host_name",
+    "service": "service_description",
+    "state": "state",
+    "command": "command_name",
+}
+
+
+async def thruk_notification_summary(
+    group_by: str = "contact",
+    since: str | None = "-24h",
+    until: str | None = None,
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """Count notifications grouped by a single dimension over a time window.
+
+    Aggregates ``/logs`` ``class=3`` (notification) entries and returns the
+    per-group counts sorted by ``count`` descending — the notification
+    equivalent of :func:`thruk_top_noisy_hosts` for alerts.
+
+    ``group_by`` selects the dimension: ``contact`` (default), ``host``,
+    ``service``, ``state`` or ``command``.
+
+    ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
+
+    ``filter`` fields: ``host``, ``service``, ``contact``, ``state``,
+    ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (AND-only, /hosts
+    lookup) — identical to :func:`thruk_list_notifications`.
+
+    Returns a wrapped object: ``since``, ``until``, ``group_by``, ``total``
+    (notifications counted in the window) and ``results`` — a list of
+    ``{<group_by>, count, last_time}`` sorted by ``count`` desc.
+
+    The fetch is issued newest-first (``sort="-time"``) so that when the
+    ``_NOISY_MAX_ALERTS`` cap is hit it is the *oldest* notifications that are
+    dropped, keeping the most recent ones counted.
+    """
+    group_field = _NOTIF_GROUP_FIELDS.get(group_by)
+    if group_field is None:
+        return _tool_response(
+            {"error": f"Invalid group_by {group_by!r}. Allowed: {', '.join(_NOTIF_GROUP_FIELDS)}"}
+        )
+
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    extra["class"] = "3"
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        # Newest-first (mirrors thruk_alert_heatmap, issue #250): when the cap
+        # is hit, drop the *oldest* entries so recent notifications stay counted.
+        "sort": "-time",
+        "columns": ",".join(sorted({group_field, "time"})),
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    counts: dict[str, dict[str, Any]] = {}
+    total = 0
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get(group_field) or "")
+        rec = counts.setdefault(key, {"count": 0, "_last_ts": 0, "last_time": None})
+        rec["count"] += 1
+        total += 1
+        t = entry.get("time") or 0
+        if t > rec["_last_ts"]:
+            rec["_last_ts"] = t
+            rec["last_time"] = _ts(t)
+
+    results = sorted(
+        (
+            {group_by: key, "count": v["count"], "last_time": v["last_time"]}
+            for key, v in counts.items()
+        ),
+        key=lambda x: x["count"],
+        reverse=True,
+    )
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "group_by": group_by,
+        "total": total,
+        "results": results,
+    }
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
+            + _NOISY_CAP_HINT
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
 async def thruk_recent_events(
     filter: dict[str, Any] | None = None,
     hours: int = 1,
@@ -1268,6 +1386,25 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         ),
     ),
     ToolSpec(
+        name="thruk_notification_summary",
+        fn=thruk_notification_summary,
+        schema=build_tool_schema(
+            FIELDS_NOTIFICATIONS,
+            group_by={
+                "type": "string",
+                "default": "contact",
+                "description": (
+                    "Dimension to group notification counts by: 'contact' "
+                    "(default), 'host', 'service', 'state' or 'command'."
+                ),
+                "enum": ["contact", "host", "service", "state", "command"],
+            },
+            since=_SINCE_WINDOW,
+            until=_OPT_STR,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
         name="thruk_recent_events",
         fn=thruk_recent_events,
         schema=build_tool_schema(
@@ -1301,6 +1438,7 @@ __all__ = [
     "thruk_list_alerts",
     "thruk_list_logs",
     "thruk_list_notifications",
+    "thruk_notification_summary",
     "thruk_recent_events",
     "thruk_recurring_problems",
     "thruk_top_noisy_hosts",

@@ -1498,6 +1498,196 @@
     }
   },
   {
+    "name": "thruk_notification_summary",
+    "description": "Count notifications grouped by a single dimension (contact, host, service, state or command) over a time window. The notification equivalent of thruk_top_noisy_hosts: aggregates /logs class=3 entries and returns per-group counts sorted descending.",
+    "inputSchema": {
+      "type": "object",
+      "$defs": {
+        "FilterLeaf": {
+          "type": "object",
+          "required": [
+            "type",
+            "field",
+            "op",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "leaf"
+            },
+            "field": {
+              "type": "string",
+              "enum": [
+                "contact",
+                "custom_var",
+                "host",
+                "hostgroup",
+                "service",
+                "since",
+                "state",
+                "until"
+              ],
+              "description": "The monitoring attribute to filter on."
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "eq",
+                "gte",
+                "in",
+                "lte",
+                "neq",
+                "regex"
+              ],
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+            },
+            "value": {
+              "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "var"
+                  ],
+                  "properties": {
+                    "var": {
+                      "type": "string",
+                      "description": "Custom variable name (auto-uppercased)."
+                    },
+                    "val": {
+                      "type": "string",
+                      "description": "Expected value."
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "FilterGroup": {
+          "type": "object",
+          "required": [
+            "type",
+            "operator",
+            "conditions"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "group"
+            },
+            "operator": {
+              "type": "string",
+              "enum": [
+                "and",
+                "or"
+              ],
+              "description": "Logical operator applied to all conditions."
+            },
+            "conditions": {
+              "type": "array",
+              "minItems": 1,
+              "description": "Sub-conditions (leaf or nested group nodes).",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/FilterLeaf"
+                  },
+                  {
+                    "$ref": "#/$defs/FilterGroup"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FilterLeaf"
+            },
+            {
+              "$ref": "#/$defs/FilterGroup"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured filter tree supporting AND/OR nesting. Available fields: contact, custom_var, host, hostgroup, service, since, state, until. Operators: eq, gte, in, lte, neq, regex."
+        },
+        "group_by": {
+          "type": "string",
+          "default": "contact",
+          "enum": [
+            "contact",
+            "host",
+            "service",
+            "state",
+            "command"
+          ],
+          "description": "Dimension to group notification counts by: 'contact' (default), 'host', 'service', 'state' or 'command'."
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_recent_events",
     "description": "Return the most recent monitoring events from the last N hours (default 1h). Defaults to all log classes; set `only_alerts=True` to restrict to HOST/SERVICE ALERT entries.",
     "inputSchema": {
