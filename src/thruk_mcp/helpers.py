@@ -9,10 +9,18 @@ from __future__ import annotations
 
 import contextvars
 import json
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as _urlquote
 from urllib.parse import unquote_plus as _urlunquote_plus
+
+from .filters import (
+    FilterError,
+    compile_filter,
+    extract_log_lookup_fields,
+    validate_filter,
+)
 
 if TYPE_CHECKING:
     from .client import ThrukClient
@@ -367,7 +375,123 @@ def _format_state_label(state: Any, state_map: dict[int, str]) -> str:
     return f"UNKNOWN({s})"
 
 
+# ---------------------------------------------------------------------------
+# Shared time + log-family host-resolution helpers (moved from server.py,
+# issue #258) so the tools/ sub-package can reach them without importing
+# server.py.  Re-exported from server.py for backward compatibility.
+# ---------------------------------------------------------------------------
+# Hard limit for paginated /hosts lookups that build a host_name[regex].
+# 20 000 hosts is far above any realistic hostgroup size; it serves as a
+# safety net to prevent runaway memory growth while still covering all real
+# deployments. A _warning is surfaced in the tool payload when this cap is hit.
+_RESOLVE_HOSTS_HARD_LIMIT: int = 20_000
+
+
+_THRUK_REL_RE = re.compile(r"^-(\d+)([smhdw])$")
+_THRUK_REL_MULT: dict[str, int] = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _now_utc_epoch() -> int:
+    """Current Unix epoch as Thruk expects it (always UTC, TZ-independent)."""
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _parse_thruk_time(value: str | None) -> int | None:
+    """Parse a Thruk relative ('-2h', '-30m', '-7d') or absolute time to a Unix timestamp.
+
+    Returns ``None`` when the value cannot be parsed (caller decides fallback).
+    Absolute formats accepted: integer epoch, ``'YYYY-MM-DD HH:MM:SS'``,
+    ``'YYYY-MM-DDTHH:MM:SS'``, ``'YYYY-MM-DDTHH:MM:SSZ'``.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    m = _THRUK_REL_RE.match(value)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return _now_utc_epoch() - n * _THRUK_REL_MULT[unit]
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            # Bare ISO strings from callers have no TZ offset; Thruk stores times in UTC,
+            # so we interpret them as UTC (not local TZ) to avoid off-by-1h DST errors.
+            return int(datetime.strptime(value, fmt).replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+async def _resolve_log_filter(
+    filter_node: dict[str, Any] | None,
+    allowed_fields: frozenset,
+    backends: str | None,
+) -> tuple[dict[str, Any], list[str], bool]:
+    """Validate + compile a log-family filter.
+
+    Returns ``(extra_params, error_list, host_truncated)``. On error,
+    ``error_list`` is non-empty and ``extra_params`` is empty.
+    Hostgroup/custom_var fields are resolved via a paginated ``/hosts``
+    lookup.  ``host_truncated`` is ``True`` when the host list reached
+    ``_RESOLVE_HOSTS_HARD_LIMIT`` and may be incomplete — callers should
+    surface a ``_warning`` key in their payload.
+    """
+    if filter_node is None:
+        return {}, [], False
+    try:
+        validate_filter(filter_node, allowed_fields)
+        direct_node, lookup_node = extract_log_lookup_fields(filter_node)
+    except FilterError as exc:
+        return {}, [str(exc)], False
+
+    extra: dict[str, Any] = {}
+    if direct_node is not None:
+        extra.update(compile_filter(direct_node, "logs"))
+    if lookup_node is not None:
+        lookup_params = compile_filter(lookup_node, "hosts")
+        host_regex, host_truncated = await _resolve_hosts_to_regex_from_params(
+            lookup_params, backends
+        )
+        if host_regex is None:
+            return {}, ["No hosts matched the hostgroup/custom_var filter"], False
+        extra["host_name[regex]"] = host_regex
+        return extra, [], host_truncated
+    return extra, [], False
+
+
+async def _resolve_hosts_to_regex_from_params(
+    params: dict[str, Any],
+    backends: str | None,
+    hard_limit: int = _RESOLVE_HOSTS_HARD_LIMIT,
+) -> tuple[str | None, bool]:
+    """Like ``_resolve_hosts_to_regex`` but accepts a pre-built params dict.
+
+    Uses ``get_all()`` to paginate through all matching hosts transparently.
+    Returns ``(regex, truncated)`` — ``truncated`` is ``True`` when the
+    ``hard_limit`` was reached and the result may be incomplete.
+    """
+    host_params: dict[str, Any] = {"columns": "name", **params}
+    names: list[str] = []
+    async for row in _get_client().get_all(
+        "/hosts",
+        params=host_params,
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=hard_limit,
+    ):
+        n = row.get("name") if isinstance(row, dict) else None
+        if n:
+            names.append(n)
+    if not names:
+        return None, False
+    truncated = len(names) >= hard_limit
+    return f"^({'|'.join(re.escape(n) for n in names)})$", truncated
+
+
 __all__ = [
+    "_RESOLVE_HOSTS_HARD_LIMIT",
     "_backends",
     "_build_cv_params",
     "_client_var",
@@ -376,6 +500,10 @@ __all__ = [
     "_format_state_label",
     "_get_client",
     "_list_params",
+    "_now_utc_epoch",
+    "_parse_thruk_time",
+    "_resolve_hosts_to_regex_from_params",
+    "_resolve_log_filter",
     "_resolve_peer_for_host",
     "_sanitize_latency",
     "_seg",

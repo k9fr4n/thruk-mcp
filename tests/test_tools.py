@@ -2711,7 +2711,7 @@ async def test_resolve_hosts_truncation_warning_list_alerts(mocked_server) -> No
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
 
     with patch(
-        "thruk_mcp.server._resolve_hosts_to_regex_from_params",
+        "thruk_mcp.helpers._resolve_hosts_to_regex_from_params",
         new=AsyncMock(return_value=("^(h0|h1|h2)$", True)),
     ):
         result = await mcp.call_tool(
@@ -2744,7 +2744,7 @@ async def test_resolve_hosts_truncation_warning_top_noisy_hosts(mocked_server) -
     router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
 
     with patch(
-        "thruk_mcp.server._resolve_hosts_to_regex_from_params",
+        "thruk_mcp.helpers._resolve_hosts_to_regex_from_params",
         new=AsyncMock(return_value=("^(h0|h1|h2)$", True)),
     ):
         result = await mcp.call_tool(
