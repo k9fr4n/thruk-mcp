@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 from ..helpers import _backends, _get_client, _tool_response
+from .base import _BACKENDS, _OPT_OBJ, ToolSpec, _s, _str
 
 log = logging.getLogger("thruk_mcp.tools.escape")
 
@@ -186,3 +187,52 @@ async def thruk_run_background_query(
         poll_timeout=poll_timeout,
     )
     return _tool_response(result)
+
+
+# ---------------------------------------------------------------------------
+# ESCAPE_REGISTRY: co-located tool specs (spliced into TOOL_REGISTRY, issue #262)
+# ---------------------------------------------------------------------------
+# Preserves the original registration order from ``server.py``: the raw-query
+# tools sit between the log/alert block and the write-command block.
+#
+# ``thruk_query`` serves both reads (GET/HEAD) and writes (POST/PUT/DELETE). It
+# is intentionally NOT marked ``is_write=True`` so it is never stripped in
+# read-only mode; ``server._is_auditable_write()`` handles write-method
+# auditing at call-time by inspecting the ``method`` argument.
+ESCAPE_REGISTRY: list[ToolSpec] = [
+    ToolSpec(
+        name="thruk_query",
+        fn=thruk_query,
+        schema=_s(
+            "path",
+            path=_str("Path after /thruk/r, e.g. /hosts/srv01/services"),
+            method=_str(),
+            params=_OPT_OBJ,
+            data=_OPT_OBJ,
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_run_background_query",
+        fn=thruk_run_background_query,
+        schema=_s(
+            "path",
+            path=_str("Path after /thruk/r"),
+            method=_str(),
+            params=_OPT_OBJ,
+            data=_OPT_OBJ,
+            backends=_BACKENDS,
+            poll_timeout={"type": "number", "default": 300.0},
+        ),
+        is_write=True,
+    ),
+]
+
+__all__ = [
+    "ESCAPE_REGISTRY",
+    "_ALLOWED_METHODS",
+    "_REST_PATH_PREFIXES",
+    "_validate_rest_path",
+    "thruk_query",
+    "thruk_run_background_query",
+]
