@@ -861,3 +861,30 @@ async def test_concurrent_failures_posts_class_one(mocked_server) -> None:
     assert body.get("state[gte]") == ["1"], (
         "Existing state[gte]=1 filter (recovery exclusion) must still be POSTed."
     )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failures_fetches_newest_first(mocked_server) -> None:
+    """Regression for issue #250.
+
+    BEFORE FIX (broken):
+        ``sort="time"`` (ascending). When the _NOISY_MAX_ALERTS cap was hit the
+        fetch returned the *oldest* DOWN events, so recent concurrent-failure
+        bursts were dropped and collapsed into one useless multi-hour window.
+
+    AFTER FIX:
+        ``sort="-time"`` (newest first) keeps the most recent DOWN events. The
+        sliding-window scan re-sorts events ascending client-side, so the fetch
+        order does not affect correctness — only *which* rows survive the cap.
+    """
+    from urllib.parse import parse_qs
+
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    await mcp.call_tool("thruk_concurrent_failures", {"since": "-1h"})
+    assert route.called
+    body = parse_qs(route.calls.last.request.content.decode())
+    assert body.get("sort") == ["-time"], (
+        "concurrent_failures must POST sort=-time (issue #250) so the log cap "
+        "drops the oldest events, keeping recent failure bursts."
+    )
