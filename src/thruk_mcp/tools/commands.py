@@ -81,8 +81,9 @@ async def thruk_schedule_downtime(
     fixed: bool = True,
     backends: str | None = None,
 ) -> str:
-    """Schedule a host or service downtime. Time accepts 'now', relative ('+2h', '+30m')
-    or ISO 8601. If `duration_minutes` is set it overrides `end_time`.
+    """Schedule a host or service downtime (times accept 'now', relative '+2h'/'+30m', or ISO 8601).
+
+    If `duration_minutes` is set it overrides `end_time`.
 
     Note: Naemon processes scheduling commands asynchronously through its
     command pipe. A newly scheduled downtime may not be immediately visible
@@ -639,8 +640,9 @@ async def thruk_schedule_host_services_downtime(
     fixed: bool = True,
     backends: str | None = None,
 ) -> str:
-    """Schedule a downtime on ALL services of the given host
-    (schedule_host_svc_downtime). Use thruk_schedule_downtime for the host
+    """Schedule a downtime on ALL services of the given host (not the host object itself).
+
+    Uses schedule_host_svc_downtime. Use thruk_schedule_downtime for the host
     itself or for one specific service.
 
     Note: Naemon processes scheduling commands asynchronously; new downtimes
@@ -696,8 +698,10 @@ async def thruk_schedule_hostgroup_downtime(
     fixed: bool = True,
     backends: str | None = None,
 ) -> str:
-    """Schedule a downtime for every host (`target='hosts'`, default) or
-    every service (`target='services'`) of a hostgroup."""
+    """Schedule a downtime on every host or service of a hostgroup.
+
+    `target='hosts'` (default) covers the group's hosts; `target='services'`
+    covers their services."""
     cmd = (
         "schedule_hostgroup_svc_downtime"
         if target == "services"
@@ -724,9 +728,10 @@ async def thruk_schedule_servicegroup_downtime(
     fixed: bool = True,
     backends: str | None = None,
 ) -> str:
-    """Schedule a downtime on a servicegroup. `target='services'` (default)
-    targets all services in the group; `target='hosts'` targets the hosts
-    owning those services."""
+    """Schedule a downtime on a servicegroup's services or owning hosts.
+
+    `target='services'` (default) targets all services in the group;
+    `target='hosts'` targets the hosts owning those services."""
     cmd = (
         "schedule_servicegroup_host_downtime"
         if target == "hosts"
@@ -749,10 +754,11 @@ async def thruk_delete_active_downtimes(
     retry_on_empty: bool = True,
     retry_delay_seconds: float = 2.0,
 ) -> str:
-    """Remove ALL currently active downtimes for a host (or one specific
-    service when `service` is given). Fetches all active downtime IDs first,
-    then submits one DEL_*_DOWNTIME per ID. Partial failures are reported
-    individually in `errors` instead of aborting the whole batch.
+    """Remove ALL currently active downtimes for a host (or one specific service).
+
+    Pass `service` to scope to a single service. Fetches all active downtime
+    IDs first, then submits one DEL_*_DOWNTIME per ID. Partial failures are
+    reported individually in `errors` instead of aborting the whole batch.
 
     Naemon processes scheduling commands asynchronously through its command
     pipe (issue #194): a downtime created by ``thruk_schedule_downtime`` /
