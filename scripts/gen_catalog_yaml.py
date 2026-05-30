@@ -3,7 +3,9 @@
 import json
 import os
 
-data = json.load(open(os.path.join(os.path.dirname(__file__), "..", "catalog", "metadata.json")))
+metadata_path = os.path.join(os.path.dirname(__file__), "..", "catalog", "metadata.json")
+with open(metadata_path) as f:
+    data = json.load(f)
 
 print("    tools:")
 for tool in data["tools"]:
@@ -14,4 +16,7 @@ for tool in data["tools"]:
         for a in args:
             optional = ", optional: true" if a.get("optional") else ""
             desc = a.get("desc", "")
-            print(f"          - {{name: {a['name']}, type: {a['type']}, desc: \"{desc}\"{optional}}}")
+            print(
+                f"          - {{name: {a['name']}, type: {a['type']}, "
+                f'desc: "{desc}"{optional}}}'
+            )
