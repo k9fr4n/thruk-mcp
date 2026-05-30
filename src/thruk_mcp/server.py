@@ -95,6 +95,7 @@ from .helpers import (
     _backends,
     _build_cv_params,
     _client_var,
+    _format_state_label,
     _get_client,
     _resolve_peer_for_host,
     _sanitize_latency,
@@ -1114,7 +1115,9 @@ async def _aggregate_alerts(
             {
                 **dict(zip(key_fields, k, strict=False)),
                 "alert_count": v["alert_count"],
-                "last_state": state_map.get(v["last_state_int"], str(v["last_state_int"])),
+                # Issue #245: render unmapped ints (Naemon log rows occasionally
+                # carry host state=3) as "UNKNOWN(<n>)" rather than a raw string.
+                "last_state": _format_state_label(v["last_state_int"], state_map),
                 "last_alert_time": v["last_alert_time"],
             }
             for k, v in counts.items()
@@ -1410,16 +1413,17 @@ async def thruk_flap_summary(
         state_map = HOST_STATES if not svc else SERVICE_STATES
         last_entry = entries[-1]
         last_state_int = last_entry.get("state", -1)
-        states_seen = sorted(
-            {state_map.get(e.get("state", -1), str(e.get("state", -1))) for e in entries}
-        )
+        # Issue #245: route through _format_state_label so unmapped ints
+        # (e.g. host state=3 from a stray Naemon log row) render as
+        # "UNKNOWN(<n>)" instead of a bare integer string.
+        states_seen = sorted({_format_state_label(e.get("state", -1), state_map) for e in entries})
         results_raw.append(
             {
                 "host": h,
                 "service": svc or None,
                 "transition_count": transitions,
                 "states_seen": states_seen,
-                "last_state": state_map.get(last_state_int, str(last_state_int)),
+                "last_state": _format_state_label(last_state_int, state_map),
                 "last_alert_time": _ts(last_entry.get("time")),
             }
         )
@@ -1743,8 +1747,9 @@ async def thruk_recurring_problems(
             "alert_count": v["alert_count"],
             "first_seen": _ts(v["first_ts"]),
             "last_seen": _ts(v["last_ts"]),
-            "last_state": (HOST_STATES if not svc else SERVICE_STATES).get(
-                v["last_state_int"], str(v["last_state_int"])
+            # Issue #245: friendly "UNKNOWN(<n>)" fallback instead of raw int.
+            "last_state": _format_state_label(
+                v["last_state_int"], HOST_STATES if not svc else SERVICE_STATES
             ),
         }
         for (h, svc), v in agg.items()

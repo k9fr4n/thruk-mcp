@@ -2287,6 +2287,30 @@ async def test_top_noisy_hosts_since_until(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
+async def test_top_noisy_hosts_unknown_state_friendly_label(mocked_server) -> None:
+    """Issue #245: HOST ALERT rows with state=3 (not in HOST_STATE_STR) must
+    render as ``UNKNOWN(3)`` rather than a raw ``"3"`` string.
+
+    Pre-fix behaviour (regression repro):
+        ``state_map.get(3, str(3))`` -> ``"3"`` leaked into ``last_state``.
+    Post-fix: ``_format_state_label(3, HOST_STATE_STR)`` -> ``"UNKNOWN(3)"``.
+    """
+    mcp, router = mocked_server
+    raw = [
+        _make_log_entry("wopr-naemon-05", 3, 10),  # stray host state 3
+        _make_log_entry("wopr-naemon-05", 3, 20),
+        _make_log_entry("ecrint-ad-03", 1, 30),  # legitimate DOWN
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-7d", "limit": 5})
+    payload = json.loads(result[0].text)
+    by_host = {r["host"]: r for r in payload["results"]}
+    assert by_host["wopr-naemon-05"]["last_state"] == "UNKNOWN(3)"
+    # Known host states must still resolve to their symbolic label.
+    assert by_host["ecrint-ad-03"]["last_state"] == "DOWN"
+
+
+@pytest.mark.asyncio
 async def test_top_noisy_services_basic(mocked_server) -> None:
     """Top-noisy-services aggregates by (host, service) and excludes RECOVERY (state=0)."""
     mcp, router = mocked_server
