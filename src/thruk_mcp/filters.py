@@ -314,8 +314,21 @@ def _leaf_to_params(leaf: dict[str, Any], context: str) -> dict[str, Any]:
             state_map = {**_HOST_STATE_MAP, **_SVC_STATE_MAP}
         raw = str(value).lower()
         int_val = state_map.get(raw, int(value) if str(value).isdigit() else value)
-        op_map = {"eq": "state", "gte": "state[gte]", "lte": "state[lte]"}
-        return {op_map.get(op, "state"): int_val}
+        # Issue #241: `neq` must map to the [!] bracket op (was silently compiled
+        # as equality), `in` is pre-rewritten to OR(eq, …) by `_expand_in` before
+        # reaching this branch and routes through q= instead.
+        op_map = {
+            "eq": "state",
+            "neq": "state[!]",
+            "gte": "state[gte]",
+            "lte": "state[lte]",
+        }
+        if op not in op_map:
+            raise FilterError(
+                f"op={op!r} on field='state' cannot be compiled to a single "
+                "bracket-op param; this is a bug in compile_filter."
+            )
+        return {op_map[op]: int_val}
 
     if field in _GROUP_FIELDS:
         # Issue #240: honour leaf op on list-valued group columns.
@@ -653,9 +666,26 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
                 host_params["groups[gte]"] = value
                 svc_params["host_groups[gte]"] = value
         elif field == "state":
-            iv = _HOST_STATE_MAP.get(str(value).lower(), value)
-            host_params["state"] = iv
-            svc_params["state"] = iv
+            # Issue #241: honour `neq` on the scalar state column. `in` cannot
+            # be expressed without OR on a scalar Livestatus column and OR is
+            # rejected at the tree level for `thruk_problems` anyway, so we
+            # surface a clear FilterError instead of silently HTTP 400'ing.
+            op = leaf["op"]
+            if op == "in":
+                raise FilterError(
+                    "op='in' on field='state' is not supported by thruk_problems "
+                    "— the dual-query architecture is AND-only and the scalar "
+                    "state column cannot be OR-joined inside a single param."
+                )
+            # Resolve symbolic state names from BOTH the host and service
+            # maps — ``thruk_problems`` mirrors the integer to both /hosts and
+            # /services endpoints, so "ok"→0 (service) and "up"→0 (host) must
+            # both work even though /hosts doesn't accept "ok" as a string.
+            raw = str(value).lower()
+            iv = _HOST_STATE_MAP.get(raw, _SVC_STATE_MAP.get(raw, value))
+            key = "state[!]" if op == "neq" else "state" if op == "eq" else f"state[{op}]"
+            host_params[key] = iv
+            svc_params[key] = iv
 
     def _walk(n: dict[str, Any]) -> None:
         if n.get("type") == "leaf":
@@ -717,19 +747,32 @@ def _compile_hybrid(node: dict[str, Any], context: str) -> dict[str, Any]:
     return bracket_params
 
 
+#: Fields whose ``op='in'`` leaf must be rewritten to ``OR(eq, …)`` before
+#: compilation. Two distinct reasons:
+#: - ``hostgroup``/``servicegroup`` (issue #240): list-valued columns, no single
+#:   bracket-op param expresses multi-membership.
+#: - ``state`` (issue #241): scalar integer column, but the bracket AND-path
+#:   would forward the raw list under ``state=`` and Thruk would HTTP 400 on
+#:   the first non-integer value.
+_IN_REWRITE_FIELDS: frozenset[str] = _GROUP_FIELDS | frozenset({"state"})
+
+
 def _expand_group_in(node: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite ``op='in'`` leaves on group fields into ``OR(eq, …)`` groups.
+    """Rewrite ``op='in'`` leaves on group/state fields into ``OR(eq, …)`` groups.
 
     Group columns are list-valued and have no single bracket-op param that
-    expresses set-membership against several candidate group names. Expanding
-    ``in`` into a membership-OR routes the leaf through the existing ``q=``
-    builder (``(groups >= "A") or (groups >= "B")``), which Thruk evaluates
-    correctly. Non-group fields and other ops are passed through untouched.
-    See issue #240.
+    expresses set-membership against several candidate group names (issue #240).
+    The scalar ``state`` column has the same problem in the AND-only bracket
+    path because Thruk cannot OR-join several integer literals under the same
+    ``state=`` key (issue #241). Expanding ``in`` into an OR routes the leaf
+    through the existing ``q=`` builder, which already handles both cases
+    correctly (``(groups >= "A") or (groups >= "B")``, ``(state = 1) or
+    (state = 2)``). Non-rewritten fields and other ops are passed through
+    untouched.
     """
     node_type = node.get("type")
     if node_type == "leaf":
-        if node.get("field") in _GROUP_FIELDS and node.get("op") == "in":
+        if node.get("field") in _IN_REWRITE_FIELDS and node.get("op") == "in":
             values = node["value"]
             return {
                 "type": "group",
