@@ -143,6 +143,16 @@ FIELDS_PROBLEM_COUNTS: frozenset[str] = FIELDS_TOTALS
 #: Fields that use the _VARNAME convention.
 _CV_FIELDS: frozenset[str] = frozenset({"custom_var", "host_custom_var"})
 
+#: Group-membership fields (list-valued columns: ``groups`` / ``host_groups``).
+_GROUP_FIELDS: frozenset[str] = frozenset({"hostgroup", "servicegroup"})
+
+#: Operators that are semantically meaningful on a list-valued group column.
+#: ``regex`` and ``lte`` are rejected at validation time because they cannot be
+#: expressed against Thruk's group columns without producing surprising results
+#: (no bracket-op for regex on list columns; ``[lte]`` would mean "subset" which
+#: is rarely what callers intend). See issue #240.
+_GROUP_FIELDS_ALLOWED_OPS: frozenset[str] = frozenset({"eq", "neq", "gte", "in"})
+
 #: Fields in log-family contexts that require a secondary /hosts lookup.
 LOG_LOOKUP_FIELDS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 
@@ -204,6 +214,14 @@ def _validate_leaf(node: dict[str, Any], allowed_fields: frozenset[str]) -> None
         raise FilterError(f"Unknown filter field {field!r}. Allowed: {sorted(allowed_fields)}")
     if not isinstance(op, str) or op not in LEAF_OPS:
         raise FilterError(f"Unknown filter operator {op!r}. Allowed: {sorted(LEAF_OPS)}")
+    if field in _GROUP_FIELDS and op not in _GROUP_FIELDS_ALLOWED_OPS:
+        # Issue #240: hostgroup/servicegroup are list-valued group columns.
+        # regex/lte on group columns silently produced wrong results before;
+        # reject them at validation time with a clear, actionable message.
+        raise FilterError(
+            f"op={op!r} is not supported on field={field!r}. "
+            f"Allowed ops for group fields: {sorted(_GROUP_FIELDS_ALLOWED_OPS)}"
+        )
     if value is None:
         raise FilterError("Filter leaf 'value' must not be null")
 
@@ -299,12 +317,23 @@ def _leaf_to_params(leaf: dict[str, Any], context: str) -> dict[str, Any]:
         op_map = {"eq": "state", "gte": "state[gte]", "lte": "state[lte]"}
         return {op_map.get(op, "state"): int_val}
 
-    if field == "hostgroup":
-        thruk_key = "host_groups[gte]" if context == "services" else "groups[gte]"
-        return {thruk_key: value}
-
-    if field == "servicegroup":
-        return {"groups[gte]": value}
+    if field in _GROUP_FIELDS:
+        # Issue #240: honour leaf op on list-valued group columns.
+        # eq/gte → membership ([gte] bracket op = "contains").
+        # neq    → non-membership ([!] bracket op).
+        # in     → rewritten to OR(eq, …) by compile_filter before reaching here.
+        base = "host_groups" if (field == "hostgroup" and context == "services") else "groups"
+        if op in ("eq", "gte"):
+            return {f"{base}[gte]": value}
+        if op == "neq":
+            return {f"{base}[!]": value}
+        # Defensive: 'in' should have been pre-rewritten; 'regex'/'lte' are
+        # rejected at validation time. Surface a clear FilterError if we ever
+        # reach this branch — never silently fall through to membership.
+        raise FilterError(
+            f"op={op!r} on field={field!r} cannot be compiled to a single "
+            "bracket-op param; this is a bug in compile_filter."
+        )
 
     if field == "since":
         return {"time[gte]": value}
@@ -609,8 +638,20 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
             k = value["var"].upper()
             svc_params[f"_HOST{k}"] = str(value.get("val", ""))
         elif field == "hostgroup":
-            host_params["groups[gte]"] = value
-            svc_params["host_groups[gte]"] = value
+            # Issue #240: honour `neq` on the list-valued group column.
+            # Other ops (eq/gte/in) keep the legacy ``[gte]`` passthrough —
+            # Thruk's bracket-op accepts repeated values for list-valued
+            # columns (Thruk OR-joins them), and ``thruk_problems`` re-validates
+            # the merged rows client-side via _row_matches_hostgroup_constraints
+            # (defense-in-depth, issue #200). ``regex`` / ``lte`` are rejected
+            # at validation time and never reach this branch.
+            op = leaf["op"]
+            if op == "neq":
+                host_params["groups[!]"] = value
+                svc_params["host_groups[!]"] = value
+            else:
+                host_params["groups[gte]"] = value
+                svc_params["host_groups[gte]"] = value
         elif field == "state":
             iv = _HOST_STATE_MAP.get(str(value).lower(), value)
             host_params["state"] = iv
@@ -676,6 +717,37 @@ def _compile_hybrid(node: dict[str, Any], context: str) -> dict[str, Any]:
     return bracket_params
 
 
+def _expand_group_in(node: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite ``op='in'`` leaves on group fields into ``OR(eq, …)`` groups.
+
+    Group columns are list-valued and have no single bracket-op param that
+    expresses set-membership against several candidate group names. Expanding
+    ``in`` into a membership-OR routes the leaf through the existing ``q=``
+    builder (``(groups >= "A") or (groups >= "B")``), which Thruk evaluates
+    correctly. Non-group fields and other ops are passed through untouched.
+    See issue #240.
+    """
+    node_type = node.get("type")
+    if node_type == "leaf":
+        if node.get("field") in _GROUP_FIELDS and node.get("op") == "in":
+            values = node["value"]
+            return {
+                "type": "group",
+                "operator": "or",
+                "conditions": [
+                    {"type": "leaf", "field": node["field"], "op": "eq", "value": v} for v in values
+                ],
+            }
+        return node
+    if node_type == "group":
+        return {
+            "type": "group",
+            "operator": node["operator"],
+            "conditions": [_expand_group_in(c) for c in node["conditions"]],
+        }
+    return node
+
+
 def compile_filter(node: dict[str, Any], context: str) -> dict[str, Any]:
     """Compile a validated filter tree to Thruk REST query params.
 
@@ -698,6 +770,11 @@ def compile_filter(node: dict[str, Any], context: str) -> dict[str, Any]:
           ``q=`` parser bug where ``((groups >= X) or (_VAR = Y)) and (state
           = N)`` silently returns empty results.
     """
+    # Issue #240: rewrite `in` on group fields into OR(eq, ...) so it routes
+    # naturally through the q= builder instead of being silently coerced to
+    # membership by the bracket-op path.
+    node = _expand_group_in(node)
+
     if not _has_or(node):
         return _and_tree_to_params(node, context)
     # Root is OR (or a bare leaf with no AND wrapper) → full q= as before

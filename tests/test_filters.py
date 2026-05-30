@@ -234,6 +234,87 @@ def test_compile_servicegroup():
     assert p["groups[gte]"] == "db"
 
 
+# ---------------------------------------------------------------------------
+# Issue #240 — hostgroup/servicegroup leaf must honour `op`
+# ---------------------------------------------------------------------------
+
+
+def test_compile_hostgroup_neq_hosts():
+    """Before #240: ``hostgroup neq X`` was silently compiled as membership.
+    After: emits the [!] non-membership bracket op."""
+    p = compile_filter(leaf("hostgroup", "neq", "rol-edf"), "hosts")
+    assert p == {"groups[!]": "rol-edf"}
+
+
+def test_compile_hostgroup_neq_services():
+    p = compile_filter(leaf("hostgroup", "neq", "rol-edf"), "services")
+    assert p == {"host_groups[!]": "rol-edf"}
+
+
+def test_compile_servicegroup_neq():
+    p = compile_filter(leaf("servicegroup", "neq", "db"), "services")
+    assert p == {"groups[!]": "db"}
+
+
+def test_compile_hostgroup_in_routes_through_q():
+    """``hostgroup in [A, B]`` must compile to a membership-OR via q=, not
+    a bogus single ``groups[gte]`` param. Issue #240."""
+    p = compile_filter(leaf("hostgroup", "in", ["A", "B"]), "hosts")
+    # Bracket-op param must NOT contain the list verbatim.
+    assert "groups[gte]" not in p
+    # Must compile to a q= expression with both membership clauses OR-joined.
+    assert "q" in p
+    assert '(groups >= "A")' in p["q"]
+    assert '(groups >= "B")' in p["q"]
+    assert " or " in p["q"]
+
+
+def test_compile_hostgroup_in_services_uses_host_groups():
+    p = compile_filter(leaf("hostgroup", "in", ["A", "B"]), "services")
+    assert "q" in p
+    assert '(host_groups >= "A")' in p["q"]
+    assert '(host_groups >= "B")' in p["q"]
+
+
+def test_validate_hostgroup_regex_rejected():
+    """Per-field op constraint: regex on a list-valued group column is not
+    expressible without surprising semantics. Reject at validation time."""
+    with pytest.raises(FilterError, match="op='regex' is not supported on field='hostgroup'"):
+        validate_filter(leaf("hostgroup", "regex", "rol-.*"), FIELDS_HOSTS)
+
+
+def test_validate_hostgroup_lte_rejected():
+    with pytest.raises(FilterError, match="op='lte' is not supported on field='hostgroup'"):
+        validate_filter(leaf("hostgroup", "lte", "z"), FIELDS_HOSTS)
+
+
+def test_validate_servicegroup_regex_rejected():
+    with pytest.raises(FilterError, match="op='regex' is not supported on field='servicegroup'"):
+        validate_filter(leaf("servicegroup", "regex", "db.*"), FIELDS_SERVICES)
+
+
+def test_validate_hostgroup_neq_accepted():
+    """neq is now an explicitly supported op on group fields."""
+    validate_filter(leaf("hostgroup", "neq", "rol-edf"), FIELDS_HOSTS)
+    validate_filter(leaf("hostgroup", "in", ["A", "B"]), FIELDS_HOSTS)
+
+
+def test_problems_hostgroup_neq():
+    host_p, svc_p = compile_filter_problems(leaf("hostgroup", "neq", "rol-edf"))
+    assert host_p["groups[!]"] == "rol-edf"
+    assert svc_p["host_groups[!]"] == "rol-edf"
+
+
+def test_problems_hostgroup_in_still_uses_legacy_gte_passthrough():
+    """``thruk_problems`` keeps the legacy ``[gte]`` bracket-op for ``in`` —
+    Thruk OR-joins repeated values on the list-valued ``groups`` column, and
+    the tool's client-side re-validation (issue #200) enforces strict ``in``
+    semantics on the merged rows. The fix for #240 must NOT regress this."""
+    host_p, svc_p = compile_filter_problems(leaf("hostgroup", "in", ["A", "B"]))
+    assert host_p["groups[gte]"] == ["A", "B"]
+    assert svc_p["host_groups[gte]"] == ["A", "B"]
+
+
 def test_compile_custom_var():
     p = compile_filter(leaf("custom_var", "eq", {"var": "KERNEL", "val": "windows"}), "hosts")
     assert p["_KERNEL"] == "windows"
