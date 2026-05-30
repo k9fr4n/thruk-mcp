@@ -192,15 +192,30 @@ class TestFutureAnnotations:
         )
 
     def test_server_py_future_import_before_stdlib(self) -> None:
-        """The future import must appear before any stdlib import in server.py."""
+        """The future import must appear before any other import in server.py.
+
+        Note: server.py no longer imports ``asyncio`` directly since the
+        write/command tools moved to ``tools/commands.py`` (issue #261), so we
+        locate the first *real* module-level import generically rather than
+        hard-coding a specific stdlib module.
+        """
+        import re
+
         server_py = self.SRC_DIR / "server.py"
         source = server_py.read_text(encoding="utf-8")
         future_pos = source.find("from __future__ import annotations")
-        asyncio_pos = source.find("import asyncio")
         assert future_pos != -1, "server.py missing future annotations import"
-        assert asyncio_pos != -1, "server.py missing `import asyncio`"
-        assert future_pos < asyncio_pos, (
-            "`from __future__ import annotations` must appear before `import asyncio` in server.py"
+        # First module-level import that is NOT the __future__ line.
+        first_import = next(
+            (
+                m.start()
+                for m in re.finditer(r"^(?:import |from )(?!__future__)", source, re.MULTILINE)
+            ),
+            -1,
+        )
+        assert first_import != -1, "server.py has no real imports"
+        assert future_pos < first_import, (
+            "`from __future__ import annotations` must appear before any other import in server.py"
         )
 
 

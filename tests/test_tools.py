@@ -1407,14 +1407,16 @@ async def test_delete_active_downtimes_retries_when_naemon_lags(mocked_server, m
     """
     import json as _json
 
-    import thruk_mcp.server as srv
+    from thruk_mcp.tools import commands
 
     sleep_calls: list[float] = []
 
     async def _fake_sleep(delay: float) -> None:
         sleep_calls.append(delay)
 
-    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+    # thruk_delete_active_downtimes moved to tools/commands.py (issue #261);
+    # patch the asyncio it actually calls instead of the (now removed) server.asyncio.
+    monkeypatch.setattr(commands.asyncio, "sleep", _fake_sleep)
 
     mcp, router = mocked_server
     # 1st GET -> empty (Naemon hasn't processed the schedule yet).
@@ -1453,12 +1455,14 @@ async def test_delete_active_downtimes_warns_when_still_empty(mocked_server, mon
     """Issue #194 - when the retry also returns empty, surface a structured warning."""
     import json as _json
 
-    import thruk_mcp.server as srv
+    from thruk_mcp.tools import commands
 
     async def _fake_sleep(_delay: float) -> None:
         return None
 
-    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+    # thruk_delete_active_downtimes moved to tools/commands.py (issue #261);
+    # patch the asyncio it actually calls instead of the (now removed) server.asyncio.
+    monkeypatch.setattr(commands.asyncio, "sleep", _fake_sleep)
 
     mcp, router = mocked_server
     router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
@@ -1477,14 +1481,16 @@ async def test_delete_active_downtimes_opt_out_no_retry(mocked_server, monkeypat
     """retry_on_empty=False short-circuits without sleeping / re-querying."""
     import json as _json
 
-    import thruk_mcp.server as srv
+    from thruk_mcp.tools import commands
 
     sleep_calls: list[float] = []
 
     async def _fake_sleep(delay: float) -> None:
         sleep_calls.append(delay)
 
-    monkeypatch.setattr(srv.asyncio, "sleep", _fake_sleep)
+    # thruk_delete_active_downtimes moved to tools/commands.py (issue #261);
+    # patch the asyncio it actually calls instead of the (now removed) server.asyncio.
+    monkeypatch.setattr(commands.asyncio, "sleep", _fake_sleep)
 
     mcp, router = mocked_server
     dt_route = router.get("https://thruk.test/r/downtimes").mock(return_value=ok([]))
