@@ -43,7 +43,6 @@ from ..filters import (
     build_tool_schema,
     compile_filter,
     compile_filter_problems,
-    filter_schema_property,
     rewrite_custom_var_to_host_custom_var,
     validate_filter,
 )
@@ -823,7 +822,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_hosts,
         schema=build_tool_schema(
             FIELDS_HOSTS,
-            filter=filter_schema_property(FIELDS_HOSTS),
             limit=_int(default=50),
             offset=_int(default=0),
             sort=_str(),
@@ -841,7 +839,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_services,
         schema=build_tool_schema(
             FIELDS_SERVICES,
-            filter=filter_schema_property(FIELDS_SERVICES),
             limit=_int(default=50),
             offset=_int(default=0),
             sort=_str(),
@@ -1038,7 +1035,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_problems,
         schema=build_tool_schema(
             FIELDS_PROBLEMS,
-            filter=filter_schema_property(FIELDS_PROBLEMS),
             limit=_int(default=100),
             offset=_int(default=0),
             columns=_OPT_STR,
@@ -1050,7 +1046,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_stats,
         schema=build_tool_schema(
             FIELDS_HOST_STATS,
-            filter=filter_schema_property(FIELDS_HOST_STATS),
             backends=_BACKENDS,
         ),
     ),
@@ -1059,7 +1054,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_totals,
         schema=build_tool_schema(
             FIELDS_TOTALS,
-            filter=filter_schema_property(FIELDS_TOTALS),
             backends=_BACKENDS,
         ),
     ),
@@ -1069,7 +1063,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_downtimes,
         schema=build_tool_schema(
             FIELDS_DOWNTIMES,
-            filter=filter_schema_property(FIELDS_DOWNTIMES),
             active_only=_bool(default=True),
             limit=_int(default=100),
             offset=_int(default=0),
@@ -1083,7 +1076,6 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_comments,
         schema=build_tool_schema(
             FIELDS_COMMENTS,
-            filter=filter_schema_property(FIELDS_COMMENTS),
             limit=_int(default=100),
             offset=_int(default=0),
             sort=_str(),

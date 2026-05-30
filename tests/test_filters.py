@@ -5,9 +5,22 @@ from __future__ import annotations
 import pytest
 
 from thruk_mcp.filters import (
+    FIELDS_ALERTS,
+    FIELDS_COMMENTS,
+    FIELDS_DOWNTIMES,
+    FIELDS_HOST_STATS,
     FIELDS_HOSTS,
     FIELDS_LOGS,
+    FIELDS_NOISY_HOSTS,
+    FIELDS_NOISY_SERVICES,
+    FIELDS_NOTIFICATIONS,
+    FIELDS_OLDEST_PROBLEMS,
+    FIELDS_PROBLEM_COUNTS,
+    FIELDS_PROBLEMS,
     FIELDS_SERVICES,
+    FIELDS_STALE_ACKS,
+    FIELDS_TOTALS,
+    FIELDS_UNACKED,
     FilterError,
     _has_or,
     build_tool_schema,
@@ -752,6 +765,73 @@ def test_build_tool_schema_has_defs():
 def test_build_tool_schema_required():
     s = build_tool_schema(FIELDS_HOSTS, "host", host={"type": "string"})
     assert s["required"] == ["host"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #263 — build_tool_schema auto-derives the `filter` property from the
+# same FIELDS_* set, removing the build_tool_schema(F, filter=filter_schema_
+# property(F)) duplication. These lock in equivalence with the old explicit
+# form and the auto-inject ordering contract.
+# ---------------------------------------------------------------------------
+
+
+def test_build_tool_schema_auto_injects_filter_property():
+    """Omitting `filter` must yield the same property as passing it explicitly."""
+    s = build_tool_schema(FIELDS_HOSTS, limit={"type": "integer"})
+    assert "filter" in s["properties"]
+    assert s["properties"]["filter"] == filter_schema_property(FIELDS_HOSTS)
+
+
+def test_build_tool_schema_auto_inject_equals_explicit_form():
+    """The new call form is schema-equivalent to the pre-#263 explicit form."""
+    auto = build_tool_schema(FIELDS_SERVICES, limit={"type": "integer"})
+    explicit = build_tool_schema(
+        FIELDS_SERVICES,
+        filter=filter_schema_property(FIELDS_SERVICES),
+        limit={"type": "integer"},
+    )
+    assert auto == explicit
+
+
+def test_build_tool_schema_auto_injected_filter_is_first():
+    """Auto-injected `filter` keeps its conventional first position."""
+    s = build_tool_schema(FIELDS_LOGS, limit={"type": "integer"}, backends={"type": "string"})
+    assert list(s["properties"]) == ["filter", "limit", "backends"]
+
+
+def test_build_tool_schema_explicit_filter_override_wins():
+    """An explicit `filter=` override is honoured and not double-injected."""
+    custom = {"type": "string", "description": "custom override"}
+    s = build_tool_schema(FIELDS_HOSTS, filter=custom)
+    assert s["properties"]["filter"] == custom
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        FIELDS_ALERTS,
+        FIELDS_COMMENTS,
+        FIELDS_DOWNTIMES,
+        FIELDS_HOSTS,
+        FIELDS_HOST_STATS,
+        FIELDS_LOGS,
+        FIELDS_NOISY_HOSTS,
+        FIELDS_NOISY_SERVICES,
+        FIELDS_NOTIFICATIONS,
+        FIELDS_OLDEST_PROBLEMS,
+        FIELDS_PROBLEMS,
+        FIELDS_PROBLEM_COUNTS,
+        FIELDS_SERVICES,
+        FIELDS_STALE_ACKS,
+        FIELDS_TOTALS,
+        FIELDS_UNACKED,
+    ],
+)
+def test_build_tool_schema_equivalence_all_field_sets(fields):
+    """For every FIELDS_* the auto-derived schema equals the old explicit form."""
+    assert build_tool_schema(fields, backends={"type": "string"}) == build_tool_schema(
+        fields, filter=filter_schema_property(fields), backends={"type": "string"}
+    )
 
 
 def test_filter_schema_examples_hosts():
