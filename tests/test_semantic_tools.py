@@ -185,8 +185,12 @@ async def test_oldest_problems_custom_var_filter(mocked_server) -> None:
 
     host_params = host_route.calls.last.request.url.params
     svc_params = svc_route.calls.last.request.url.params
+    # Issue #244: host-level custom_var on /services must compile to
+    # _HOST{VAR}, not _{VAR}. Pre-fix the services query was sent ``_ENV=prod``
+    # and silently matched zero rows.
     assert host_params["_ENV"] == "prod"
-    assert svc_params["_ENV"] == "prod"
+    assert svc_params["_HOSTENV"] == "prod"
+    assert "_ENV" not in svc_params
 
 
 @pytest.mark.asyncio
@@ -341,8 +345,11 @@ async def test_unacked_critical_custom_var_filter(mocked_server) -> None:
 
     host_params = host_route.calls.last.request.url.params
     svc_params = svc_route.calls.last.request.url.params
+    # Issue #244: host-level custom_var on /services must compile to
+    # _HOST{VAR}, not _{VAR}.
     assert host_params["_ENV"] == "prod"
-    assert svc_params["_ENV"] == "prod"
+    assert svc_params["_HOSTENV"] == "prod"
+    assert "_ENV" not in svc_params
 
 
 @pytest.mark.asyncio
