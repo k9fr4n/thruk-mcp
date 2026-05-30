@@ -315,12 +315,14 @@ def _leaf_to_params(leaf: dict[str, Any], context: str) -> dict[str, Any]:
             state_map = {**_HOST_STATE_MAP, **_SVC_STATE_MAP}
         raw = str(value).lower()
         int_val = state_map.get(raw, int(value) if str(value).isdigit() else value)
-        # Issue #241: `neq` must map to the [!] bracket op (was silently compiled
-        # as equality), `in` is pre-rewritten to OR(eq, …) by `_expand_in` before
-        # reaching this branch and routes through q= instead.
+        # Issue #277: `neq` must map to the `[ne]` word-alias bracket op. The
+        # earlier `[!]` token (issue #241) is NOT a valid Thruk operator — Thruk
+        # silently ignores unknown bracket ops and returns unfiltered results.
+        # `in` is pre-rewritten to OR(eq, …) by `_expand_in` before reaching this
+        # branch and routes through q= instead.
         op_map = {
             "eq": "state",
-            "neq": "state[!]",
+            "neq": "state[ne]",
             "gte": "state[gte]",
             "lte": "state[lte]",
         }
@@ -334,13 +336,15 @@ def _leaf_to_params(leaf: dict[str, Any], context: str) -> dict[str, Any]:
     if field in _GROUP_FIELDS:
         # Issue #240: honour leaf op on list-valued group columns.
         # eq/gte → membership ([gte] bracket op = "contains").
-        # neq    → non-membership ([!] bracket op).
+        # neq    → non-membership ([notin] bracket op).
         # in     → rewritten to OR(eq, …) by compile_filter before reaching here.
+        # Issue #277: the previous `[!]` token is not a valid Thruk operator and
+        # was silently ignored; "contains not" on a list column is `[notin]`.
         base = "host_groups" if (field == "hostgroup" and context == "services") else "groups"
         if op in ("eq", "gte"):
             return {f"{base}[gte]": value}
         if op == "neq":
-            return {f"{base}[!]": value}
+            return {f"{base}[notin]": value}
         # Defensive: 'in' should have been pre-rewritten; 'regex'/'lte' are
         # rejected at validation time. Surface a clear FilterError if we ever
         # reach this branch — never silently fall through to membership.
@@ -368,7 +372,9 @@ def _leaf_to_params(leaf: dict[str, Any], context: str) -> dict[str, Any]:
     if op == "eq":
         return {thruk_field: value}
     if op == "neq":
-        return {f"{thruk_field}[!]": value}
+        # Issue #277: `[ne]` is the valid Thruk `!=` alias; the old `[!]` token
+        # was silently ignored, returning unfiltered results.
+        return {f"{thruk_field}[ne]": value}
     if op == "regex":
         return {f"{thruk_field}[regex]": value}
     if op == "gte":
@@ -668,8 +674,10 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
             # at validation time and never reach this branch.
             op = leaf["op"]
             if op == "neq":
-                host_params["groups[!]"] = value
-                svc_params["host_groups[!]"] = value
+                # Issue #277: `[notin]` is the valid "contains not" alias on a
+                # list-valued group column; the old `[!]` token was ignored.
+                host_params["groups[notin]"] = value
+                svc_params["host_groups[notin]"] = value
             else:
                 host_params["groups[gte]"] = value
                 svc_params["host_groups[gte]"] = value
@@ -691,7 +699,8 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
             # both work even though /hosts doesn't accept "ok" as a string.
             raw = str(value).lower()
             iv = _HOST_STATE_MAP.get(raw, _SVC_STATE_MAP.get(raw, value))
-            key = "state[!]" if op == "neq" else "state" if op == "eq" else f"state[{op}]"
+            # Issue #277: `[ne]` is the valid Thruk `!=` alias; `[!]` was ignored.
+            key = "state[ne]" if op == "neq" else "state" if op == "eq" else f"state[{op}]"
             host_params[key] = iv
             svc_params[key] = iv
 
