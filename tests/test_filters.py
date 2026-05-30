@@ -219,6 +219,84 @@ def test_compile_state_numeric_string():
     assert p["state"] == 1
 
 
+# ---------------------------------------------------------------------------
+# Issue #241: state neq / state in in the AND-only (bracket) path
+# ---------------------------------------------------------------------------
+
+
+def test_compile_state_neq_services():
+    """Before the fix, ``state neq ok`` compiled to ``{"state": 0}`` (silent
+    equality flip — returned ONLY ok services, the exact opposite of intent).
+    After the fix, it must emit the ``state[!]`` bracket-op."""
+    p = compile_filter(leaf("state", "neq", "ok"), "services")
+    assert p == {"state[!]": 0}
+    assert "state" not in p  # the buggy silent-equality key must not leak
+
+
+def test_compile_state_neq_hosts_numeric():
+    p = compile_filter(leaf("state", "neq", "down"), "hosts")
+    assert p == {"state[!]": 1}
+
+
+def test_compile_state_neq_combined_with_hostgroup():
+    """AND of ``state neq`` with another scalar leaf must keep using the
+    bracket path on both sides (no q= fallback needed)."""
+    p = compile_filter(
+        group("and", leaf("state", "neq", "ok"), leaf("hostgroup", "eq", "HG_AGILE")),
+        "services",
+    )
+    assert p["state[!]"] == 0
+    assert p["host_groups[gte]"] == "HG_AGILE"
+    assert "q" not in p
+
+
+def test_compile_state_in_services_uses_q():
+    """Before the fix, ``state in [warning, critical]`` was forwarded as a raw
+    list under bare ``state=`` and Thruk replied HTTP 400 ("could not convert
+    warning to integer"). After the fix, ``in`` is rewritten to OR(eq, …) and
+    routed through the q= builder which already handles state correctly."""
+    p = compile_filter(leaf("state", "in", ["warning", "critical"]), "services")
+    assert "q" in p
+    q = p["q"]
+    assert "state = 1" in q
+    assert "state = 2" in q
+    assert " or " in q
+    # No raw list / string leak under a bracket key.
+    assert "state" not in {k for k in p if k != "q"}
+
+
+def test_compile_state_in_hosts_combined_and():
+    """AND(state in [down, unreachable], hostgroup=HG_AGILE) must go through
+    hybrid mode: state OR-rewritten in q=, hostgroup as bracket param."""
+    p = compile_filter(
+        group(
+            "and",
+            leaf("state", "in", ["down", "unreachable"]),
+            leaf("hostgroup", "eq", "HG_AGILE"),
+        ),
+        "hosts",
+    )
+    assert p["groups[gte]"] == "HG_AGILE"
+    assert "q" in p
+    q = p["q"]
+    assert "state = 1" in q
+    assert "state = 2" in q
+
+
+def test_compile_problems_state_neq():
+    """``compile_filter_problems`` had the same bracket-path bug for state."""
+    host_p, svc_p = compile_filter_problems(leaf("state", "neq", "ok"))
+    assert host_p == {"state[!]": 0}
+    assert svc_p == {"state[!]": 0}
+
+
+def test_compile_problems_state_in_rejected():
+    """``thruk_problems`` is AND-only by design — ``state in`` cannot be
+    expressed and must surface a clear FilterError instead of HTTP 400'ing."""
+    with pytest.raises(FilterError, match="op='in' on field='state'"):
+        compile_filter_problems(leaf("state", "in", ["warning", "critical"]))
+
+
 def test_compile_hostgroup_hosts():
     p = compile_filter(leaf("hostgroup", "eq", "HG_AGILE"), "hosts")
     assert p["groups[gte]"] == "HG_AGILE"
