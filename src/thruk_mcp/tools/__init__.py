@@ -11,6 +11,20 @@ now; submodules expose their tool functions for direct import.
 
 from __future__ import annotations
 
+from .base import (
+    _BACKENDS,
+    _LOG_CUSTOM_VARS,
+    _LOG_HOSTGROUP,
+    _OPT_BOOL,
+    _OPT_INT,
+    _OPT_OBJ,
+    _OPT_STR,
+    ToolSpec,
+    _bool,
+    _int,
+    _s,
+    _str,
+)
 from .escape import (
     _ALLOWED_METHODS,
     _REST_PATH_PREFIXES,
@@ -21,7 +35,19 @@ from .escape import (
 
 __all__ = [
     "_ALLOWED_METHODS",
+    "_BACKENDS",
+    "_LOG_CUSTOM_VARS",
+    "_LOG_HOSTGROUP",
+    "_OPT_BOOL",
+    "_OPT_INT",
+    "_OPT_OBJ",
+    "_OPT_STR",
     "_REST_PATH_PREFIXES",
+    "ToolSpec",
+    "_bool",
+    "_int",
+    "_s",
+    "_str",
     "_validate_rest_path",
     "thruk_query",
     "thruk_run_background_query",

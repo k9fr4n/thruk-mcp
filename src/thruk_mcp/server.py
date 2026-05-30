@@ -24,8 +24,7 @@ import logging
 import re
 import warnings
 from collections import Counter, deque
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from collections.abc import Coroutine
 from datetime import datetime, timezone
 from typing import Any
 
@@ -120,6 +119,28 @@ from .resources import (
     _problems_resource,
     _service_resource,
     _stats_resource,
+)
+from .tools.base import (
+    _BACKENDS,
+    _OPT_INT,
+    _OPT_OBJ,
+    _OPT_STR,
+    ToolSpec,
+    _bool,
+    _int,
+    _s,
+    _str,
+)
+
+# Re-exported for backward compat (defined but unused inside server.py itself):
+from .tools.base import (
+    _LOG_CUSTOM_VARS as _LOG_CUSTOM_VARS,
+)
+from .tools.base import (
+    _LOG_HOSTGROUP as _LOG_HOSTGROUP,
+)
+from .tools.base import (
+    _OPT_BOOL as _OPT_BOOL,
 )
 from .tools.escape import (
     _ALLOWED_METHODS as _ALLOWED_METHODS,
@@ -3567,93 +3588,11 @@ async def thruk_concurrent_failures(
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Explicit JSON Schemas — no annotation introspection, no Pydantic
+# Explicit JSON Schemas + ToolSpec — extracted to ``tools/base.py`` (issue #257).
+# Re-exported above via ``from .tools.base import ...`` for backward compat:
+# ``_s``, ``_str``, ``_int``, ``_bool``, ``_OPT_*``, ``_LOG_*``, ``_BACKENDS``,
+# ``ToolSpec``.  No annotation introspection, no Pydantic.
 # ---------------------------------------------------------------------------
-
-
-def _s(*required: str, **props: Any) -> dict[str, Any]:
-    """Shorthand to build a JSON-Schema object."""
-    properties = {k: (v if isinstance(v, dict) else {"type": v}) for k, v in props.items()}
-    schema: dict[str, Any] = {"type": "object", "properties": properties}
-    if required:
-        schema["required"] = list(required)
-    return schema
-
-
-def _str(desc: str = "") -> dict[str, Any]:
-    return {"type": "string", "description": desc} if desc else {"type": "string"}
-
-
-def _int(desc: str = "", default: int | None = None) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "integer"}
-    if desc:
-        d["description"] = desc
-    if default is not None:
-        d["default"] = default
-    return d
-
-
-def _bool(desc: str = "", default: bool | None = None) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "boolean"}
-    if desc:
-        d["description"] = desc
-    if default is not None:
-        d["default"] = default
-    return d
-
-
-_OPT_STR = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
-_OPT_INT = {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
-_OPT_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}], "default": None}
-_OPT_OBJ = {"anyOf": [{"type": "object"}, {"type": "null"}], "default": None}
-# Reusable schema fragment for log-family host-resolution filters.
-_LOG_HOSTGROUP = {
-    **_OPT_STR,
-    "description": (
-        "Filter to hosts belonging to this hostgroup. Resolved via a /hosts lookup "
-        "then host_name[regex] — works on all backends (log table has no group column)."
-    ),
-}
-_LOG_CUSTOM_VARS = {
-    **_OPT_OBJ,
-    "description": (
-        'Filter by host-level Nagios custom variables, e.g. {"KERNEL": "windows"}. '
-        "Resolved via a /hosts lookup then host_name[regex] — the log table does not "
-        "expose custom-variable columns directly."
-    ),
-}
-_BACKENDS = {
-    "anyOf": [{"type": "string"}, {"type": "null"}],
-    "default": None,
-    "description": "Comma-separated backend names (sites). Omit for all backends.",
-}
-
-
-# ---------------------------------------------------------------------------
-# ToolSpec: unified tool registration (issue #85)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ToolSpec:
-    """Single source of truth for a registered MCP tool.
-
-    Ties together the tool name, its async implementation, the explicit JSON
-    Schema for its input, and whether it mutates monitoring state (``is_write``).
-
-    Downstream structures are auto-derived — never edit them by hand:
-    - ``_TOOL_DISPATCH``  = {spec.name: spec.fn   for spec in TOOL_REGISTRY}
-    - ``_TOOL_SCHEMAS``   = {spec.name: spec.schema for spec in TOOL_REGISTRY}
-    - ``WRITE_TOOLS``     = frozenset(spec.name for spec in TOOL_REGISTRY if spec.is_write)
-
-    Adding a new tool requires exactly one entry here; ``WRITE_TOOLS`` cannot
-    fall out of sync with the schema or dispatch table.
-    """
-
-    name: str
-    fn: Callable[..., Coroutine[Any, Any, str]]
-    schema: dict[str, Any]
-    is_write: bool = False
 
 
 # ---------------------------------------------------------------------------
