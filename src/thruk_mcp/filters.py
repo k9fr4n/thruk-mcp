@@ -1017,15 +1017,22 @@ def build_tool_schema(
 ) -> dict[str, Any]:
     """Build a complete ``inputSchema`` with ``$defs`` for filter-aware tools.
 
+    The ``filter`` property is derived from the same ``fields`` set and injected
+    automatically (first, by convention) unless the caller passes an explicit
+    ``filter=`` override. This keeps the ``$defs`` field set and the ``filter``
+    description in lock-step and lets callers reference ``FIELDS_*`` once instead
+    of duplicating it as ``filter=filter_schema_property(FIELDS_*)`` (issue #263).
+
     Usage::
 
         _TOOL_SCHEMAS["thruk_list_hosts"] = build_tool_schema(
             FIELDS_HOSTS,
-            filter=filter_schema_property(FIELDS_HOSTS),
             limit=_int(default=50),
             ...
         )
     """
+    if "filter" not in props:
+        props = {"filter": filter_schema_property(fields), **props}
     properties = {k: (v if isinstance(v, dict) else {"type": v}) for k, v in props.items()}
     schema: dict[str, Any] = {
         "type": "object",

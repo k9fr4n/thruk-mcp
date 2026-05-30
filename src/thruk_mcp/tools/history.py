@@ -54,7 +54,6 @@ from ..filters import (
     FIELDS_NOISY_SERVICES,
     FIELDS_NOTIFICATIONS,
     build_tool_schema,
-    filter_schema_property,
     infer_alert_type_regex,
 )
 from ..helpers import (
@@ -1161,7 +1160,6 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         fn=thruk_top_noisy_hosts,
         schema=build_tool_schema(
             FIELDS_NOISY_HOSTS,
-            filter=filter_schema_property(FIELDS_NOISY_HOSTS),
             since=_SINCE_WINDOW,
             until=_OPT_STR,
             limit=_int(default=10),
@@ -1173,7 +1171,6 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         fn=thruk_top_noisy_services,
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
-            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
             since=_SINCE_WINDOW,
             until=_OPT_STR,
             limit=_int(default=10),
@@ -1185,7 +1182,6 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         fn=thruk_flap_summary,
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
-            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
             since=_SINCE_WINDOW,
             until=_OPT_STR,
             limit=_int(default=10),
@@ -1199,7 +1195,6 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         fn=thruk_alert_heatmap,
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
-            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
             since=_SINCE_WINDOW,
             until=_OPT_STR,
             bucket={
@@ -1216,7 +1211,6 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         fn=thruk_recurring_problems,
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
-            filter=filter_schema_property(FIELDS_NOISY_SERVICES),
             since=_SINCE_WINDOW,
             until=_OPT_STR,
             min_alerts=_int(
@@ -1236,7 +1230,6 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_logs,
         schema=build_tool_schema(
             FIELDS_LOGS,
-            filter=filter_schema_property(FIELDS_LOGS),
             since=_OPT_STR,
             until=_OPT_STR,
             limit=_int(default=100),
@@ -1251,7 +1244,6 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_alerts,
         schema=build_tool_schema(
             FIELDS_ALERTS,
-            filter=filter_schema_property(FIELDS_ALERTS),
             since=_OPT_STR,
             until=_OPT_STR,
             limit=_int(default=100),
@@ -1266,7 +1258,6 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_notifications,
         schema=build_tool_schema(
             FIELDS_NOTIFICATIONS,
-            filter=filter_schema_property(FIELDS_NOTIFICATIONS),
             since=_OPT_STR,
             until=_OPT_STR,
             limit=_int(default=100),
@@ -1281,7 +1272,6 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_recent_events,
         schema=build_tool_schema(
             FIELDS_LOGS,
-            filter=filter_schema_property(FIELDS_LOGS),
             hours=_int(default=1),
             only_alerts=_bool(default=False),
             limit=_int(default=100),

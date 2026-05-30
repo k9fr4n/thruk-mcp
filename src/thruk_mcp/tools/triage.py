@@ -46,7 +46,6 @@ from ..filters import (
     FilterError,
     build_tool_schema,
     compile_filter,
-    filter_schema_property,
     rewrite_custom_var_to_host_custom_var,
     validate_filter,
 )
@@ -555,7 +554,6 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_OLDEST_PROBLEMS,
             limit=_int("Maximum number of results (default 20).", default=20),
-            filter=filter_schema_property(FIELDS_OLDEST_PROBLEMS),
             backends=_BACKENDS,
         ),
     ),
@@ -567,7 +565,6 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             threshold_minutes=_int(
                 "Minimum unacknowledged duration in minutes (default 60).", default=60
             ),
-            filter=filter_schema_property(FIELDS_UNACKED),
             backends=_BACKENDS,
         ),
     ),
@@ -578,7 +575,6 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             FIELDS_STALE_ACKS,
             min_days=_int("Minimum acknowledgement age in days (default 7).", default=7),
             limit=_int("Maximum number of results (default 100).", default=100),
-            filter=filter_schema_property(FIELDS_STALE_ACKS),
             backends=_BACKENDS,
         ),
     ),
@@ -587,7 +583,6 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
         fn=thruk_problem_counts,
         schema=build_tool_schema(
             FIELDS_PROBLEM_COUNTS,
-            filter=filter_schema_property(FIELDS_PROBLEM_COUNTS),
             backends=_BACKENDS,
         ),
     ),
@@ -597,7 +592,6 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
         fn=thruk_concurrent_failures,
         schema=build_tool_schema(
             FIELDS_NOISY_HOSTS,
-            filter=filter_schema_property(FIELDS_NOISY_HOSTS),
             since={
                 "anyOf": [{"type": "string"}, {"type": "null"}],
                 "default": "-1h",
