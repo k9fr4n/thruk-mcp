@@ -1074,7 +1074,8 @@ async def _aggregate_alerts(
     - **warnings** - pass-through from :meth:`ThrukClient.get_with_fallback`.
     - **hit_hard_limit** - ``True`` when the raw data reached ``_NOISY_MAX_ALERTS``.
     """
-    columns_set = {"host_name", "state", "time"} | set(key_fields)
+    # Issue #248: request ``type`` so we can re-verify each row client-side.
+    columns_set = {"host_name", "state", "time", "type"} | set(key_fields)
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         "sort": "-time",
@@ -1088,8 +1089,20 @@ async def _aggregate_alerts(
     if not isinstance(data, list):
         data = []
 
+    # Issue #248: defensive client-side type guard. Thruk already scopes the
+    # query via ``type[~]`` server-side, but we re-verify each row's ``type``
+    # against the same pattern so a SERVICE ALERT (service state vocabulary,
+    # e.g. state=3 UNKNOWN) can never leak into HOST aggregation -- and vice
+    # versa. Rows that omit ``type`` (older backends / fixtures) are kept.
+    type_matcher = re.compile(type_regex)
+    cross_type_dropped = 0
+
     counts: dict[tuple[str, ...], dict[str, Any]] = {}
     for entry in data:
+        etype = entry.get("type")
+        if isinstance(etype, str) and etype and not type_matcher.match(etype):
+            cross_type_dropped += 1
+            continue
         state = entry.get("state", -1)
         if state == 0:
             continue
@@ -1125,6 +1138,12 @@ async def _aggregate_alerts(
         key=lambda x: x["alert_count"],
         reverse=True,
     )
+    if cross_type_dropped:
+        warnings = [
+            *warnings,
+            f"Ignored {cross_type_dropped} cross-type log row(s) not matching "
+            f"{type_regex!r}; host/service state vocabularies were not mixed.",
+        ]
     return rows, warnings, len(data) >= _NOISY_MAX_ALERTS
 
 
