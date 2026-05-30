@@ -136,6 +136,17 @@ def _load_noisy_max_alerts(
 
 _NOISY_MAX_ALERTS: int = _load_noisy_max_alerts(os.getenv("THRUK_NOISY_MAX_ALERTS"))
 
+# Actionable suffix appended to every "Result capped at ..." warning so that
+# users / LLMs immediately know how to mitigate the truncation (issue #201).
+# Lives here (rather than in server.py) so both the noisy/flap analytics tools
+# in ``server.py`` and the relocated ``thruk_concurrent_failures`` in
+# ``tools/triage.py`` can share it without a server <-> triage import cycle
+# (issue #259).
+_NOISY_CAP_HINT: str = (
+    " Narrow the time window (e.g. since='-2h') or raise the cap by setting "
+    "the THRUK_NOISY_MAX_ALERTS env var (default 10000)."
+)
+
 
 # ---------------------------------------------------------------------------
 # Latency sanity cap (issue #202)
