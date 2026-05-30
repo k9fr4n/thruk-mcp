@@ -601,10 +601,13 @@ def test_problems_custom_var():
 
 
 def test_problems_host_custom_var():
+    # Issue #254: a host_custom_var leaf must constrain BOTH sub-queries —
+    # ``_{VAR}`` on /hosts and ``_HOST{VAR}`` on /services. Previously the
+    # /hosts param was missing, leaking every host problem.
     host_p, svc_p = compile_filter_problems(
         leaf("host_custom_var", "eq", {"var": "KERNEL", "val": "windows"})
     )
-    assert "_HOSTKERNEL" not in host_p
+    assert host_p["_KERNEL"] == "windows"
     assert svc_p["_HOSTKERNEL"] == "windows"
 
 

@@ -632,7 +632,7 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
 
     Routing:
     - ``custom_var``      → ``_VAR`` on hosts + ``_HOSTVAR`` on services
-    - ``host_custom_var`` → ``_HOSTVAR`` on services only
+    - ``host_custom_var`` → ``_VAR`` on hosts + ``_HOSTVAR`` on services
     - ``hostgroup``       → ``groups[gte]`` on hosts + ``host_groups[gte]`` on services
     - ``state``           → same integer on both
 
@@ -649,8 +649,15 @@ def compile_filter_problems(node: dict[str, Any]) -> tuple[dict[str, Any], dict[
             host_params[f"_{k}"] = v
             svc_params[f"_HOST{k}"] = v
         elif field == "host_custom_var":
+            # Issue #254: a host-level custom variable on the /hosts endpoint
+            # lives under ``_{VAR}`` (not ``_HOST{VAR}``). The branch previously
+            # populated svc_params only, leaving /hosts unconstrained — every
+            # current host problem leaked through regardless of the filter.
+            # Mirror the host param exactly like ``custom_var`` does.
             k = value["var"].upper()
-            svc_params[f"_HOST{k}"] = str(value.get("val", ""))
+            v = str(value.get("val", ""))
+            host_params[f"_{k}"] = v
+            svc_params[f"_HOST{k}"] = v
         elif field == "hostgroup":
             # Issue #240: honour `neq` on the list-valued group column.
             # Other ops (eq/gte/in) keep the legacy ``[gte]`` passthrough —
