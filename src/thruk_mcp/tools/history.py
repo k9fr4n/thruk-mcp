@@ -7,6 +7,7 @@ the Naemon/Thruk ``/logs`` table into trends, heatmaps and raw event listings:
 * ``thruk_top_noisy_services``  — top services by SERVICE ALERT count.
 * ``thruk_flap_summary``        — objects with the most state transitions.
 * ``thruk_alert_heatmap``       — alert counts bucketed over a time window.
+* ``thruk_notification_heatmap``— notification counts bucketed over a window.
 * ``thruk_recurring_problems``  — chronic objects above an alert threshold.
 * ``thruk_list_logs``           — raw Livestatus log entries.
 * ``thruk_list_alerts``         — HOST/SERVICE ALERT entries.
@@ -790,6 +791,172 @@ async def thruk_alert_heatmap(
     return _tool_response(payload)
 
 
+async def thruk_notification_heatmap(
+    since: str | None = "-24h",
+    until: str | None = None,
+    bucket: str = "1h",
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """Return notification counts grouped by time bucket over a window.
+
+    The notification (``class=3``) counterpart of :func:`thruk_alert_heatmap`:
+    useful for spotting notification/mail storms, quiet periods and recurring
+    paging patterns. The LLM can use the returned list as a sparkline.
+
+    ``bucket`` controls bucket width: ``"15m"``, ``"30m"``, ``"1h"`` (default),
+    ``"6h"``, ``"1d"``. Buckets with zero notifications are included so the
+    output can be rendered as a continuous timeline.
+
+    ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
+
+    ``filter`` fields: ``host``, ``service``, ``contact``, ``state``,
+    ``since`` / ``until``, ``hostgroup`` and ``custom_var`` (host-level,
+    resolved via /hosts lookup) — identical to
+    :func:`thruk_list_notifications`.
+
+    Returns a wrapped object: ``since``, ``until``, ``bucket``,
+    ``total_notifications``, ``results`` list of ``{bucket_start, count}``
+    ordered chronologically. Empty buckets are filled with ``count=0``.
+
+    When the underlying log fetch hits the ``_NOISY_MAX_ALERTS`` cap, the
+    response also carries ``truncated_before`` (ISO-UTC timestamp of the
+    *earliest* fetched event) and every bucket ending *before* the bucket that
+    contains that event is marked as ``{"count": null, "truncated": true}`` so
+    the consumer can distinguish "no notifications in this bucket" from "bucket
+    not covered by the capped fetch".
+
+    The fetch is issued newest-first (``sort="-time"``) so that when the cap is
+    hit it is the *oldest* entries that are dropped, keeping the most recent
+    buckets — the relevant ones for incident analytics — fully populated
+    (mirrors :func:`thruk_alert_heatmap`, issue #250).
+    """
+    bucket_secs = _BUCKET_SIZES.get(bucket)
+    if bucket_secs is None:
+        return _tool_response(
+            {"error": f"Invalid bucket {bucket!r}. Allowed: {', '.join(_BUCKET_SIZES)}"}
+        )
+
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    # Notification entries are class=3 (client-side alias expansion — the
+    # /notifications endpoint is broken on some Thruk versions).
+    extra["class"] = "3"
+    # FIELDS_NOTIFICATIONS exposes ``since`` / ``until`` as filter leaves, so a
+    # filter-supplied time bound takes precedence over the parameters.
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = since
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        # Newest-first (issue #250): when the cap is hit, drop the *oldest*
+        # entries so recent buckets stay populated. Bucket counting below is
+        # order-independent, so DESC fetch order does not affect aggregation.
+        "sort": "-time",
+        "columns": "time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Count notifications per bucket
+    raw_counts: dict[int, int] = {}
+    total = 0
+    for entry in data:
+        t = entry.get("time")
+        if not t:
+            continue
+        b = (int(t) // bucket_secs) * bucket_secs
+        raw_counts[b] = raw_counts.get(b, 0) + 1
+        total += 1
+
+    # Build continuous timeline — fill empty buckets between window boundaries
+    ts_since = _parse_thruk_time(since)
+    ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
+
+    results: list[dict[str, Any]] = []
+    if ts_since is not None and ts_until is not None:
+        first_b = (ts_since // bucket_secs) * bucket_secs
+        last_b = (ts_until // bucket_secs) * bucket_secs
+        b = first_b
+        while b <= last_b:
+            results.append(
+                {
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                    "count": raw_counts.get(b, 0),
+                }
+            )
+            b += bucket_secs
+    else:
+        # Fallback: only buckets that have data (unparseable since/until)
+        for b in sorted(raw_counts):
+            results.append(
+                {
+                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                    "count": raw_counts[b],
+                }
+            )
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "bucket": bucket,
+        "total_notifications": total,
+        "results": results,
+    }
+
+    # When the log cap is hit, sort=-time (newest first) means we got the
+    # *most recent* entries only — buckets before the earliest fetched
+    # timestamp would silently show count=0. Mark them as null+truncated so
+    # consumers (LLM or human) do not confuse "missing data" with "quiet
+    # period" (mirrors thruk_alert_heatmap, issue #250).
+    log_capped = len(data) >= _NOISY_MAX_ALERTS
+    if log_capped and raw_counts:
+        first_ts = min(int(e["time"]) for e in data if e.get("time"))
+        first_bucket = (first_ts // bucket_secs) * bucket_secs
+        truncated_before_iso = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        payload["truncated_before"] = truncated_before_iso
+        for bucket_obj in results:
+            bs_str = bucket_obj["bucket_start"]
+            bs_epoch = int(
+                datetime.strptime(bs_str, "%Y-%m-%dT%H:%M:%SZ")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+            if bs_epoch < first_bucket:
+                bucket_obj["count"] = None
+                bucket_obj["truncated"] = True
+
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif log_capped:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
+            "Buckets before 'truncated_before' are reported as count=null (data not fetched)."
+            + _NOISY_CAP_HINT
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
 async def thruk_recurring_problems(
     since: str | None = "-24h",
     until: str | None = None,
@@ -1325,6 +1492,22 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         ),
     ),
     ToolSpec(
+        name="thruk_notification_heatmap",
+        fn=thruk_notification_heatmap,
+        schema=build_tool_schema(
+            FIELDS_NOTIFICATIONS,
+            since=_SINCE_WINDOW,
+            until=_OPT_STR,
+            bucket={
+                "type": "string",
+                "default": "1h",
+                "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
+                "enum": ["15m", "30m", "1h", "6h", "1d"],
+            },
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
         name="thruk_recurring_problems",
         fn=thruk_recurring_problems,
         schema=build_tool_schema(
@@ -1438,6 +1621,7 @@ __all__ = [
     "thruk_list_alerts",
     "thruk_list_logs",
     "thruk_list_notifications",
+    "thruk_notification_heatmap",
     "thruk_notification_summary",
     "thruk_recent_events",
     "thruk_recurring_problems",
