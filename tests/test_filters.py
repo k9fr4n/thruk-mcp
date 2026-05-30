@@ -239,17 +239,18 @@ def test_compile_state_numeric_string():
 
 
 def test_compile_state_neq_services():
-    """Before the fix, ``state neq ok`` compiled to ``{"state": 0}`` (silent
-    equality flip — returned ONLY ok services, the exact opposite of intent).
-    After the fix, it must emit the ``state[!]`` bracket-op."""
+    """Before #277, ``state neq ok`` compiled to the non-existent ``state[!]``
+    bracket token, which Thruk silently ignores (returning unfiltered results).
+    After the fix, it must emit the valid ``state[ne]`` word-alias bracket-op."""
     p = compile_filter(leaf("state", "neq", "ok"), "services")
-    assert p == {"state[!]": 0}
+    assert p == {"state[ne]": 0}
     assert "state" not in p  # the buggy silent-equality key must not leak
+    assert "state[!]" not in p  # the bogus ignored token must never be emitted
 
 
 def test_compile_state_neq_hosts_numeric():
     p = compile_filter(leaf("state", "neq", "down"), "hosts")
-    assert p == {"state[!]": 1}
+    assert p == {"state[ne]": 1}
 
 
 def test_compile_state_neq_combined_with_hostgroup():
@@ -259,7 +260,7 @@ def test_compile_state_neq_combined_with_hostgroup():
         group("and", leaf("state", "neq", "ok"), leaf("hostgroup", "eq", "HG_AGILE")),
         "services",
     )
-    assert p["state[!]"] == 0
+    assert p["state[ne]"] == 0
     assert p["host_groups[gte]"] == "HG_AGILE"
     assert "q" not in p
 
@@ -300,8 +301,8 @@ def test_compile_state_in_hosts_combined_and():
 def test_compile_problems_state_neq():
     """``compile_filter_problems`` had the same bracket-path bug for state."""
     host_p, svc_p = compile_filter_problems(leaf("state", "neq", "ok"))
-    assert host_p == {"state[!]": 0}
-    assert svc_p == {"state[!]": 0}
+    assert host_p == {"state[ne]": 0}
+    assert svc_p == {"state[ne]": 0}
 
 
 def test_compile_problems_state_in_rejected():
@@ -333,19 +334,20 @@ def test_compile_servicegroup():
 
 def test_compile_hostgroup_neq_hosts():
     """Before #240: ``hostgroup neq X`` was silently compiled as membership.
-    After: emits the [!] non-membership bracket op."""
+    #277: must emit the valid ``[notin]`` non-membership bracket op (the
+    earlier ``[!]`` token was silently ignored by Thruk)."""
     p = compile_filter(leaf("hostgroup", "neq", "rol-edf"), "hosts")
-    assert p == {"groups[!]": "rol-edf"}
+    assert p == {"groups[notin]": "rol-edf"}
 
 
 def test_compile_hostgroup_neq_services():
     p = compile_filter(leaf("hostgroup", "neq", "rol-edf"), "services")
-    assert p == {"host_groups[!]": "rol-edf"}
+    assert p == {"host_groups[notin]": "rol-edf"}
 
 
 def test_compile_servicegroup_neq():
     p = compile_filter(leaf("servicegroup", "neq", "db"), "services")
-    assert p == {"groups[!]": "db"}
+    assert p == {"groups[notin]": "db"}
 
 
 def test_compile_hostgroup_in_routes_through_q():
@@ -393,8 +395,8 @@ def test_validate_hostgroup_neq_accepted():
 
 def test_problems_hostgroup_neq():
     host_p, svc_p = compile_filter_problems(leaf("hostgroup", "neq", "rol-edf"))
-    assert host_p["groups[!]"] == "rol-edf"
-    assert svc_p["host_groups[!]"] == "rol-edf"
+    assert host_p["groups[notin]"] == "rol-edf"
+    assert svc_p["host_groups[notin]"] == "rol-edf"
 
 
 def test_problems_hostgroup_in_still_uses_legacy_gte_passthrough():
@@ -431,13 +433,50 @@ def test_compile_name_regex():
 
 def test_compile_name_neq():
     p = compile_filter(leaf("name", "neq", "router01"), "hosts")
-    assert p["name[!]"] == "router01"
+    assert p["name[ne]"] == "router01"
+    assert "name[!]" not in p
 
 
 def test_compile_name_in():
     p = compile_filter(leaf("name", "in", ["a", "b"]), "hosts")
     assert "name[regex]" in p
     assert "a" in p["name[regex]"] and "b" in p["name[regex]"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #277 — the bogus ``[!]`` bracket token must never be emitted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "context"),
+    [
+        ("state", "ok", "services"),
+        ("state", "down", "hosts"),
+        ("name", "router01", "hosts"),
+        ("host", "srv01", "services"),
+        ("service", "PING", "services"),
+        ("hostgroup", "rol-edf", "hosts"),
+        ("hostgroup", "rol-edf", "services"),
+        ("servicegroup", "db", "services"),
+    ],
+)
+def test_neq_never_emits_bracket_bang_token(field, value, context):
+    """Regression guard for #277: Thruk silently ignores the non-existent
+    ``[!]`` bracket op, so a ``neq`` leaf must never compile to a key
+    containing it. Valid negation aliases are ``[ne]`` (scalar) / ``[notin]``
+    (list-valued group columns)."""
+    p = compile_filter(leaf(field, "neq", value), context)
+    assert all("[!]" not in k for k in p), p
+    assert any(k.endswith("[ne]") or k.endswith("[notin]") for k in p), p
+
+
+def test_problems_neq_never_emits_bracket_bang_token():
+    """Same guard for the dual-query ``compile_filter_problems`` path."""
+    for node in (leaf("state", "neq", "ok"), leaf("hostgroup", "neq", "rol-edf")):
+        host_p, svc_p = compile_filter_problems(node)
+        assert all("[!]" not in k for k in host_p), host_p
+        assert all("[!]" not in k for k in svc_p), svc_p
 
 
 def test_compile_since_until():
