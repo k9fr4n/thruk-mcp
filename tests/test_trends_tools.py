@@ -711,3 +711,132 @@ async def test_heatmap_cap_warning_is_actionable(mocked_server) -> None:
     assert "since" in warning, (
         "Cap warning must suggest narrowing the time window as an alternative mitigation."
     )
+
+
+# ---------------------------------------------------------------------------
+# thruk_notification_summary (issue #271)
+# ---------------------------------------------------------------------------
+
+
+def _notif(contact: str, t: int, *, host: str = "h1", state: int = 2) -> dict:
+    """Build a class=3 notification log row."""
+    return {"contact_name": contact, "host_name": host, "state": state, "time": t}
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_invalid_group_by(mocked_server) -> None:
+    mcp, _ = mocked_server
+    result = await mcp.call_tool("thruk_notification_summary", {"group_by": "wat"})
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "wat" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_groups_and_sorts_by_count(mocked_server) -> None:
+    """Counts per contact, sorted desc, with total + last_time.
+
+    BEFORE FIX (issue #271): no aggregation tool existed — counting required
+    manual client-side tallying of thruk_list_notifications output. This test
+    asserts the new aggregation primitive.
+    """
+    mcp, router = mocked_server
+    rows = [
+        _notif("oncall", BASE_TS + 0),
+        _notif("oncall", BASE_TS + 50),
+        _notif("oncall", BASE_TS + 300),  # latest for oncall
+        _notif("backup", BASE_TS + 10),
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(rows))
+
+    result = await mcp.call_tool(
+        "thruk_notification_summary",
+        {"group_by": "contact", "since": str(BASE_TS), "until": str(BASE_TS + 3600)},
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["group_by"] == "contact"
+    assert payload["total"] == 4
+    assert len(payload["results"]) == 2
+    # Sorted by count desc: oncall (3) before backup (1).
+    assert payload["results"][0]["contact"] == "oncall"
+    assert payload["results"][0]["count"] == 3
+    assert payload["results"][1]["contact"] == "backup"
+    assert payload["results"][1]["count"] == 1
+    # last_time tracks the newest row for the group.
+    assert payload["results"][0]["last_time"] is not None
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_request_params(mocked_server) -> None:
+    """class=3, sort=-time and the group column are sent to /logs via POST."""
+    mcp, router = mocked_server
+    log_route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_notification_summary", {"group_by": "contact", "since": "-6h"})
+
+    params = _post_params(log_route.calls.last)
+    assert params["class"] == "3"
+    assert params["sort"] == "-time"
+    assert "contact_name" in params["columns"]
+    assert "time" in params["columns"]
+    assert params["time[gte]"] == "-6h"
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_group_by_state(mocked_server) -> None:
+    """group_by='state' counts the raw state value and requests the state column."""
+    mcp, router = mocked_server
+    log_route = router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(
+            [
+                _notif("a", BASE_TS + 0, state=2),
+                _notif("b", BASE_TS + 1, state=2),
+                _notif("c", BASE_TS + 2, state=1),
+            ]
+        )
+    )
+
+    result = await mcp.call_tool("thruk_notification_summary", {"group_by": "state"})
+    payload = json.loads(result[0].text)
+
+    assert "state" in _post_params(log_route.calls.last)["columns"]
+    counts = {r["state"]: r["count"] for r in payload["results"]}
+    assert counts == {"2": 2, "1": 1}
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_empty(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool("thruk_notification_summary", {})
+    payload = json.loads(result[0].text)
+    assert payload["total"] == 0
+    assert payload["results"] == []
+    assert payload["group_by"] == "contact"
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_cap_warning(mocked_server) -> None:
+    mcp, router = mocked_server
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    big = [_notif(f"c{i}", BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(big))
+
+    result = await mcp.call_tool("thruk_notification_summary", {"since": "-24h"})
+    payload = json.loads(result[0].text)
+    assert "_warning" in payload
+    assert "THRUK_NOISY_MAX_ALERTS" in payload["_warning"]
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_invalid_filter(mocked_server) -> None:
+    mcp, _ = mocked_server
+    result = await mcp.call_tool(
+        "thruk_notification_summary",
+        {"filter": {"type": "leaf", "field": "bogus", "op": "eq", "value": "x"}},
+    )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
