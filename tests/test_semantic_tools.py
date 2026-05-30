@@ -433,6 +433,55 @@ async def test_stale_acks_threshold_param(mocked_server) -> None:
     assert before - 14 * 86400 - 2 <= lte <= after - 14 * 86400 + 2
 
 
+@pytest.mark.asyncio
+async def test_stale_acks_decodes_form_encoded_author(mocked_server) -> None:
+    """ack_author / ack_comment are URL/form-decoded; clean values pass through (issue #249).
+
+    Before the fix: legacy entries surfaced ``Aur%C3%A9lien+Louis`` verbatim
+    because ``author``/``comment`` were copied straight from ``/comments``.
+    After the fix: ``unquote_plus`` yields ``Aurélien Louis`` and is a no-op on
+    already-decoded values like ``Jean-François Saulais``.
+    """
+    mcp, router = mocked_server
+    now = int(time.time())
+    old = now - 30 * 86400
+    less_old = now - 10 * 86400
+
+    router.get("https://thruk.test/r/comments").mock(
+        return_value=ok(
+            [
+                {
+                    "host_name": "legacy",
+                    "service_description": "",
+                    "author": "Aur%C3%A9lien+Louis",
+                    "comment": "disque+plein+%2870%25%29",
+                    "entry_time": old,
+                    "peer_name": "local",
+                },
+                {
+                    "host_name": "modern",
+                    "service_description": "svc",
+                    "author": "Jean-François Saulais",
+                    "comment": "already clean",
+                    "entry_time": less_old,
+                    "peer_name": "local",
+                },
+            ]
+        )
+    )
+
+    result = await mcp.call_tool("thruk_stale_acks", {"min_days": 7})
+    payload = json.loads(result[0].text)
+
+    # stalest first → legacy entry leads
+    assert payload[0]["host"] == "legacy"
+    assert payload[0]["ack_author"] == "Aurélien Louis"
+    assert payload[0]["ack_comment"] == "disque plein (70%)"
+    # idempotent on already-decoded values (no spurious mangling)
+    assert payload[1]["ack_author"] == "Jean-François Saulais"
+    assert payload[1]["ack_comment"] == "already clean"
+
+
 # ---------------------------------------------------------------------------
 # thruk_stale_acks — filter support (issue #228)
 # ---------------------------------------------------------------------------

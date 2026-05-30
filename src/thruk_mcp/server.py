@@ -95,6 +95,7 @@ from .helpers import (
     _backends,
     _build_cv_params,
     _client_var,
+    _decode_form_value,
     _format_state_label,
     _get_client,
     _resolve_peer_for_host,
@@ -3313,8 +3314,8 @@ async def thruk_stale_acks(
             {
                 "host": host_name,
                 "service": c.get("service_description") or None,
-                "ack_author": c.get("author", ""),
-                "ack_comment": c.get("comment", ""),
+                "ack_author": _decode_form_value(c.get("author", "")),
+                "ack_comment": _decode_form_value(c.get("comment", "")),
                 "ack_since_days": round((now - et) / 86400, 1),
             }
         )

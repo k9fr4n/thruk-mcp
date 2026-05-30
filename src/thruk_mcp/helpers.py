@@ -12,6 +12,7 @@ import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as _urlquote
+from urllib.parse import unquote_plus as _urlunquote_plus
 
 if TYPE_CHECKING:
     from .client import ThrukClient
@@ -160,6 +161,22 @@ def _seg(value: str) -> str:
     no legitimate name is affected by this encoding.
     """
     return _urlquote(str(value), safe="")
+
+
+def _decode_form_value(value: Any) -> Any:
+    """Best-effort URL/form decode of a legacy comment field (issue #249).
+
+    Older Naemon acknowledgements store the author/comment form-encoded
+    (``+`` for spaces, ``%C3%A9`` for ``é``) while newer entries are already
+    plain text. Apply :func:`urllib.parse.unquote_plus`, which is a no-op on
+    values that contain no ``%``/``+`` escapes, so the transform stays
+    idempotent on already-decoded data.
+
+    Non-string inputs are returned unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    return _urlunquote_plus(value)
 
 
 def _build_cv_params(
