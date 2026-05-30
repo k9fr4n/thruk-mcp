@@ -3675,6 +3675,75 @@
     }
   },
   {
+    "name": "thruk_notification_heatmap",
+    "description": "Return notification counts grouped by time bucket over a window. The notification (class=3) counterpart of thruk_alert_heatmap: useful for spotting notification/mail storms, quiet periods and recurring paging patterns. Buckets with zero notifications are included for a continuous timeline.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "bucket": {
+          "type": "string",
+          "default": "1h",
+          "description": "Time bucket width: '15m', '30m', '1h' (default), '6h', '1d'.",
+          "enum": [
+            "15m",
+            "30m",
+            "1h",
+            "6h",
+            "1d"
+          ]
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: host, service, contact, state, hostgroup, custom_var, since, until."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_concurrent_failures",
     "description": "Detect time windows where multiple hosts failed concurrently. Fetches HOST ALERT DOWN/UNREACHABLE log entries, applies a sliding window, and returns merged bursts where at least min_hosts distinct hosts failed. Useful for detecting network incidents or datacenter outages.",
     "inputSchema": {

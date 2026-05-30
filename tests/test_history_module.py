@@ -28,6 +28,7 @@ _HISTORY_TOOL_NAMES = [
     "thruk_top_noisy_services",
     "thruk_flap_summary",
     "thruk_alert_heatmap",
+    "thruk_notification_heatmap",
     "thruk_recurring_problems",
     "thruk_list_logs",
     "thruk_list_alerts",

@@ -367,6 +367,9 @@ from .tools import (
     thruk_list_services as thruk_list_services,
 )
 from .tools import (
+    thruk_notification_heatmap as thruk_notification_heatmap,
+)
+from .tools import (
     thruk_notification_summary as thruk_notification_summary,
 )
 from .tools import (

@@ -840,3 +840,197 @@ async def test_notification_summary_invalid_filter(mocked_server) -> None:
     )
     payload = json.loads(result[0].text)
     assert "error" in payload
+
+
+# ---------------------------------------------------------------------------
+# thruk_notification_heatmap (issue #272)
+# ---------------------------------------------------------------------------
+#
+# Mirrors thruk_alert_heatmap but counts class=3 notification log rows instead
+# of HOST/SERVICE ALERT (class=1) entries. Same since/until/bucket params,
+# same continuous-timeline empty-bucket fill, same sort=-time newest-first
+# fetch and truncated_before null-marking on cap hit.
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_invalid_bucket(mocked_server) -> None:
+    mcp, _ = mocked_server
+    result = await mcp.call_tool("thruk_notification_heatmap", {"bucket": "2h"})
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "2h" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_basic_bucketing(mocked_server) -> None:
+    """3 notifications in first bucket, 1 in second, 0 in third (empty filled)."""
+    mcp, router = mocked_server
+
+    hour = 3600
+    entries = [
+        _log(BASE_TS + 0),
+        _log(BASE_TS + 100),
+        _log(BASE_TS + 200),
+        _log(BASE_TS + hour + 10),
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + 2 * hour), "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["bucket"] == "1h"
+    assert payload["total_notifications"] == 4
+    assert len(payload["results"]) == 3
+    assert payload["results"][0]["count"] == 3
+    assert payload["results"][1]["count"] == 1
+    assert payload["results"][2]["count"] == 0  # empty bucket filled
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_empty_window(mocked_server) -> None:
+    """No notifications => all buckets zero."""
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + 3600), "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["total_notifications"] == 0
+    assert all(b["count"] == 0 for b in payload["results"])
+    assert len(payload["results"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_posts_class_three(mocked_server) -> None:
+    """Must POST class=3 (notifications), NOT the ALERT type[~] regex."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_notification_heatmap", {"since": "-6h", "bucket": "30m"})
+
+    p = _post_params(route.calls.last)
+    assert p.get("class") == "3", "notification heatmap must POST class=3"
+    assert "type[~]" not in p, "notification heatmap must not use the ALERT regex filter"
+    assert p.get("sort") == "-time", "must fetch newest-first (issue #250 parity)"
+    assert "time" in p.get("columns", "")
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_contact_filter(mocked_server) -> None:
+    """The contact filter field (notification-specific) is forwarded to /logs."""
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {
+            "since": "-6h",
+            "filter": {"type": "leaf", "field": "contact", "op": "eq", "value": "oncall"},
+        },
+    )
+    payload = json.loads(result[0].text)
+    assert "error" not in payload
+    p = _post_params(route.calls.last)
+    assert p.get("contact_name") == "oncall"
+    assert p.get("class") == "3"
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_metadata_in_output(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": "-12h", "until": None, "bucket": "6h"},
+    )
+    payload = json.loads(result[0].text)
+    assert payload["since"] == "-12h"
+    assert payload["until"] is None
+    assert payload["bucket"] == "6h"
+    assert "total_notifications" in payload
+    assert "results" in payload
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_cap_warning(mocked_server) -> None:
+    mcp, router = mocked_server
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    big_data = [_log(BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
+
+    result = await mcp.call_tool("thruk_notification_heatmap", {"since": "-24h"})
+    payload = json.loads(result[0].text)
+    assert "_warning" in payload
+    assert "THRUK_NOISY_MAX_ALERTS" in payload["_warning"]
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_truncated_buckets_marked_null(mocked_server) -> None:
+    """Cap hit + newest-first => earliest buckets are count=null, truncated=true.
+
+    Same semantics as thruk_alert_heatmap (issue #250): with sort=-time the
+    earliest buckets are the ones not covered by the capped fetch.
+    """
+    mcp, router = mocked_server
+    from thruk_mcp.server import _NOISY_MAX_ALERTS
+
+    hour = 3600
+    base_recent = BASE_TS + 22 * hour
+    big_data = [_log(base_recent + (i % (2 * hour))) for i in range(_NOISY_MAX_ALERTS)]
+    big_data[-1] = _log(base_recent + 1234)  # force earliest into bucket #22
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + 24 * hour), "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["total_notifications"] == _NOISY_MAX_ALERTS
+    assert "truncated_before" in payload
+    assert payload["truncated_before"].endswith("Z")
+    assert len(payload["results"]) == 25
+    assert isinstance(payload["results"][22]["count"], int)
+    assert payload["results"][22]["count"] > 0
+    assert not payload["results"][22].get("truncated", False)
+    for bucket in payload["results"][:22]:
+        assert bucket["count"] is None
+        assert bucket["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_no_truncation_when_cap_not_hit(mocked_server) -> None:
+    mcp, router = mocked_server
+    hour = 3600
+    entries = [_log(BASE_TS + 10), _log(BASE_TS + hour + 10)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + 2 * hour), "bucket": "1h"},
+    )
+    payload = json.loads(result[0].text)
+    assert "truncated_before" not in payload
+    for bucket in payload["results"]:
+        assert bucket["count"] is not None
+        assert "truncated" not in bucket
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_invalid_filter(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"filter": {"type": "leaf", "field": "bad_field", "op": "eq", "value": "x"}},
+    )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
