@@ -111,6 +111,12 @@ from .inventory import (
     thruk_stats,
     thruk_totals,
 )
+from .perfdata import (
+    PERFDATA_REGISTRY,
+    thruk_get_perfdata,
+    thruk_perfdata_near_threshold,
+    thruk_perfdata_snapshot,
+)
 from .triage import (
     TRIAGE_REGISTRY,
     _project_problem_counts,
@@ -132,6 +138,7 @@ from .triage import (
 #   5. raw query (read + write)  (ESCAPE_REGISTRY)
 #   6. write commands            (COMMANDS_WRITE_REGISTRY)
 #   7. semantic triage / analytics (TRIAGE_REGISTRY)
+#   8. performance data (PERFDATA_REGISTRY, issue #284)
 TOOL_REGISTRY: list[ToolSpec] = [
     *HISTORY_TRENDS_REGISTRY,
     *INVENTORY_REGISTRY,
@@ -140,6 +147,7 @@ TOOL_REGISTRY: list[ToolSpec] = [
     *ESCAPE_REGISTRY,
     *COMMANDS_WRITE_REGISTRY,
     *TRIAGE_REGISTRY,
+    *PERFDATA_REGISTRY,
 ]
 
 __all__ = [
@@ -150,6 +158,7 @@ __all__ = [
     "HISTORY_REGISTRY",
     "HISTORY_TRENDS_REGISTRY",
     "INVENTORY_REGISTRY",
+    "PERFDATA_REGISTRY",
     "TOOL_REGISTRY",
     "TRIAGE_REGISTRY",
     "_ALLOWED_METHODS",
@@ -193,6 +202,7 @@ __all__ = [
     "thruk_get_contact",
     "thruk_get_downtime",
     "thruk_get_host",
+    "thruk_get_perfdata",
     "thruk_get_service",
     "thruk_host_availability",
     "thruk_hostgroup_availability",
@@ -210,6 +220,8 @@ __all__ = [
     "thruk_notification_summary",
     "thruk_notifications",
     "thruk_oldest_problems",
+    "thruk_perfdata_near_threshold",
+    "thruk_perfdata_snapshot",
     "thruk_problem_counts",
     "thruk_problems",
     "thruk_query",
