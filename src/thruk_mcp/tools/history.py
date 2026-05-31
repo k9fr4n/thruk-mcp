@@ -1250,9 +1250,11 @@ async def thruk_list_notifications(
     return _tool_response(data, warnings)
 
 
-#: Maps the ``group_by`` dimension to its Naemon ``/logs`` column. ``state`` is
-#: kept as the raw log value (host- and service-notification state vocabularies
-#: differ, so a single human-readable map would be ambiguous).
+#: Maps the ``group_by`` dimension to its Naemon ``/logs`` column. For
+#: ``state`` the raw code is mapped to a human-readable label *per row*
+#: (issue #282): host- and service-notification state vocabularies differ, so
+#: the context is derived from ``service_description`` (empty => host
+#: notification => HOST_STATES, otherwise SERVICE_STATES).
 _NOTIF_GROUP_FIELDS: dict[str, str] = {
     "contact": "contact_name",
     "host": "host_name",
@@ -1309,12 +1311,17 @@ async def thruk_notification_summary(
     if "time[lte]" not in extra and until:
         extra["time[lte]"] = until
 
+    # group_by=state needs service_description to tell a host notification
+    # (HOST_STATES) from a service one (SERVICE_STATES) — issue #282.
+    wanted_cols = {group_field, "time"}
+    if group_by == "state":
+        wanted_cols.add("service_description")
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         # Newest-first (mirrors thruk_alert_heatmap, issue #250): when the cap
         # is hit, drop the *oldest* entries so recent notifications stay counted.
         "sort": "-time",
-        "columns": ",".join(sorted({group_field, "time"})),
+        "columns": ",".join(sorted(wanted_cols)),
         **extra,
     }
     data, warnings = await _get_client().get_with_fallback(
@@ -1328,7 +1335,15 @@ async def thruk_notification_summary(
     for entry in data:
         if not isinstance(entry, dict):
             continue
-        key = str(entry.get(group_field) or "")
+        if group_by == "state":
+            # Derive host-vs-service context per row, then map the raw code to
+            # a label. Routing through _format_state_label means state 0 maps
+            # to "UP"/"OK" (no more bare "" bucket from `0 or ""`) and unmapped
+            # codes surface as "UNKNOWN(<n>)" rather than a raw int (issue #282).
+            state_map = SERVICE_STATES if entry.get("service_description") else HOST_STATES
+            key = _format_state_label(entry.get("state"), state_map)
+        else:
+            key = str(entry.get(group_field) or "")
         rec = counts.setdefault(key, {"count": 0, "_last_ts": 0, "last_time": None})
         rec["count"] += 1
         total += 1
