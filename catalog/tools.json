@@ -3945,6 +3945,74 @@
     }
   },
   {
+    "name": "thruk_stale_checks",
+    "description": "Surface checks that stopped running (the dangerous false green): a check that stops executing keeps showing its last state (usually OK) while monitoring is blind. Scans /services (and /hosts) and flags each abnormal check by reason: stale (active check overdue vs check_interval*60*staleness_factor + grace), stale_passive (passive check older than passive_max_age_s), never_checked (has_been_checked=0), disabled (active_checks_enabled=0, reported separately), high_latency (latency > latency_threshold_s). check_interval is in MINUTES in Livestatus and converted to seconds. Spurious latency values are sanitized. Returns {now, thresholds, counts, results} sorted stalest-first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree scoping both /services and /hosts. Fields: hostgroup, custom_var."
+        },
+        "staleness_factor": {
+          "type": "number",
+          "default": 2.0,
+          "description": "Multiplier on the active check_interval before a check is considered stale (now - last_check > interval*factor + grace_seconds)."
+        },
+        "latency_threshold_s": {
+          "type": "number",
+          "default": 30.0,
+          "description": "Latency in seconds above which a check is flagged with reason=high_latency."
+        },
+        "grace_seconds": {
+          "type": "integer",
+          "default": 60,
+          "description": "Absolute grace (seconds) added on top of interval*factor / passive_max_age_s to avoid boundary flapping (default 60)."
+        },
+        "passive_max_age_s": {
+          "type": "integer",
+          "default": 3600,
+          "description": "Max age in seconds of a passive check's last result before reason=stale_passive (default 3600)."
+        },
+        "include_hosts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also run the same logic over /hosts host checks (default true)."
+        },
+        "include_disabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report active checks with active_checks_enabled=0 as reason=disabled (default true)."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 500,
+          "description": "Maximum number of rows scanned per object type (max 5000, default 500)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_recurring_problems",
     "description": "Return hosts/services that generated repeated alerts over a time window. Identifies chronic problems by counting non-recovery HOST/SERVICE ALERT entries per object and filtering by a minimum threshold. Results sorted by alert count descending.",
     "inputSchema": {

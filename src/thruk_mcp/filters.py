@@ -48,6 +48,7 @@ __all__ = [
     "FIELDS_PROBLEM_COUNTS",
     "FIELDS_SERVICES",
     "FIELDS_STALE_ACKS",
+    "FIELDS_STALE_CHECKS",
     "FIELDS_TOTALS",
     "FIELDS_UNACKED",
     "FilterError",
@@ -109,6 +110,14 @@ FIELDS_UNACKED: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 #: constrained to acknowledgement comments and per-host filtering would
 #: duplicate ``thruk_list_comments``. See issue #228.
 FIELDS_STALE_ACKS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
+#: ``thruk_stale_checks`` scopes the stale/overdue-execution sweep across
+#: ``/hosts`` + ``/services``. Like :data:`FIELDS_OLDEST_PROBLEMS` /
+#: :data:`FIELDS_UNACKED`, only the fields that compile symmetrically against
+#: both endpoints are exposed (``hostgroup`` → ``groups[gte]=`` / ``host_groups
+#: [gte]=``, ``custom_var`` → ``_VARNAME=`` / ``_HOST{VAR}=``). Per-host /
+#: per-service filtering would duplicate ``thruk_list_hosts`` /
+#: ``thruk_list_services``. See issue #287.
+FIELDS_STALE_CHECKS: frozenset[str] = frozenset({"hostgroup", "custom_var"})
 FIELDS_NOISY_HOSTS: frozenset[str] = frozenset({"host", "hostgroup", "custom_var"})
 #: ``thruk_list_downtimes`` filters scheduled downtimes by host scope. The
 #: ``/downtimes`` endpoint exposes ``host_name`` natively but not

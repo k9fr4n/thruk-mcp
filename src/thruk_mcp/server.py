@@ -430,6 +430,9 @@ from .tools import (
     thruk_stale_acks as thruk_stale_acks,
 )
 from .tools import (
+    thruk_stale_checks as thruk_stale_checks,
+)
+from .tools import (
     thruk_stats as thruk_stats,
 )
 from .tools import (
