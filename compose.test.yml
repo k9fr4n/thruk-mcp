@@ -8,7 +8,10 @@
 #       pytest -m integration
 services:
   omd:
-    image: consol/omd-labs-debian:edge
+    # The upstream `:edge` tag was removed (manifest unknown). `:nightly` is its
+    # successor — the newest multi-arch OMD build, which keeps this nightly job
+    # exercising the live Thruk REST contract against a current release.
+    image: consol/omd-labs-debian:nightly
     container_name: thruk-mcp-omd
     hostname: omd
     ports:
