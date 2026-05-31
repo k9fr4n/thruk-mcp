@@ -793,7 +793,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -942,7 +942,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -1601,7 +1601,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -2972,7 +2972,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3150,7 +3150,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3328,7 +3328,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3473,7 +3473,7 @@
   },
   {
     "name": "thruk_oldest_problems",
-    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending — oldest first. Returns [{host, service, state, since, duration_human}]. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
+    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending \u2014 oldest first. Returns [{host, service, state, since, duration_human}]. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3628,7 +3628,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
+              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -4116,6 +4116,68 @@
           "type": "integer",
           "default": 200,
           "description": "Maximum number of services to scan (max 1000)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_reliability_report",
+    "description": "Per host/service reliability metrics (MTTR, MTBF, incident count, longest outage) reconstructed from HARD HOST/SERVICE ALERT transitions in the log. Unlike *_availability (uptime %% only), this distinguishes many short outages from one long one. SOFT rows, downtime/flapping alerts and notifications are ignored; consecutive non-OK HARD states collapse into one incident; ongoing incidents are clamped at until and excluded from MTTR. Results sorted by total downtime descending.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-30d",
+          "description": "Start of analysis window. Thruk relative time (\"-30d\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 30 days."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Maximum number of host/service objects to return (busiest first, default 50)."
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: host, service, hostgroup, custom_var."
         },
         "backends": {
           "anyOf": [

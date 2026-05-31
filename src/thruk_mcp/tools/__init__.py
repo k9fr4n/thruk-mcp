@@ -84,6 +84,7 @@ from .history import (
     thruk_notification_summary,
     thruk_recent_events,
     thruk_recurring_problems,
+    thruk_reliability_report,
     thruk_top_noisy_hosts,
     thruk_top_noisy_services,
 )
@@ -228,6 +229,7 @@ __all__ = [
     "thruk_recent_events",
     "thruk_recheck",
     "thruk_recurring_problems",
+    "thruk_reliability_report",
     "thruk_remove_acknowledgement",
     "thruk_run_background_query",
     "thruk_schedule_downtime",
