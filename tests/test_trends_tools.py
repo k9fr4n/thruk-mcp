@@ -785,7 +785,13 @@ async def test_notification_summary_request_params(mocked_server) -> None:
 
 @pytest.mark.asyncio
 async def test_notification_summary_group_by_state(mocked_server) -> None:
-    """group_by='state' counts the raw state value and requests the state column."""
+    """group_by='state' maps host-notification codes to labels (issue #282).
+
+    BEFORE FIX: rows with state=2/state=1 surfaced as raw codes {"2": 2, "1": 1}.
+    The rows below carry no service_description, so they are host notifications:
+    2 -> UNREACHABLE, 1 -> DOWN. The summary now also requests the
+    service_description column so it can pick the right state vocabulary.
+    """
     mcp, router = mocked_server
     log_route = router.post("https://thruk.test/r/logs").mock(
         return_value=ok(
@@ -800,9 +806,55 @@ async def test_notification_summary_group_by_state(mocked_server) -> None:
     result = await mcp.call_tool("thruk_notification_summary", {"group_by": "state"})
     payload = json.loads(result[0].text)
 
-    assert "state" in _post_params(log_route.calls.last)["columns"]
+    cols = _post_params(log_route.calls.last)["columns"]
+    assert "state" in cols
+    assert "service_description" in cols
     counts = {r["state"]: r["count"] for r in payload["results"]}
-    assert counts == {"2": 2, "1": 1}
+    assert counts == {"UNREACHABLE": 2, "DOWN": 1}
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_state_host_vs_service_and_recovery(mocked_server) -> None:
+    """Mixed host/service rows map per-context; state 0 is OK/UP, never "" (issue #282).
+
+    BEFORE FIX: `key = str(entry.get(group_field) or "")` coerced state 0 to a
+    bare "" bucket, and service rows reused the host vocabulary. After the fix:
+    - service row (has service_description) state=2 -> CRITICAL,
+    - service recovery state=0 -> OK (not ""),
+    - host row state=1 -> DOWN.
+    """
+    mcp, router = mocked_server
+    rows = [
+        {
+            "contact_name": "a",
+            "host_name": "h1",
+            "service_description": "HTTP",
+            "state": 2,
+            "time": BASE_TS + 0,
+        },
+        {
+            "contact_name": "b",
+            "host_name": "h1",
+            "service_description": "HTTP",
+            "state": 0,
+            "time": BASE_TS + 1,
+        },
+        {
+            "contact_name": "c",
+            "host_name": "h2",
+            "service_description": "",
+            "state": 1,
+            "time": BASE_TS + 2,
+        },
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(rows))
+
+    result = await mcp.call_tool("thruk_notification_summary", {"group_by": "state"})
+    payload = json.loads(result[0].text)
+
+    counts = {r["state"]: r["count"] for r in payload["results"]}
+    assert counts == {"CRITICAL": 1, "OK": 1, "DOWN": 1}
+    assert "" not in counts
 
 
 @pytest.mark.asyncio
