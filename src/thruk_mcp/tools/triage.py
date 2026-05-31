@@ -35,6 +35,7 @@ from ..constants import (
     _NOISY_CAP_HINT,
     _NOISY_MAX_ALERTS,
     HOST_STATE_STR,
+    LATENCY_SANITY_CAP_SECONDS,
     SVC_STATE_STR,
 )
 from ..filters import (
@@ -42,6 +43,7 @@ from ..filters import (
     FIELDS_OLDEST_PROBLEMS,
     FIELDS_PROBLEM_COUNTS,
     FIELDS_STALE_ACKS,
+    FIELDS_STALE_CHECKS,
     FIELDS_UNACKED,
     FilterError,
     build_tool_schema,
@@ -57,6 +59,7 @@ from ..helpers import (
     _get_client,
     _now_utc_epoch,
     _resolve_log_filter,
+    _sanitize_latency,
     _tool_response,
     _ts,
 )
@@ -64,6 +67,7 @@ from .base import (
     _BACKENDS,
     _OPT_STR,
     ToolSpec,
+    _bool,
     _int,
 )
 from .inventory import _strip_filter_field
@@ -543,6 +547,238 @@ async def thruk_concurrent_failures(
 
 
 # ---------------------------------------------------------------------------
+# Stale-checks detector (issue #287)
+# ---------------------------------------------------------------------------
+
+#: Tight Livestatus column set for the /services stale sweep. ``check_interval``
+#: is in MINUTES in Livestatus (issue #287, criterion 1) and is converted to
+#: seconds before any age comparison; ``check_type`` is 0=active / 1=passive.
+_STALE_SVC_COLUMNS: str = (
+    "host_name,description,last_check,next_check,latency,execution_time,"
+    "check_interval,active_checks_enabled,has_been_checked,check_type,peer_name"
+)
+#: Same column shape for the /hosts host-check sweep (``name`` instead of
+#: ``host_name`` + ``description``).
+_STALE_HOST_COLUMNS: str = (
+    "name,last_check,next_check,latency,execution_time,"
+    "check_interval,active_checks_enabled,has_been_checked,check_type,peer_name"
+)
+#: Hard cap on rows scanned per object type (defence against runaway result sets).
+_STALE_MAX_LIMIT: int = 5000
+
+
+def _classify_check(
+    row: dict[str, Any],
+    *,
+    now: int,
+    staleness_factor: float,
+    latency_threshold_s: float,
+    grace_seconds: int,
+    passive_max_age_s: int,
+    include_disabled: bool,
+) -> dict[str, Any] | None:
+    """Classify a single host/service check row as healthy or abnormal.
+
+    Pure function (no I/O) so the full classification matrix is unit-testable in
+    isolation. Returns ``None`` when the check looks healthy, otherwise a result
+    dict carrying the ``reason`` and the supporting metrics.
+
+    A host row is detected by the absence of a ``description`` column; service
+    rows carry ``host_name`` + ``description``.
+
+    Reason precedence (issue #287):
+    ``never_checked`` > ``disabled`` > ``stale`` / ``stale_passive`` > ``high_latency``.
+
+    - ``check_interval`` is in MINUTES in Livestatus → converted to seconds
+      (criterion 1).
+    - Passive checks (``check_type == 1``) use a freshness threshold
+      (``passive_max_age_s``) rather than the active interval, and are labelled
+      ``stale_passive`` (criterion 2). Their ``active_checks_enabled == 0`` is
+      expected and is **not** reported as ``disabled`` (criterion 3).
+    - ``has_been_checked == 0`` → ``never_checked`` (criterion 4).
+    - An absolute ``grace_seconds`` is added on top of ``interval * factor`` to
+      avoid boundary flapping (criterion 5).
+    """
+    is_host = "description" not in row
+    host = row.get("host_name") or row.get("name") or ""
+    service = None if is_host else row.get("description", "")
+    is_passive = int(row.get("check_type") or 0) == 1
+    active_enabled = bool(int(row.get("active_checks_enabled") or 0))
+    has_been_checked = bool(int(row.get("has_been_checked") or 0))
+    last_check = int(row.get("last_check") or 0)
+    # latency may be None after _sanitize_latency nulled a spurious value.
+    latency = float(row.get("latency") or 0.0)
+    exec_time = float(row.get("execution_time") or 0.0)
+    interval_s = int(float(row.get("check_interval") or 0.0) * 60)  # minutes → seconds
+    age_s: int | None = (now - last_check) if last_check else None
+
+    def _result(reason: str) -> dict[str, Any]:
+        return {
+            "host": host,
+            "service": service,
+            "reason": reason,
+            "last_check": _ts(last_check),
+            "last_check_age_s": age_s,
+            "check_interval_s": interval_s,
+            "latency_s": round(latency, 3),
+            "execution_time_s": round(exec_time, 3),
+            "active_checks_enabled": active_enabled,
+            "check_type": "passive" if is_passive else "active",
+        }
+
+    # 1. Never checked — distinct from stale, applies to any check type.
+    if not has_been_checked:
+        return _result("never_checked")
+
+    # 2. Passive checks: freshness, not interval. active_checks_enabled == 0 is
+    #    normal for them, so it is NOT treated as a fault.
+    if is_passive:
+        if age_s is not None and age_s > passive_max_age_s + grace_seconds:
+            return _result("stale_passive")
+        if latency > latency_threshold_s:
+            return _result("high_latency")
+        return None
+
+    # 3. Active checks.
+    #    a. disabled (separate category — intentional, not necessarily a fault).
+    if not active_enabled:
+        return _result("disabled") if include_disabled else None
+    #    b. stale: overdue vs interval * factor (+ grace). interval_s <= 0 means
+    #       no meaningful schedule to compare against, so staleness is skipped.
+    if (
+        interval_s > 0
+        and age_s is not None
+        and age_s > interval_s * staleness_factor + grace_seconds
+    ):
+        return _result("stale")
+    #    c. high latency (scheduler backlog).
+    if latency > latency_threshold_s:
+        return _result("high_latency")
+    return None
+
+
+async def thruk_stale_checks(
+    filter: dict[str, Any] | None = None,
+    staleness_factor: float = 2.0,
+    latency_threshold_s: float = 30.0,
+    grace_seconds: int = 60,
+    passive_max_age_s: int = 3600,
+    include_hosts: bool = True,
+    include_disabled: bool = True,
+    limit: int = 500,
+    backends: str | None = None,
+) -> str:
+    """Surface checks that stopped running (the dangerous "false green").
+
+    A check that stops executing keeps displaying its last state (usually OK),
+    so monitoring goes blind while the dashboard looks healthy. This tool scans
+    ``/services`` (and ``/hosts`` when ``include_hosts``) and flags every check
+    whose *execution* is abnormal, classified by ``reason``:
+
+    * ``stale``         — active check overdue:
+      ``now - last_check > check_interval*60 * staleness_factor + grace_seconds``.
+    * ``stale_passive`` — passive check (``check_type == 1``) whose last result is
+      older than ``passive_max_age_s`` (+ grace). Passive checks have no
+      meaningful active interval, so freshness is used instead.
+    * ``never_checked`` — ``has_been_checked == 0`` (never executed yet).
+    * ``disabled``      — active checks turned off (``active_checks_enabled == 0``),
+      reported separately (intentional, not necessarily a fault). Passive checks
+      are NOT flagged here — their active checks are off by design.
+    * ``high_latency``  — scheduler backlog: ``latency > latency_threshold_s``.
+
+    Contract / notes:
+    - ``check_interval`` is in MINUTES in Livestatus and converted to seconds
+      before comparison.
+    - Clock source: the MCP host's UTC clock (``datetime.now(UTC)``), consistent
+      with the other triage tools. If absolute ages look off, suspect clock skew
+      between the MCP host and the monitoring core.
+    - Spurious ``latency`` values (a Naemon/Livestatus bug surfacing a Unix
+      timestamp, issue #202) are sanitized to ``null`` before classification so
+      they cannot masquerade as high latency.
+
+    Optional ``filter`` is a structured AND/OR tree scoping both ``/services``
+    and ``/hosts``. Supported fields: ``hostgroup`` and ``custom_var`` (the host
+    custom var is rewritten to ``_HOST{VAR}`` on the services side). ``backends``
+    selects sites.
+
+    Returns a wrapped object: ``now``, the effective thresholds, ``counts``
+    (per-reason tally) and ``results`` (sorted by ``last_check_age_s``
+    descending — stalest/never-checked first).
+    """
+    if filter is not None:
+        try:
+            validate_filter(filter, FIELDS_STALE_CHECKS)
+        except FilterError as exc:
+            return _tool_response({"error": str(exc)})
+
+    capped = max(1, min(limit, _STALE_MAX_LIMIT))
+    svc_params: dict[str, Any] = {"columns": _STALE_SVC_COLUMNS, "limit": capped}
+    host_params: dict[str, Any] = {"columns": _STALE_HOST_COLUMNS, "limit": capped}
+    if filter is not None:
+        # Issue #244: host-level custom_var must map to _HOST{VAR} on /services.
+        svc_params.update(compile_filter(rewrite_custom_var_to_host_custom_var(filter), "services"))
+        host_params.update(compile_filter(filter, "hosts"))
+
+    be = _backends(backends)
+    if include_hosts:
+        services, hosts = await asyncio.gather(
+            _get_client().get("/services", params=svc_params, backends=be),
+            _get_client().get("/hosts", params=host_params, backends=be),
+        )
+    else:
+        services = await _get_client().get("/services", params=svc_params, backends=be)
+        hosts = []
+
+    svc_rows: list[Any] = services if isinstance(services, list) else []
+    host_rows: list[Any] = hosts if isinstance(hosts, list) else []
+    svc_rows, svc_warns = _sanitize_latency(svc_rows, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    host_rows, host_warns = _sanitize_latency(host_rows, cap_seconds=LATENCY_SANITY_CAP_SECONDS)
+    warnings: list[str] = [*svc_warns, *host_warns]
+
+    now = _now_utc_epoch()
+    results: list[dict[str, Any]] = []
+    for row in [*svc_rows, *host_rows]:
+        if not isinstance(row, dict):
+            continue
+        res = _classify_check(
+            row,
+            now=now,
+            staleness_factor=staleness_factor,
+            latency_threshold_s=latency_threshold_s,
+            grace_seconds=grace_seconds,
+            passive_max_age_s=passive_max_age_s,
+            include_disabled=include_disabled,
+        )
+        if res is not None:
+            results.append(res)
+
+    counts: Counter[str] = Counter(r["reason"] for r in results)
+    # Never-checked rows have no age (last_check == 0) — float('inf') floats them
+    # to the top alongside the longest-overdue checks.
+    results.sort(
+        key=lambda r: r["last_check_age_s"] if r["last_check_age_s"] is not None else float("inf"),
+        reverse=True,
+    )
+
+    payload: dict[str, Any] = {
+        "now": _ts(now),
+        "staleness_factor": staleness_factor,
+        "latency_threshold_s": latency_threshold_s,
+        "grace_seconds": grace_seconds,
+        "passive_max_age_s": passive_max_age_s,
+        "include_hosts": include_hosts,
+        "counts": dict(counts),
+        "results": results,
+    }
+    if len(svc_rows) >= capped or (include_hosts and len(host_rows) >= capped):
+        payload["_warning"] = (
+            f"Result set reached the per-object cap ({capped}); detection may be "
+            "incomplete. Narrow the scope with filter= or raise limit."
+        )
+    return _tool_response(payload, warnings or None)
+
+
+# ---------------------------------------------------------------------------
 # TRIAGE_REGISTRY: co-located tool specs (spliced into server.TOOL_REGISTRY)
 # ---------------------------------------------------------------------------
 
@@ -609,15 +845,63 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    # ----------------------------------------------------- stale-checks detector (issue #287)
+    ToolSpec(
+        name="thruk_stale_checks",
+        fn=thruk_stale_checks,
+        schema=build_tool_schema(
+            FIELDS_STALE_CHECKS,
+            staleness_factor={
+                "type": "number",
+                "default": 2.0,
+                "description": (
+                    "Multiplier on the active check_interval before a check is considered "
+                    "stale (now - last_check > interval*factor + grace_seconds)."
+                ),
+            },
+            latency_threshold_s={
+                "type": "number",
+                "default": 30.0,
+                "description": (
+                    "Latency in seconds above which a check is flagged with reason=high_latency."
+                ),
+            },
+            grace_seconds=_int(
+                "Absolute grace (seconds) added on top of interval*factor / passive_max_age_s "
+                "to avoid boundary flapping (default 60).",
+                default=60,
+            ),
+            passive_max_age_s=_int(
+                "Max age in seconds of a passive check's last result before reason=stale_passive "
+                "(default 3600).",
+                default=3600,
+            ),
+            include_hosts=_bool(
+                "Also run the same logic over /hosts host checks (default true).", default=True
+            ),
+            include_disabled=_bool(
+                "Report active checks with active_checks_enabled=0 as reason=disabled "
+                "(default true).",
+                default=True,
+            ),
+            limit=_int(
+                "Maximum number of rows scanned per object type (max 5000, default 500).",
+                default=500,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 
 __all__ = [
     "TRIAGE_REGISTRY",
+    "_classify_check",
     "_project_problem_counts",
     "thruk_concurrent_failures",
     "thruk_oldest_problems",
     "thruk_problem_counts",
     "thruk_stale_acks",
+    "thruk_stale_checks",
     "thruk_unacked_critical",
 ]
