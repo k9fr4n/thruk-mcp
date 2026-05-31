@@ -397,6 +397,9 @@ from .tools import (
     thruk_recurring_problems as thruk_recurring_problems,
 )
 from .tools import (
+    thruk_reliability_report as thruk_reliability_report,
+)
+from .tools import (
     thruk_remove_acknowledgement as thruk_remove_acknowledgement,
 )
 from .tools import (

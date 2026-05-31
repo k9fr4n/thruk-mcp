@@ -61,6 +61,7 @@ from ..helpers import (
     _RESOLVE_HOSTS_HARD_LIMIT,
     _backends,
     _build_cv_params,
+    _duration_human,
     _format_state_label,
     _get_client,
     _list_params,
@@ -70,6 +71,7 @@ from ..helpers import (
     _tool_response,
     _ts,
 )
+from ..reliability import summarize_reliability
 from .base import (
     _BACKENDS,
     _OPT_STR,
@@ -1080,6 +1082,137 @@ async def thruk_recurring_problems(
     return _tool_response(payload)
 
 
+def _enrich_reliability(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Add human-readable ``*_human`` strings to a pure-seconds metrics dict.
+
+    The reducer (:mod:`thruk_mcp.reliability`) returns integer seconds only; the
+    tool layer owns presentation. ``None`` seconds (no recovery for MTTR, < 2
+    incidents for MTBF) map to ``None`` human strings.
+    """
+
+    def _h(seconds: int | None) -> str | None:
+        return _duration_human(seconds) if seconds is not None else None
+
+    return {
+        "incidents": metrics["incidents"],
+        "mttr_seconds": metrics["mttr_seconds"],
+        "mttr_human": _h(metrics["mttr_seconds"]),
+        "mtbf_seconds": metrics["mtbf_seconds"],
+        "mtbf_human": _h(metrics["mtbf_seconds"]),
+        "total_downtime_seconds": metrics["total_downtime_seconds"],
+        "total_downtime_human": _h(metrics["total_downtime_seconds"]),
+        "longest_incident_seconds": metrics["longest_incident_seconds"],
+        "longest_incident_human": _h(metrics["longest_incident_seconds"]),
+        "ongoing": metrics["ongoing"],
+    }
+
+
+async def thruk_reliability_report(
+    since: str | None = "-30d",
+    until: str | None = None,
+    limit: int = 50,
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """Per host/service reliability metrics (MTTR / MTBF / incidents) from the log.
+
+    Where ``*_availability`` gives only an uptime *percentage*, this turns raw
+    HARD alert transitions into incident-level metrics, so a service at 99.2 %
+    that crashed 14 times (MTTR 38 m) is distinguishable from one with a single
+    11 h outage at the same percentage.
+
+    Incidents are reconstructed from HARD ``HOST ALERT`` / ``SERVICE ALERT``
+    transitions only — SOFT (check-retry) rows, ``* DOWNTIME ALERT`` /
+    ``* FLAPPING ALERT`` and notifications are ignored. An incident runs from
+    the first HARD non-OK state to the next HARD OK; consecutive non-OK HARD
+    states (e.g. WARN -> CRIT) collapse into one incident. An incident with no
+    recovery in the window is ``ongoing`` (excluded from MTTR but counted in
+    ``incidents`` / ``total_downtime``, clamped at ``until``); a leading HARD
+    recovery clamps a pre-window incident's downtime to ``since``.
+
+    ``since`` / ``until`` accept Thruk relative (``"-30d"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 30 days.
+    ``limit`` caps the number of host/service objects returned (busiest first).
+    ``filter`` fields: ``host``, ``service``, ``hostgroup``, ``custom_var``
+    (host-level, resolved via /hosts lookup).
+
+    Returns a wrapped object: ``since``, ``until``, ``total_objects``,
+    ``results`` — each ``{host, service, incidents, mttr_seconds, mttr_human,
+    mtbf_seconds, mtbf_human, total_downtime_seconds, total_downtime_human,
+    longest_incident_seconds, longest_incident_human, ongoing}`` — sorted by
+    ``total_downtime_seconds`` descending. MTTR is ``null`` when nothing
+    recovered; MTBF is ``null`` for fewer than 2 incidents.
+    """
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
+    # Defence-in-depth (issues #176 / #193): pair the type regex with class=1 so
+    # class=0 system messages (type=NULL) cannot leak past the regex filter.
+    extra["class"] = "1"
+    if since:
+        extra["time[gte]"] = since
+    if until:
+        extra["time[lte]"] = until
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",  # ascending: incident reconstruction needs chronological order
+        "columns": "host_name,service_description,state,state_type,time,type",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    # Resolve the window bounds once: ongoing incidents clamp at window_end
+    # (until, or now); pre-window incidents clamp at window_start (since).
+    window_start = _parse_thruk_time(since) if since else None
+    window_end = _parse_thruk_time(until) if until else None
+    if window_end is None:
+        window_end = _now_utc_epoch()
+
+    # Group rows per (host, service); host-level alerts have service="".
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        key = (entry.get("host_name") or "", entry.get("service_description") or "")
+        groups.setdefault(key, []).append(entry)
+
+    results: list[dict[str, Any]] = []
+    for (host, svc), entries in groups.items():
+        metrics = summarize_reliability(entries, window_start=window_start, window_end=window_end)
+        if metrics["incidents"] == 0:
+            continue
+        results.append({"host": host, "service": svc or None, **_enrich_reliability(metrics)})
+
+    results.sort(key=lambda r: r["total_downtime_seconds"], reverse=True)
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "total_objects": len(results),
+        "results": results[:limit],
+    }
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif len(data) >= _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; metrics may be incomplete."
+            + _NOISY_CAP_HINT
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
 # ``_resolve_log_filter`` / ``_resolve_hosts_to_regex_from_params`` live in
 # :mod:`thruk_mcp.helpers` (issue #258); ``_resolve_log_filter`` is imported above.
 
@@ -1453,6 +1586,17 @@ _SINCE_WINDOW = {
     ),
 }
 
+#: Reliability report defaults to a longer 30-day window (issue #286): MTTR /
+#: MTBF only become meaningful once several incidents have accumulated.
+_SINCE_WINDOW_30D = {
+    "anyOf": [{"type": "string"}, {"type": "null"}],
+    "default": "-30d",
+    "description": (
+        'Start of analysis window. Thruk relative time ("-30d", "-7d") '
+        'or ISO datetime ("2026-05-21 14:00:00"). Default: last 30 days.'
+    ),
+}
+
 HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
     # ---------------------------------------------------------------- noisy / flap
     ToolSpec(
@@ -1534,6 +1678,20 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
                 default=5,
             ),
             limit=_int("Maximum number of results (default 10).", default=10),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_reliability_report",
+        fn=thruk_reliability_report,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            since=_SINCE_WINDOW_30D,
+            until=_OPT_STR,
+            limit=_int(
+                "Maximum number of host/service objects to return (busiest first, default 50).",
+                default=50,
+            ),
             backends=_BACKENDS,
         ),
     ),
@@ -1640,6 +1798,7 @@ __all__ = [
     "thruk_notification_summary",
     "thruk_recent_events",
     "thruk_recurring_problems",
+    "thruk_reliability_report",
     "thruk_top_noisy_hosts",
     "thruk_top_noisy_services",
 ]
