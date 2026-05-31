@@ -103,7 +103,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 52 MCP Tools
+### 57 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -126,7 +126,8 @@ than `thruk_stats`), `thruk_sites`.
 `thruk_unacked_critical` (CRITICAL/DOWN not acknowledged for > N minutes),
 `thruk_stale_acks` (acknowledgements older than N days — forgotten problems),
 `thruk_problem_counts` (flat aggregate of unhealthy-state counts, filterable by hostgroup,
-custom vars or any structured filter — replaces the former thruk_problems_by_hostgroup).
+custom vars or any structured filter — replaces the former thruk_problems_by_hostgroup),
+`thruk_stale_checks` (surface checks that stopped running — the dangerous "false green").
 
 **Read — analytics**
 `thruk_alert_heatmap` (alert counts bucketed by time, useful for spotting recurring
@@ -143,6 +144,14 @@ simultaneously),
 sorted worst-first; `type` = `hosts` | `services` | `both`).
 All three accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` shortcut
 (`lastmonth`, `thismonth`, `last24hours`, `lastweek`, …).
+`thruk_reliability_report` (per host/service reliability metrics — MTTR / MTBF /
+incident counts — derived from the log over a window).
+
+**Read — performance data**
+`thruk_get_perfdata` (fetch and parse performance data for a single host or service),
+`thruk_perfdata_snapshot` (parsed perfdata for every service matching a `filter`, in one call),
+`thruk_perfdata_near_threshold` (metrics within `within_percent` % of breaching their
+warn/crit range — early-warning signal before an alert fires).
 
 **Write — downtime management**
 `thruk_schedule_downtime` (host/service), `thruk_schedule_host_services_downtime`
