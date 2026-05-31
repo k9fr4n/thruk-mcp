@@ -793,7 +793,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -912,33 +912,71 @@
       "$defs": {
         "FilterLeaf": {
           "type": "object",
-          "required": ["type", "field", "op", "value"],
+          "required": [
+            "type",
+            "field",
+            "op",
+            "value"
+          ],
           "additionalProperties": false,
           "properties": {
-            "type": {"const": "leaf"},
+            "type": {
+              "const": "leaf"
+            },
             "field": {
               "type": "string",
-              "enum": ["custom_var", "hostgroup", "servicegroup"],
+              "enum": [
+                "custom_var",
+                "hostgroup",
+                "servicegroup"
+              ],
               "description": "The monitoring attribute to filter on."
             },
             "op": {
               "type": "string",
-              "enum": ["eq", "gte", "in", "lte", "neq", "regex"],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "enum": [
+                "eq",
+                "gte",
+                "in",
+                "lte",
+                "neq",
+                "regex"
+              ],
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
               "oneOf": [
-                {"type": "string"},
-                {"type": "integer"},
-                {"type": "number"},
-                {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
                 {
                   "type": "object",
-                  "required": ["var"],
+                  "required": [
+                    "var"
+                  ],
                   "properties": {
-                    "var": {"type": "string", "description": "Custom variable name (auto-uppercased)."},
-                    "val": {"type": "string", "description": "Expected value."}
+                    "var": {
+                      "type": "string",
+                      "description": "Custom variable name (auto-uppercased)."
+                    },
+                    "val": {
+                      "type": "string",
+                      "description": "Expected value."
+                    }
                   },
                   "additionalProperties": false
                 }
@@ -948,13 +986,22 @@
         },
         "FilterGroup": {
           "type": "object",
-          "required": ["type", "operator", "conditions"],
+          "required": [
+            "type",
+            "operator",
+            "conditions"
+          ],
           "additionalProperties": false,
           "properties": {
-            "type": {"const": "group"},
+            "type": {
+              "const": "group"
+            },
             "operator": {
               "type": "string",
-              "enum": ["and", "or"],
+              "enum": [
+                "and",
+                "or"
+              ],
               "description": "Logical operator applied to all conditions."
             },
             "conditions": {
@@ -963,8 +1010,12 @@
               "description": "Sub-conditions (leaf or nested group nodes).",
               "items": {
                 "oneOf": [
-                  {"$ref": "#/$defs/FilterLeaf"},
-                  {"$ref": "#/$defs/FilterGroup"}
+                  {
+                    "$ref": "#/$defs/FilterLeaf"
+                  },
+                  {
+                    "$ref": "#/$defs/FilterGroup"
+                  }
                 ]
               }
             }
@@ -974,17 +1025,27 @@
       "properties": {
         "filter": {
           "anyOf": [
-            {"$ref": "#/$defs/FilterLeaf"},
-            {"$ref": "#/$defs/FilterGroup"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/FilterLeaf"
+            },
+            {
+              "$ref": "#/$defs/FilterGroup"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: hostgroup, servicegroup, custom_var. hostgroup -> groups[gte] on /hosts/totals and host_groups[gte] on /services/totals; servicegroup -> groups[gte] on /services/totals only (stripped from host-side params); custom_var -> _VARNAME on both."
         },
         "backends": {
           "anyOf": [
-            {"type": "string"},
-            {"type": "null"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
@@ -1540,7 +1601,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -2911,7 +2972,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3089,7 +3150,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3267,7 +3328,7 @@
                 "neq",
                 "regex"
               ],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var / host_custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
@@ -3412,7 +3473,7 @@
   },
   {
     "name": "thruk_oldest_problems",
-    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending \u2014 oldest first. Returns [{host, service, state, since, duration_human}]. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
+    "description": "Unhandled problems (DOWN/UNREACHABLE hosts and WARNING/CRITICAL/UNKNOWN services, not acknowledged, not in downtime) sorted by age ascending — oldest first. Returns [{host, service, state, since, duration_human}]. Optional structured ``filter`` (fields: hostgroup, custom_var) scopes both /hosts and /services queries.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3423,8 +3484,12 @@
         },
         "filter": {
           "anyOf": [
-            {"type": "object"},
-            {"type": "null"}
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
@@ -3457,8 +3522,12 @@
         },
         "filter": {
           "anyOf": [
-            {"type": "object"},
-            {"type": "null"}
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
@@ -3496,8 +3565,12 @@
         },
         "filter": {
           "anyOf": [
-            {"type": "object"},
-            {"type": "null"}
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Supported fields: hostgroup, custom_var."
@@ -3525,33 +3598,71 @@
       "$defs": {
         "FilterLeaf": {
           "type": "object",
-          "required": ["type", "field", "op", "value"],
+          "required": [
+            "type",
+            "field",
+            "op",
+            "value"
+          ],
           "additionalProperties": false,
           "properties": {
-            "type": {"const": "leaf"},
+            "type": {
+              "const": "leaf"
+            },
             "field": {
               "type": "string",
-              "enum": ["custom_var", "hostgroup", "servicegroup"],
+              "enum": [
+                "custom_var",
+                "hostgroup",
+                "servicegroup"
+              ],
               "description": "The monitoring attribute to filter on."
             },
             "op": {
               "type": "string",
-              "enum": ["eq", "gte", "in", "lte", "neq", "regex"],
-              "description": "Comparison operator: eq (=), neq (\u2260), regex (case-insensitive ~), in (list), gte (\u2265), lte (\u2264)."
+              "enum": [
+                "eq",
+                "gte",
+                "in",
+                "lte",
+                "neq",
+                "regex"
+              ],
+              "description": "Comparison operator: eq (=), neq (≠), regex (case-insensitive ~), in (list), gte (≥), lte (≤)."
             },
             "value": {
               "description": "Comparison value. Use a list for op='in'. For custom_var use {\"var\": \"NAME\", \"val\": \"value\"}.",
               "oneOf": [
-                {"type": "string"},
-                {"type": "integer"},
-                {"type": "number"},
-                {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
                 {
                   "type": "object",
-                  "required": ["var"],
+                  "required": [
+                    "var"
+                  ],
                   "properties": {
-                    "var": {"type": "string", "description": "Custom variable name (auto-uppercased)."},
-                    "val": {"type": "string", "description": "Expected value."}
+                    "var": {
+                      "type": "string",
+                      "description": "Custom variable name (auto-uppercased)."
+                    },
+                    "val": {
+                      "type": "string",
+                      "description": "Expected value."
+                    }
                   },
                   "additionalProperties": false
                 }
@@ -3561,13 +3672,22 @@
         },
         "FilterGroup": {
           "type": "object",
-          "required": ["type", "operator", "conditions"],
+          "required": [
+            "type",
+            "operator",
+            "conditions"
+          ],
           "additionalProperties": false,
           "properties": {
-            "type": {"const": "group"},
+            "type": {
+              "const": "group"
+            },
             "operator": {
               "type": "string",
-              "enum": ["and", "or"],
+              "enum": [
+                "and",
+                "or"
+              ],
               "description": "Logical operator applied to all conditions."
             },
             "conditions": {
@@ -3576,8 +3696,12 @@
               "description": "Sub-conditions (leaf or nested group nodes).",
               "items": {
                 "oneOf": [
-                  {"$ref": "#/$defs/FilterLeaf"},
-                  {"$ref": "#/$defs/FilterGroup"}
+                  {
+                    "$ref": "#/$defs/FilterLeaf"
+                  },
+                  {
+                    "$ref": "#/$defs/FilterGroup"
+                  }
                 ]
               }
             }
@@ -3587,17 +3711,27 @@
       "properties": {
         "filter": {
           "anyOf": [
-            {"$ref": "#/$defs/FilterLeaf"},
-            {"$ref": "#/$defs/FilterGroup"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/FilterLeaf"
+            },
+            {
+              "$ref": "#/$defs/FilterGroup"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: hostgroup, servicegroup, custom_var. hostgroup -> groups[gte] on /hosts/totals and host_groups[gte] on /services/totals; servicegroup -> groups[gte] on /services/totals only (stripped from host-side params); custom_var -> _VARNAME on both."
         },
         "backends": {
           "anyOf": [
-            {"type": "string"},
-            {"type": "null"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "description": "Comma-separated backend names (sites). Omit for all backends."
@@ -3861,6 +3995,127 @@
           ],
           "default": null,
           "description": "Structured AND/OR filter tree. Fields: host, service, hostgroup, custom_var."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_get_perfdata",
+    "description": "Fetch and parse performance data for a single host (service omitted) or service. Returns a list of metrics {label, value, uom, warn, crit, min, max, breached}; warn/crit are raw Nagios range strings and breached is range-correct. Empty perf_data yields metrics: [] (never an error).",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "host"
+      ],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Host name"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Service description. Omit for the host check's own perfdata."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_perfdata_snapshot",
+    "description": "Parsed performance data for every service matching a structured filter, in one call. Use case: capacity planning (CPU/RAM of every host in a hostgroup). Returns {host, service, metrics:[...]} rows.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree over /services. Fields: host, description, state, hostgroup, servicegroup, custom_var, host_custom_var."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 200,
+          "description": "Maximum number of services to scan (max 1000)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_perfdata_near_threshold",
+    "description": "Metrics whose value is within within_percent %% of breaching their warn (or crit) range, computed range-correctly (handles inverted lower-is-worse metrics). Sorted by headroom_percent ascending; 0 means already breached.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree over /services. Fields: host, description, state, hostgroup, servicegroup, custom_var, host_custom_var."
+        },
+        "within_percent": {
+          "type": "number",
+          "default": 10.0,
+          "description": "Proximity threshold in percent."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 200,
+          "description": "Maximum number of services to scan (max 1000)."
         },
         "backends": {
           "anyOf": [

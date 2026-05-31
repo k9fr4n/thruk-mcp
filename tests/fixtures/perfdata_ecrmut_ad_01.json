@@ -1,0 +1,82 @@
+{
+  "_comment": "Authentic perf_data dump captured live from ecrmut-ad-01 (2026-05-31, issue #284). Covers every parser edge case: quoted labels with spaces/':'/'*', Nagios ranges (incl. negative min:max), empty perf_data, value-only, empty trailing fields, B/%/ms/s UOM, and the inverted-direction 'Days life' metric.",
+  "host": {
+    "name": "ecrmut-ad-01",
+    "state": 0,
+    "perf_data": "rta=0.963000ms;3000.000000;5000.000000;0.000000 pl=0%;80;100;0"
+  },
+  "services": [
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_ACTIVE-DIRECTORY_HEALTH",
+      "state": 0,
+      "perf_data": "'DNS'=0;;1 'DNS Service'=0;;1 'NTDS Service'=0;;1 'NetLogon Service'=0;;1 'Replications Failure'=0;;1"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_AD_STATUS",
+      "state": 0,
+      "perf_data": "'DNS'=4 'DNS rss'=80142336B;;;0 'DNS vms'=138539008B;;;0 'DNS cpu'=0%;;;0 'DFSR'=4 'DFSR cpu'=0.1%;;;0"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_IIS-CERTIFICATES_STATUS",
+      "state": 0,
+      "perf_data": "'Days life : *.ecritel.net'=263;366;389;0;396"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_NTPD_CLIENT-STATUS",
+      "state": 0,
+      "perf_data": "'offset'=-0.1459ms;-2000:2000;-10000:10000 'stratum'=3;;;0"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_PUPPET-AGENT-CERT_STATUS",
+      "state": 0,
+      "perf_data": ""
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_SCHEDULETASK_FOLDER-ECRITEL_STATUS",
+      "state": 0,
+      "perf_data": ""
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SERVICE_SSL_CERTIFICATE-LDAPS",
+      "state": 0,
+      "perf_data": "time=0.014773s;;;0.000000;10.000000"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SYSTEM_CPU_USAGE",
+      "state": 0,
+      "perf_data": "'total 30'=13%;95;99 'total 60'=10%;95;99"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SYSTEM_DRIVE-C_USAGE",
+      "state": 0,
+      "perf_data": "'C: used'=57766174720B;67171040870;70902765363;0;74634489856 'C: used %'=77.4%;90;95;0;100"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SYSTEM_LOADAVG_USAGE",
+      "state": 0,
+      "perf_data": "'scaled_load1'=0.01;5;6;0 'load1'=0.05882806401846259;;;0"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SYSTEM_MEMORY_USAGE",
+      "state": 0,
+      "perf_data": "'physical'=2823999488B;4208542106;;0;4294430720 'physical %'=65.8%;98;;0;100"
+    },
+    {
+      "host_name": "ecrmut-ad-01",
+      "description": "SYSTEM_PAGEFILE_USAGE",
+      "state": 0,
+      "perf_data": "'total'=794000000B;1003520000;1013760000;0;1024000000 'total %'=77.5%;98;99;0;100"
+    }
+  ]
+}

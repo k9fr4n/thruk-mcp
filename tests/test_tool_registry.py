@@ -132,10 +132,12 @@ def test_registry_tool_count() -> None:
          → +1 thruk_totals (compact host+service counts, issue #222)
          → +1 thruk_notification_summary (count notifications by dimension, issue #271)
          → +1 thruk_notification_heatmap (notification counts per time bucket, issue #272)
-      = 52
+         → +3 thruk_get_perfdata, thruk_perfdata_snapshot,
+              thruk_perfdata_near_threshold (perfdata expose, issue #284)
+      = 55
     """
-    assert len(TOOL_REGISTRY) == 52, (
-        f"Expected 52 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 55, (
+        f"Expected 55 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 
@@ -170,6 +172,7 @@ class TestIssue262RegistryAggregation:
             *tools.ESCAPE_REGISTRY,
             *tools.COMMANDS_WRITE_REGISTRY,
             *tools.TRIAGE_REGISTRY,
+            *tools.PERFDATA_REGISTRY,
         ]
         assert [s.name for s in tools.TOOL_REGISTRY] == [s.name for s in expected]
 
