@@ -25,7 +25,7 @@ jobs:
       - run: ruff format --check src tests
       - run: mypy src
       - name: pytest with coverage
-        run: pytest -v --cov=thruk_mcp --cov-report=term --cov-report=xml --cov-fail-under=75
+        run: pytest -v --cov=thruk_mcp --cov-report=term --cov-report=xml --cov-fail-under=80
       - name: Upload coverage to Codecov
         if: matrix.python == '3.12'
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354  # v6.0.1
