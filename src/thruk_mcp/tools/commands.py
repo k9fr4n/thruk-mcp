@@ -384,8 +384,13 @@ async def thruk_delete_comment(
     ``DELETE /comments/{id}`` endpoint is not guaranteed across Thruk
     versions):
 
-    - host:    ``POST /hosts/{host}/cmd/del_host_comment``
-    - service: ``POST /services/{host}/{svc}/cmd/del_svc_comment``
+    Thruk REST exposes only ``del_comment`` (not ``del_host_comment`` /
+    ``del_svc_comment``) — the correct Nagios external command
+    (``DEL_HOST_COMMENT`` / ``DEL_SVC_COMMENT``) is inferred from the
+    host- vs service-scoped path:
+
+    - host:    ``POST /hosts/{host}/cmd/del_comment``
+    - service: ``POST /services/{host}/{svc}/cmd/del_comment``
 
     Payload key forwarded to Thruk:
 
@@ -396,9 +401,9 @@ async def thruk_delete_comment(
     for host comments.
     """
     endpoint = (
-        f"/services/{_seg(host)}/{_seg(service)}/cmd/del_svc_comment"
+        f"/services/{_seg(host)}/{_seg(service)}/cmd/del_comment"
         if service
-        else f"/hosts/{_seg(host)}/cmd/del_host_comment"
+        else f"/hosts/{_seg(host)}/cmd/del_comment"
     )
     return _tool_response(
         await _get_client().post(
