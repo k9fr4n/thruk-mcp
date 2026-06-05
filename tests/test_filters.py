@@ -887,3 +887,43 @@ def test_filter_schema_examples_services():
 def test_filter_schema_examples_logs():
     s = filter_schema_property(FIELDS_LOGS)
     assert "DISK" in s["description"]
+
+
+def test_filter_schema_examples_custom_var_hostgroup_fallback():
+    # Field sets like {custom_var, hostgroup} have no state/host-state/message
+    # branch; they must still get a concrete example, not a dangling header.
+    for fields in (FIELDS_OLDEST_PROBLEMS, FIELDS_TOTALS, FIELDS_PROBLEM_COUNTS):
+        desc = filter_schema_property(fields)["description"]
+        assert "HG_AGILE" in desc
+        assert "KERNEL" in desc
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        FIELDS_ALERTS,
+        FIELDS_COMMENTS,
+        FIELDS_DOWNTIMES,
+        FIELDS_HOSTS,
+        FIELDS_HOST_STATS,
+        FIELDS_LOGS,
+        FIELDS_NOISY_HOSTS,
+        FIELDS_NOISY_SERVICES,
+        FIELDS_NOTIFICATIONS,
+        FIELDS_OLDEST_PROBLEMS,
+        FIELDS_PROBLEMS,
+        FIELDS_PROBLEM_COUNTS,
+        FIELDS_SERVICES,
+        FIELDS_STALE_ACKS,
+        FIELDS_TOTALS,
+        FIELDS_UNACKED,
+    ],
+)
+def test_filter_schema_no_dangling_examples_header(fields):
+    """No field set may emit a bare 'Examples:' header or trailing blank lines."""
+    desc = filter_schema_property(fields)["description"]
+    assert not desc.endswith("Examples:")
+    assert not desc.endswith("\n")
+    assert "Examples:\n\n" not in desc
+    # When present, the header must be followed by at least one example line.
+    assert "Examples:" in desc
