@@ -10,6 +10,9 @@ venv/
 .env
 .env.local
 
+# Local MCP client config — may hold THRUK_API_KEY / internal URLs
+.mcp.json
+
 # Testing / tooling
 .pytest_cache/
 .ruff_cache/
