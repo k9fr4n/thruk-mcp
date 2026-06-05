@@ -1032,6 +1032,11 @@ def filter_schema_property(fields: frozenset[str]) -> dict[str, Any]:
         f"Available fields: {', '.join(sorted(fields))}\n"
         f"Operators: {', '.join(sorted(LEAF_OPS))}"
     )
+    if {"since", "until"} & fields:
+        description += (
+            "\n\nThe 'since'/'until' fields accept Thruk relative time "
+            '("-2h", "-7d") or ISO datetime ("2026-05-21 14:00:00").'
+        )
     examples = _build_examples(fields)
     if examples:
         description += "\n\n" + examples

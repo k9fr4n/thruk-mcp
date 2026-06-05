@@ -92,6 +92,21 @@ _COLUMNS = {
         "for this tool; pass '' (empty string) to return all available columns."
     ),
 }
+
+# Reusable time-window fragments for log/history list tools (issue #302). Unlike
+# the analytics fragments these advertise no default window: omitting a bound
+# simply leaves it open (no lower bound / up to now).
+_SINCE = {
+    **_OPT_STR,
+    "description": (
+        'Start of the time window. Thruk relative time ("-2h", "-7d") or ISO '
+        'datetime ("2026-05-21 14:00:00"). Omitted = no lower bound.'
+    ),
+}
+_UNTIL = {
+    **_OPT_STR,
+    "description": "End of the time window (same formats as since). Default: now.",
+}
 # Reusable schema fragment for log-family host-resolution filters.
 _LOG_HOSTGROUP = {
     **_OPT_STR,
@@ -151,6 +166,8 @@ __all__ = [
     "_OPT_INT",
     "_OPT_OBJ",
     "_OPT_STR",
+    "_SINCE",
+    "_UNTIL",
     "ToolSpec",
     "_bool",
     "_int",

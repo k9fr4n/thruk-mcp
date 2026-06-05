@@ -208,6 +208,12 @@ from .tools import (
 from .tools import (
     _REST_PATH_PREFIXES as _REST_PATH_PREFIXES,
 )
+from .tools import (
+    _SINCE as _SINCE,
+)
+from .tools import (
+    _UNTIL as _UNTIL,
+)
 
 # All tool functions, co-located ToolSpec registries and the aggregated
 # ``TOOL_REGISTRY`` now live in :mod:`thruk_mcp.tools` (issue #262, parent
