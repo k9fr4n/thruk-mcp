@@ -33,6 +33,8 @@ _REEXPORTED = (
     "_LOG_HOSTGROUP",
     "_LOG_CUSTOM_VARS",
     "_BACKENDS",
+    "_COLUMNS",
+    "_sort",
     "ToolSpec",
 )
 

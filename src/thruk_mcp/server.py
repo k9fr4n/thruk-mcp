@@ -182,6 +182,9 @@ from .tools import (
     _BUCKET_SIZES as _BUCKET_SIZES,
 )
 from .tools import (
+    _COLUMNS as _COLUMNS,
+)
+from .tools import (
     _DEFAULT_SINCE as _DEFAULT_SINCE,
 )
 from .tools import (
@@ -275,6 +278,9 @@ from .tools import (
 )
 from .tools import (
     _s as _s,
+)
+from .tools import (
+    _sort as _sort,
 )
 from .tools import (
     _str as _str,
