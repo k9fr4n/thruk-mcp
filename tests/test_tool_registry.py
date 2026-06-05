@@ -339,3 +339,28 @@ class TestListParamDescriptions:
                 f"{name}: schema sort default {schema_default!r} != "
                 f"function default {sig_default!r}"
             )
+
+
+class TestTimeWindowDescriptions:
+    """Issue #302: every tool exposing since/until must document the accepted
+    time formats (relative or ISO), consistent with the analytics tools."""
+
+    @staticmethod
+    def _tools_with(prop: str) -> list[str]:
+        return [
+            name for name, schema in _TOOL_SCHEMAS.items() if prop in schema.get("properties", {})
+        ]
+
+    def test_since_param_is_described(self) -> None:
+        tools = self._tools_with("since")
+        assert tools, "expected at least one tool exposing a 'since' param"
+        for name in tools:
+            desc = _TOOL_SCHEMAS[name]["properties"]["since"].get("description", "")
+            assert "relative time" in desc, f"{name} since lacks a time-format description"
+
+    def test_until_param_is_described(self) -> None:
+        tools = self._tools_with("until")
+        assert tools, "expected at least one tool exposing an 'until' param"
+        for name in tools:
+            desc = _TOOL_SCHEMAS[name]["properties"]["until"].get("description", "")
+            assert desc, f"{name} until lacks a description"

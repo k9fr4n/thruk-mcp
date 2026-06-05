@@ -65,7 +65,7 @@ from ..helpers import (
 )
 from .base import (
     _BACKENDS,
-    _OPT_STR,
+    _UNTIL,
     ToolSpec,
     _bool,
     _int,
@@ -836,7 +836,7 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
                     'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
                 ),
             },
-            until=_OPT_STR,
+            until=_UNTIL,
             window_minutes=_int("Sliding window width in minutes.", default=5),
             min_hosts=_int(
                 "Minimum number of distinct hosts failing in a window to be reported.",

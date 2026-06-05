@@ -34,6 +34,8 @@ _REEXPORTED = (
     "_LOG_CUSTOM_VARS",
     "_BACKENDS",
     "_COLUMNS",
+    "_SINCE",
+    "_UNTIL",
     "_sort",
     "ToolSpec",
 )

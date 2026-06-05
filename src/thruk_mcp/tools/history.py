@@ -75,7 +75,8 @@ from ..reliability import summarize_reliability
 from .base import (
     _BACKENDS,
     _COLUMNS,
-    _OPT_STR,
+    _SINCE,
+    _UNTIL,
     ToolSpec,
     _bool,
     _int,
@@ -1606,7 +1607,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_HOSTS,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             limit=_int(default=10),
             backends=_BACKENDS,
         ),
@@ -1617,7 +1618,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             limit=_int(default=10),
             backends=_BACKENDS,
         ),
@@ -1628,7 +1629,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             limit=_int(default=10),
             min_transitions=_int(default=3),
             backends=_BACKENDS,
@@ -1641,7 +1642,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             bucket={
                 "type": "string",
                 "default": "1h",
@@ -1657,7 +1658,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOTIFICATIONS,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             bucket={
                 "type": "string",
                 "default": "1h",
@@ -1673,7 +1674,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             min_alerts=_int(
                 "Minimum number of non-recovery alert events to be included (default 5).",
                 default=5,
@@ -1688,7 +1689,7 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
         schema=build_tool_schema(
             FIELDS_NOISY_SERVICES,
             since=_SINCE_WINDOW_30D,
-            until=_OPT_STR,
+            until=_UNTIL,
             limit=_int(
                 "Maximum number of host/service objects to return (busiest first, default 50).",
                 default=50,
@@ -1705,8 +1706,8 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_logs,
         schema=build_tool_schema(
             FIELDS_LOGS,
-            since=_OPT_STR,
-            until=_OPT_STR,
+            since=_SINCE,
+            until=_UNTIL,
             limit=_int(default=100),
             offset=_int(default=0),
             sort=_sort("-time"),
@@ -1719,8 +1720,8 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_alerts,
         schema=build_tool_schema(
             FIELDS_ALERTS,
-            since=_OPT_STR,
-            until=_OPT_STR,
+            since=_SINCE,
+            until=_UNTIL,
             limit=_int(default=100),
             offset=_int(default=0),
             sort=_sort("-time"),
@@ -1733,8 +1734,8 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
         fn=thruk_list_notifications,
         schema=build_tool_schema(
             FIELDS_NOTIFICATIONS,
-            since=_OPT_STR,
-            until=_OPT_STR,
+            since=_SINCE,
+            until=_UNTIL,
             limit=_int(default=100),
             offset=_int(default=0),
             sort=_sort("-time"),
@@ -1757,7 +1758,7 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
                 "enum": ["contact", "host", "service", "state", "command"],
             },
             since=_SINCE_WINDOW,
-            until=_OPT_STR,
+            until=_UNTIL,
             backends=_BACKENDS,
         ),
     ),
