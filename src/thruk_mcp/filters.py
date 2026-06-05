@@ -973,7 +973,7 @@ def _make_filter_defs(fields: frozenset[str]) -> dict[str, Any]:
 
 
 def _build_examples(fields: frozenset[str]) -> str:
-    lines = ["Examples:"]
+    lines: list[str] = []
     if "state" in fields and "hostgroup" in fields:
         lines += [
             "  # Hosts DOWN in HG_AGILE:",
@@ -1005,11 +1005,36 @@ def _build_examples(fields: frozenset[str]) -> str:
             '    {"type":"leaf","field":"since","op":"gte","value":"-2h"}',
             "  ]}",
         ]
-    return "\n".join(lines)
+    elif "custom_var" in fields and "hostgroup" in fields:
+        lines += [
+            "  # Objects in HG_AGILE:",
+            '  {"type":"leaf","field":"hostgroup","op":"eq","value":"HG_AGILE"}',
+            "",
+            "  # In HG_AGILE OR with KERNEL=windows:",
+            '  {"type":"group","operator":"or","conditions":[',
+            '    {"type":"leaf","field":"hostgroup","op":"eq","value":"HG_AGILE"},',
+            '    {"type":"leaf","field":"custom_var","op":"eq",'
+            '"value":{"var":"KERNEL","val":"windows"}}',
+            "  ]}",
+        ]
+    if not lines:
+        return ""
+    return "Examples:\n" + "\n".join(lines)
 
 
 def filter_schema_property(fields: frozenset[str]) -> dict[str, Any]:
     """Return the JSON Schema ``filter`` property fragment (uses ``$ref`` to ``$defs``)."""
+    description = (
+        "Structured filter tree supporting AND/OR nesting.\n\n"
+        "Two node types:\n"
+        '  leaf:  {"type":"leaf",  "field":"...", "op":"...", "value":...}\n'
+        '  group: {"type":"group", "operator":"and"|"or", "conditions":[...]}\n\n'
+        f"Available fields: {', '.join(sorted(fields))}\n"
+        f"Operators: {', '.join(sorted(LEAF_OPS))}"
+    )
+    examples = _build_examples(fields)
+    if examples:
+        description += "\n\n" + examples
     return {
         "anyOf": [
             {"$ref": "#/$defs/FilterLeaf"},
@@ -1017,14 +1042,7 @@ def filter_schema_property(fields: frozenset[str]) -> dict[str, Any]:
             {"type": "null"},
         ],
         "default": None,
-        "description": (
-            "Structured filter tree supporting AND/OR nesting.\n\n"
-            "Two node types:\n"
-            '  leaf:  {"type":"leaf",  "field":"...", "op":"...", "value":...}\n'
-            '  group: {"type":"group", "operator":"and"|"or", "conditions":[...]}\n\n'
-            f"Available fields: {', '.join(sorted(fields))}\n"
-            f"Operators: {', '.join(sorted(LEAF_OPS))}\n\n" + _build_examples(fields)
-        ),
+        "description": description,
     }
 
 
