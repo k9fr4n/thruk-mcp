@@ -1872,32 +1872,32 @@ async def test_add_comment_author_and_persistent_forwarded(mocked_server) -> Non
 
 @pytest.mark.asyncio
 async def test_delete_comment_host(mocked_server) -> None:
-    """Host comment must POST to del_host_comment with comment_id payload (issue #169)."""
+    """Host comment must POST to del_comment with comment_id payload (issue #169)."""
     mcp, router = mocked_server
-    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_comment").mock(
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_comment").mock(
         return_value=ok({"rc": 0})
     )
     await mcp.call_tool(
         "thruk_delete_comment",
         {"comment_id": 4242, "host": "srv01"},
     )
-    assert route.called, "thruk_delete_comment must POST to /hosts/{host}/cmd/del_host_comment"
+    assert route.called, "thruk_delete_comment must POST to /hosts/{host}/cmd/del_comment"
     body = post_params(route.calls.last)
     assert body["comment_id"] == "4242"
 
 
 @pytest.mark.asyncio
 async def test_delete_comment_service(mocked_server) -> None:
-    """Service comment must POST to del_svc_comment under /services/{host}/{svc}/cmd/."""
+    """Service comment must POST to del_comment under /services/{host}/{svc}/cmd/."""
     mcp, router = mocked_server
-    route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/del_svc_comment").mock(
+    route = router.post("https://thruk.test/r/services/srv01/ssh/cmd/del_comment").mock(
         return_value=ok({"rc": 0})
     )
     await mcp.call_tool(
         "thruk_delete_comment",
         {"comment_id": 99, "host": "srv01", "service": "ssh"},
     )
-    assert route.called, "service comment must POST to /services/{host}/{svc}/cmd/del_svc_comment"
+    assert route.called, "service comment must POST to /services/{host}/{svc}/cmd/del_comment"
     body = post_params(route.calls.last)
     assert body["comment_id"] == "99"
 
@@ -1906,7 +1906,7 @@ async def test_delete_comment_service(mocked_server) -> None:
 async def test_delete_comment_id_forwarded_as_string(mocked_server) -> None:
     """comment_id arrives as int from MCP and must be serialised as string for Thruk."""
     mcp, router = mocked_server
-    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_host_comment").mock(
+    route = router.post("https://thruk.test/r/hosts/srv01/cmd/del_comment").mock(
         return_value=ok({"rc": 0})
     )
     await mcp.call_tool(
