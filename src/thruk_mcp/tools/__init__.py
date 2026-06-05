@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from .base import (
     _BACKENDS,
+    _COLUMNS,
     _LOG_CUSTOM_VARS,
     _LOG_HOSTGROUP,
     _OPT_BOOL,
@@ -33,6 +34,7 @@ from .base import (
     _bool,
     _int,
     _s,
+    _sort,
     _str,
 )
 from .commands import (
@@ -167,6 +169,7 @@ __all__ = [
     "_ALLOWED_METHODS",
     "_BACKENDS",
     "_BUCKET_SIZES",
+    "_COLUMNS",
     "_DEFAULT_SINCE",
     "_LOG_CUSTOM_VARS",
     "_LOG_HOSTGROUP",
@@ -189,6 +192,7 @@ __all__ = [
     "_resolve_hosts_to_regex",
     "_row_matches_hostgroup_constraints",
     "_s",
+    "_sort",
     "_str",
     "_strip_filter_field",
     "_validate_rest_path",

@@ -63,6 +63,35 @@ _OPT_STR = {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None}
 _OPT_INT = {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None}
 _OPT_BOOL = {"anyOf": [{"type": "boolean"}, {"type": "null"}], "default": None}
 _OPT_OBJ = {"anyOf": [{"type": "object"}, {"type": "null"}], "default": None}
+
+
+def _sort(default: str) -> dict[str, Any]:
+    """Schema fragment for a list endpoint's ``sort`` param, advertising its default.
+
+    Thruk sorts by a column name optionally prefixed with ``-`` for descending
+    order; multiple comma-separated keys are allowed. The per-tool ``default``
+    mirrors the implementation function's signature so the LLM sees the real
+    ordering it gets when the param is omitted.
+    """
+    return {
+        "type": "string",
+        "default": default,
+        "description": (
+            "Sort order: a column name, optionally prefixed with '-' for "
+            "descending (e.g. 'name', '-last_check'); comma-separate multiple "
+            f"keys. Defaults to '{default}'."
+        ),
+    }
+
+
+# Reusable schema fragment for a list endpoint's ``columns`` param.
+_COLUMNS = {
+    **_OPT_STR,
+    "description": (
+        "Comma-separated columns to return. Omit for a curated default set tuned "
+        "for this tool; pass '' (empty string) to return all available columns."
+    ),
+}
 # Reusable schema fragment for log-family host-resolution filters.
 _LOG_HOSTGROUP = {
     **_OPT_STR,
@@ -115,6 +144,7 @@ class ToolSpec:
 
 __all__ = [
     "_BACKENDS",
+    "_COLUMNS",
     "_LOG_CUSTOM_VARS",
     "_LOG_HOSTGROUP",
     "_OPT_BOOL",
@@ -125,5 +155,6 @@ __all__ = [
     "_bool",
     "_int",
     "_s",
+    "_sort",
     "_str",
 ]

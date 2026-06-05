@@ -304,3 +304,38 @@ class TestIssue177SchemaSignatureAlignment:
             f"{tool_name}: schema declares {sorted(unknown)} not in function signature "
             f"{sorted(fn_params)}"
         )
+
+
+class TestListParamDescriptions:
+    """Issue #300: list tools must describe sort/columns and advertise the
+    sort default, kept in lock-step with the implementation signature."""
+
+    @staticmethod
+    def _list_tools_with(prop: str) -> list[str]:
+        return [
+            name for name, schema in _TOOL_SCHEMAS.items() if prop in schema.get("properties", {})
+        ]
+
+    def test_columns_param_is_described(self) -> None:
+        tools = self._list_tools_with("columns")
+        assert tools, "expected at least one tool exposing a 'columns' param"
+        for name in tools:
+            desc = _TOOL_SCHEMAS[name]["properties"]["columns"].get("description", "")
+            assert "Comma-separated columns" in desc, f"{name} columns lacks description"
+
+    def test_sort_param_is_described(self) -> None:
+        tools = self._list_tools_with("sort")
+        assert tools, "expected at least one tool exposing a 'sort' param"
+        for name in tools:
+            desc = _TOOL_SCHEMAS[name]["properties"]["sort"].get("description", "")
+            assert "Sort order" in desc, f"{name} sort lacks description"
+
+    def test_sort_default_matches_function_signature(self) -> None:
+        """The advertised sort default must equal the real signature default."""
+        for name in self._list_tools_with("sort"):
+            schema_default = _TOOL_SCHEMAS[name]["properties"]["sort"].get("default")
+            sig_default = inspect.signature(_TOOL_DISPATCH[name]).parameters["sort"].default
+            assert schema_default == sig_default, (
+                f"{name}: schema sort default {schema_default!r} != "
+                f"function default {sig_default!r}"
+            )
