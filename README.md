@@ -201,6 +201,11 @@ client UI:
 | `investigate_alert` | `host`, optional `service` | 7-step incident triage |
 | `schedule_maintenance` | `target`, `duration_minutes`, `kind` | Safe downtime workflow with confirmation |
 | `diagnose_flapping` | `host`, `service` | Root-cause a flapping service (uses `thruk_flap_summary`) |
+| `daily_health_report` | optional `hostgroup` | Morning read-only health digest (totals, unacked, stale, oldest, noisiest) |
+| `incident_triage` | optional `hostgroup` | Major-incident triage: blast radius, common cause, prioritised actions |
+| `capacity_review` | optional `hostgroup`, `within_percent` | Saturation review of metrics nearing their warn/crit thresholds |
+| `sla_report` | `target`, `kind`, `timeperiod` | Availability / SLA report with downtime breakdown and 99.9% verdict |
+| `noise_review` | optional `since` | Alert-fatigue hygiene: noisiest, flapping, recurring, heatmap clustering |
 
 ## Robustness
 
