@@ -164,7 +164,16 @@ from .helpers import (
 from .helpers import (
     _ts as _ts,
 )
-from .prompts import diagnose_flapping, investigate_alert, schedule_maintenance
+from .prompts import (
+    capacity_review,
+    daily_health_report,
+    diagnose_flapping,
+    incident_triage,
+    investigate_alert,
+    noise_review,
+    schedule_maintenance,
+    sla_report,
+)
 from .resources import (
     _host_resource,
     _hostgroup_resource,
@@ -732,7 +741,7 @@ class ThrukMCPServer:
     # --- Prompts -----------------------------------------------------------
 
     async def list_prompts(self) -> list[Prompt]:
-        """Return the three Thruk prompt templates."""
+        """Return the Thruk prompt templates."""
         return [
             Prompt(
                 name="investigate_alert",
@@ -777,6 +786,76 @@ class ThrukMCPServer:
                     ),
                 ],
             ),
+            Prompt(
+                name="daily_health_report",
+                description="Morning health digest for the estate or a hostgroup",
+                arguments=[
+                    PromptArgument(
+                        name="hostgroup",
+                        description="Restrict to a hostgroup (optional)",
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="incident_triage",
+                description="Prioritise and find the common cause during a major incident",
+                arguments=[
+                    PromptArgument(
+                        name="hostgroup",
+                        description="Restrict to a hostgroup (optional)",
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="capacity_review",
+                description="Surface metrics approaching their warn/crit thresholds",
+                arguments=[
+                    PromptArgument(
+                        name="hostgroup",
+                        description="Restrict to a hostgroup (optional)",
+                        required=False,
+                    ),
+                    PromptArgument(
+                        name="within_percent",
+                        description="Proximity threshold in percent (default 10)",
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="sla_report",
+                description="Availability / SLA report for a host, service or hostgroup",
+                arguments=[
+                    PromptArgument(
+                        name="target", description="Host/service/hostgroup name", required=True
+                    ),
+                    PromptArgument(
+                        name="kind",
+                        description="host, service or hostgroup (default host)",
+                        required=False,
+                    ),
+                    PromptArgument(
+                        name="timeperiod",
+                        description=(
+                            "Thruk period shortcut, e.g. last7days, lastmonth (default last7days)"
+                        ),
+                        required=False,
+                    ),
+                ],
+            ),
+            Prompt(
+                name="noise_review",
+                description="Monitoring-noise hygiene review to reduce alert fatigue",
+                arguments=[
+                    PromptArgument(
+                        name="since",
+                        description="Analysis window start, e.g. -24h, -7d (default -24h)",
+                        required=False,
+                    ),
+                ],
+            ),
         ]
 
     async def get_prompt(
@@ -806,6 +885,25 @@ class ThrukMCPServer:
                 host=args.get("host", ""),
                 service=args.get("service", ""),
             )
+        elif name == "daily_health_report":
+            text = daily_health_report(hostgroup=args.get("hostgroup") or None)
+        elif name == "incident_triage":
+            text = incident_triage(hostgroup=args.get("hostgroup") or None)
+        elif name == "capacity_review":
+            raw_pct = args.get("within_percent", "10")
+            within = int(raw_pct) if str(raw_pct).isdigit() else 10
+            text = capacity_review(
+                hostgroup=args.get("hostgroup") or None,
+                within_percent=within,
+            )
+        elif name == "sla_report":
+            text = sla_report(
+                target=args.get("target", ""),
+                kind=args.get("kind", "host"),
+                timeperiod=args.get("timeperiod", "last7days"),
+            )
+        elif name == "noise_review":
+            text = noise_review(since=args.get("since", "-24h"))
         else:
             raise ValueError(f"Unknown prompt: {name!r}")
         return GetPromptResult(
