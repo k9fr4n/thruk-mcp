@@ -34,6 +34,8 @@ the noisy-cap warning suffix) lives in :mod:`thruk_mcp.helpers` /
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import warnings
 from datetime import datetime, timezone
@@ -88,6 +90,16 @@ from .base import (
 # bodies below, with no behaviour change.
 HOST_STATES: dict[int, str] = HOST_STATE_STR
 SERVICE_STATES: dict[int, str] = SVC_STATE_STR
+
+# Issue #312: ``thruk_flap_summary`` needs the ordered event *sequence* to count
+# consecutive state transitions, so it cannot be fully pushed server-side. We
+# instead use server-side aggregation to find candidate objects (those with at
+# least ``min_transitions`` alerts — a necessary condition, since transitions
+# can never exceed the raw alert count) and then fetch raw rows scoped to just
+# those hosts. This bounds the raw fetch to the flapping candidates instead of
+# every alert in the window. Cap the candidate host set so a pathological window
+# cannot rebuild an unbounded ``host_name[regex]``.
+_FLAP_CANDIDATE_CAP = 500
 
 
 async def _resolve_hosts_to_regex(
@@ -199,95 +211,116 @@ async def _fetch_logs(
 async def _aggregate_alerts(
     type_regex: str,
     key_fields: tuple[str, ...],
-    state_map: dict[int, str],
     extra_params: dict[str, Any],
     backends: str | None,
+    *,
+    exclude_recovery: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str], bool]:
-    """Fetch and aggregate alert log entries from the Thruk /logs endpoint.
+    """Aggregate alert log entries **server-side** via Thruk's /logs GROUP BY.
 
-    Shared helper for :func:`thruk_top_noisy_hosts` and
-    :func:`thruk_top_noisy_services`.  Callers build ``extra_params``
-    (including ``type[~]`` / ``time[gte]`` / ``time[lte]``) and pass the
-    key fields that identify a unique entity (e.g. ``("host_name",)`` for
-    hosts, ``("host_name", "service_description")`` for services).
+    Shared helper for :func:`thruk_top_noisy_hosts`,
+    :func:`thruk_top_noisy_services` and :func:`thruk_recurring_problems`.
+    Callers build ``extra_params`` (``time[gte]`` / ``time[lte]`` and any
+    resolved ``host_name`` / ``host_name[regex]`` filter) and pass the key
+    fields identifying a unique entity (``("host_name",)`` for hosts,
+    ``("host_name", "service_description")`` for services).
 
-    Returns a 3-tuple:
-    - **rows** - list of dicts with ``alert_count``, all key-field values,
-      ``last_state`` (human-readable via *state_map*), and ``last_alert_time``.
-      Already sorted by ``alert_count`` descending (not yet sliced to limit).
-    - **warnings** - pass-through from :meth:`ThrukClient.get_with_fallback`.
-    - **hit_hard_limit** - ``True`` when the raw data reached ``_NOISY_MAX_ALERTS``.
+    Historically (issue #312) this fetched up to ``_NOISY_MAX_ALERTS`` *raw*
+    log rows (``sort=-time``) and counted them in Python.  On busy/federated
+    instances a 24 h window holds **far** more than 10 000 alert rows, so the
+    cap returned only the most recent slice and every ranking was skewed and
+    inconsistent between tools.  We now push the aggregation to Thruk:
+
+        columns = <key_fields>,state,count(*):cnt,min(time):first_t,max(time):last_t
+        sort    = -cnt        class = 1        type[~] = <type_regex>
+
+    Thruk re-aggregates group keys **across federated backends**, so counts are
+    exact and the response is one tiny row per ``(key, state)`` combination.
+    Grouping additionally by ``state`` lets us recover ``last_state`` (the state
+    of the most recent event) in the same query — per key we keep the state of
+    the substate row with the greatest ``max(time)``.
+
+    ``class=1`` scopes the query to genuine HOST/SERVICE ALERT rows (issues
+    #176 / #193 / #248): it excludes ``type=NULL`` system/command/current-state
+    rows that leak past ``type[~]`` alone, so the former client-side type
+    re-check is no longer needed.
+
+    ``exclude_recovery`` adds ``state[!=]=0`` to drop RECOVERY (UP/OK) events
+    server-side (noisy/recurring rank non-recovery alerts); flap analysis sets
+    it ``False`` because transitions *to* OK still count.
+
+    Returns ``(rows, warnings, hit_cap)`` where each row carries the key fields,
+    ``alert_count`` (summed across states), ``first_ts``, ``last_ts`` and
+    ``last_state_int`` (caller formats via :func:`_format_state_label`).  Rows
+    are sorted by ``alert_count`` descending (not yet sliced to limit).
+    ``hit_cap`` is ``True`` only when the number of distinct ``(key, state)``
+    groups reached ``_NOISY_MAX_ALERTS`` — practically never, but surfaced as a
+    cap warning by callers for parity with the old contract.
     """
-    # Issue #248: request ``type`` so we can re-verify each row client-side.
-    columns_set = {"host_name", "state", "time", "type"} | set(key_fields)
+    group_cols = [*key_fields, "state"]
+    columns = ",".join([*group_cols, "count(*):cnt", "min(time):first_t", "max(time):last_t"])
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
-        "sort": "-time",
-        "columns": ",".join(sorted(columns_set)),
+        "sort": "-cnt",
+        "columns": columns,
         **extra_params,
         "type[~]": type_regex,  # always override: callers must not change the log type
+        "class": "1",  # genuine HOST/SERVICE ALERT rows only (drops type=NULL leaks)
     }
+    if exclude_recovery:
+        params["state[!=]"] = "0"  # drop RECOVERY (UP/OK) events server-side
     data, warnings = await _get_client().get_with_fallback(
         "/logs", params=params, backends=_backends(backends), method="POST"
     )
     if not isinstance(data, list):
         data = []
 
-    # Issue #248: defensive client-side type guard. Thruk already scopes the
-    # query via ``type[~]`` server-side, but we re-verify each row's ``type``
-    # against the same pattern so a SERVICE ALERT (service state vocabulary,
-    # e.g. state=3 UNKNOWN) can never leak into HOST aggregation -- and vice
-    # versa. Rows that omit ``type`` (older backends / fixtures) are kept.
-    type_matcher = re.compile(type_regex)
-    cross_type_dropped = 0
-
+    # Re-aggregate per key. Grouping by (key, state) means a single entity spans
+    # several rows; we sum counts and track the state at the latest timestamp.
+    # This loop also re-merges duplicate keys that the per-backend fallback path
+    # of ``get_with_fallback`` concatenates without merging (client.py) — a
+    # no-op on the normal path where Thruk already merged across backends.
     counts: dict[tuple[str, ...], dict[str, Any]] = {}
     for entry in data:
-        etype = entry.get("type")
-        if isinstance(etype, str) and etype and not type_matcher.match(etype):
-            cross_type_dropped += 1
+        if not isinstance(entry, dict):
             continue
-        state = entry.get("state", -1)
-        if state == 0:
+        try:
+            cnt = int(entry.get("cnt") or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        if cnt <= 0:
             continue
         key = tuple(str(entry.get(f) or "") for f in key_fields)
+        state = entry.get("state", -1)
+        first_t = entry.get("first_t")
+        last_t = int(entry.get("last_t") or 0)
         rec = counts.setdefault(
             key,
-            {
-                "alert_count": 0,
-                "_last_ts": 0,
-                "last_state_int": state,
-                "last_alert_time": None,
-            },
+            {"alert_count": 0, "first_ts": None, "last_ts": 0, "last_state_int": state},
         )
-        rec["alert_count"] += 1
-        t = entry.get("time") or 0
-        if t > rec["_last_ts"]:
-            rec["_last_ts"] = t
+        rec["alert_count"] += cnt
+        if first_t is not None:
+            ft = int(first_t)
+            if rec["first_ts"] is None or ft < rec["first_ts"]:
+                rec["first_ts"] = ft
+        if last_t >= rec["last_ts"]:
+            rec["last_ts"] = last_t
             rec["last_state_int"] = state
-            rec["last_alert_time"] = _ts(t)
 
     rows = sorted(
         [
             {
                 **dict(zip(key_fields, k, strict=False)),
                 "alert_count": v["alert_count"],
-                # Issue #245: render unmapped ints (Naemon log rows occasionally
-                # carry host state=3) as "UNKNOWN(<n>)" rather than a raw string.
-                "last_state": _format_state_label(v["last_state_int"], state_map),
-                "last_alert_time": v["last_alert_time"],
+                "first_ts": v["first_ts"],
+                "last_ts": v["last_ts"],
+                "last_state_int": v["last_state_int"],
             }
             for k, v in counts.items()
         ],
         key=lambda x: x["alert_count"],
         reverse=True,
     )
-    if cross_type_dropped:
-        warnings = [
-            *warnings,
-            f"Ignored {cross_type_dropped} cross-type log row(s) not matching "
-            f"{type_regex!r}; host/service state vocabularies were not mixed.",
-        ]
     return rows, warnings, len(data) >= _NOISY_MAX_ALERTS
 
 
@@ -373,7 +406,6 @@ async def thruk_top_noisy_hosts(
     rows, warnings, hit_limit = await _aggregate_alerts(
         type_regex="^HOST ALERT",
         key_fields=("host_name",),
-        state_map=HOST_STATES,
         extra_params=extra,
         backends=backends,
     )
@@ -382,8 +414,8 @@ async def thruk_top_noisy_hosts(
         {
             "host": r["host_name"],
             "alert_count": r["alert_count"],
-            "last_state": r["last_state"],
-            "last_alert_time": r["last_alert_time"],
+            "last_state": _format_state_label(r["last_state_int"], HOST_STATES),
+            "last_alert_time": _ts(r["last_ts"]),
         }
         for r in rows[:limit]
     ]
@@ -401,8 +433,8 @@ async def thruk_top_noisy_hosts(
         )
     elif hit_limit:
         payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
-            + _NOISY_CAP_HINT
+            f"Result capped at {_NOISY_MAX_ALERTS} distinct groups; "
+            "aggregation may be incomplete." + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -452,7 +484,6 @@ async def thruk_top_noisy_services(
     rows, warnings, hit_limit = await _aggregate_alerts(
         type_regex="^SERVICE ALERT",
         key_fields=("host_name", "service_description"),
-        state_map=SERVICE_STATES,
         extra_params=extra,
         backends=backends,
     )
@@ -462,8 +493,8 @@ async def thruk_top_noisy_services(
             "host": r["host_name"],
             "service": r["service_description"],
             "alert_count": r["alert_count"],
-            "last_state": r["last_state"],
-            "last_alert_time": r["last_alert_time"],
+            "last_state": _format_state_label(r["last_state_int"], SERVICE_STATES),
+            "last_alert_time": _ts(r["last_ts"]),
         }
         for r in rows[:limit]
     ]
@@ -481,8 +512,8 @@ async def thruk_top_noisy_services(
         )
     elif hit_limit:
         payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
-            + _NOISY_CAP_HINT
+            f"Result capped at {_NOISY_MAX_ALERTS} distinct groups; "
+            "aggregation may be incomplete." + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -531,27 +562,52 @@ async def thruk_flap_summary(
     if errs:
         return _tool_response({"error": errs[0]})
 
-    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
-    # Defence-in-depth (issues #176 / #193): Naemon Livestatus does not exclude
-    # type=NULL rows from regex filters, so class=0 system messages (e.g.
-    # "Auto-save of retention data completed successfully.") leak past ``type[~]``
-    # and inflate transition counts. All HOST/SERVICE ALERT rows have class=1.
-    extra["class"] = "1"
     if since:
         extra["time[gte]"] = since
     if until:
         extra["time[lte]"] = until
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        "sort": "time",  # ascending: chronological order required for transition counting
-        "columns": "host_name,service_description,state,time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+
+    # Step 1 (issue #312): find candidate objects via server-side aggregation.
+    # An object that fired fewer than ``min_transitions`` alerts cannot possibly
+    # have ``min_transitions`` state changes, so ``alert_count >= min_transitions``
+    # is a sound necessary condition. ``exclude_recovery=False`` because a
+    # transition *to* OK/UP is still a transition. Counts are exact (no cap skew).
+    cand_rows, warnings, _cand_cap = await _aggregate_alerts(
+        type_regex="^(HOST|SERVICE) ALERT",
+        key_fields=("host_name", "service_description"),
+        extra_params=extra,
+        backends=backends,
+        exclude_recovery=False,
     )
-    if not isinstance(data, list):
-        data = []
+    candidates = [r for r in cand_rows if r["alert_count"] >= min_transitions]
+    candidates_capped = len(candidates) > _FLAP_CANDIDATE_CAP
+    candidates = candidates[:_FLAP_CANDIDATE_CAP]  # already sorted by alert_count desc
+
+    # Step 2: fetch the raw ordered rows for the candidate hosts only, so the
+    # transition count is exact while the fetch stays bounded to flapping hosts.
+    data: list[dict[str, Any]] = []
+    if candidates:
+        cand_hosts = sorted({r["host_name"] for r in candidates})
+        raw_extra = dict(extra)
+        # Narrow to candidate hosts; a candidate set is always a subset of any
+        # hostgroup/custom-var-derived host_name[regex], so overriding is safe.
+        raw_extra["host_name[regex]"] = "^(" + "|".join(re.escape(h) for h in cand_hosts) + ")$"
+        params: dict[str, Any] = {
+            "limit": _NOISY_MAX_ALERTS,
+            "sort": "time",  # ascending: chronological order required for transition counting
+            "columns": "host_name,service_description,state,time",
+            **raw_extra,
+            "type[~]": "^(HOST|SERVICE) ALERT",
+            # class=1 drops type=NULL leaks (issues #176 / #193) that would
+            # otherwise be counted as spurious transitions.
+            "class": "1",
+        }
+        raw_data, raw_warnings = await _get_client().get_with_fallback(
+            "/logs", params=params, backends=_backends(backends), method="POST"
+        )
+        if isinstance(raw_data, list):
+            data = raw_data
+        warnings = [*warnings, *raw_warnings]
 
     # Group entries by (host, service) — service="" for host-level alerts
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -605,6 +661,12 @@ async def thruk_flap_summary(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
+    elif candidates_capped:
+        payload["_warning"] = (
+            f"More than {_FLAP_CANDIDATE_CAP} candidate hosts matched; analysed the "
+            f"{_FLAP_CANDIDATE_CAP} with the most alerts. Narrow the filter or window "
+            "for complete coverage."
+        )
     elif len(data) >= _NOISY_MAX_ALERTS:
         payload["_warning"] = (
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
@@ -629,6 +691,111 @@ _BUCKET_SIZES: dict[str, int] = {
 
 # ``_now_utc_epoch`` / ``_parse_thruk_time`` (+ the ``_THRUK_REL_*`` table)
 # live in :mod:`thruk_mcp.helpers` (issue #258); imported at the top of this module.
+
+# Upper bound on the number of time buckets a single heatmap call will enumerate.
+# Each bucket is one server-side count(*) query (issue #312), so this also caps
+# the request fan-out. e.g. 24 h / 1 h = 24, 7 d / 1 h = 168 — all well within.
+_HEATMAP_MAX_BUCKETS = 500
+
+
+def _bucket_iso(epoch: int) -> str:
+    """Format a bucket-start epoch as a UTC ISO-8601 ``...Z`` string."""
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _sum_cnt(rows: Any) -> int:
+    """Sum the ``count(*):cnt`` column across aggregated /logs rows.
+
+    Tolerates the per-backend fallback path of ``get_with_fallback`` (one row
+    per backend instead of a single merged row) and skips any non-numeric or
+    malformed row.
+    """
+    total = 0
+    if isinstance(rows, list):
+        for r in rows:
+            if isinstance(r, dict):
+                with contextlib.suppress(TypeError, ValueError):
+                    total += int(r.get("cnt") or 0)
+    return total
+
+
+async def _bucketed_log_counts(
+    extra: dict[str, Any],
+    since: str | None,
+    until: str | None,
+    bucket_secs: int,
+    backends: str | None,
+) -> tuple[list[dict[str, Any]], int, list[str], str | None]:
+    """Count /logs rows per time bucket with one server-side ``count(*)`` query each.
+
+    Shared by :func:`thruk_alert_heatmap` and :func:`thruk_notification_heatmap`.
+    ``extra`` already carries the type/class scoping and any resolved host
+    filter; it must **not** be reused afterwards (time bounds are popped here).
+
+    Replaces the former "fetch up to 10 000 raw rows then bucket in Python"
+    approach (issue #312), which silently dropped the oldest buckets on busy
+    windows. Each bucket is an exact, federated ``count(*)`` over
+    ``[bucket_start, bucket_start + bucket_secs)``; queries run concurrently.
+
+    Returns ``(results, total, warnings, error)``. On a usable window ``error``
+    is ``None`` and ``results`` is a continuous, chronologically ordered list of
+    ``{bucket_start, count}`` (empty buckets included as ``count=0``).
+    """
+    # A filter-supplied time bound (notifications expose since/until as filter
+    # leaves) takes precedence over the since/until arguments.
+    gte = extra.pop("time[gte]", None) or since
+    lte = extra.pop("time[lte]", None) or until
+    ts_since = _parse_thruk_time(gte) if gte else None
+    ts_until = _parse_thruk_time(lte) if lte else _now_utc_epoch()
+    if ts_since is None or ts_until is None:
+        return (
+            [],
+            0,
+            [],
+            "Cannot determine a bounded time window; pass an explicit since/until "
+            "(relative like '-24h' or absolute 'YYYY-MM-DD HH:MM:SS').",
+        )
+
+    first_b = (ts_since // bucket_secs) * bucket_secs
+    last_b = (ts_until // bucket_secs) * bucket_secs
+    n_buckets = (last_b - first_b) // bucket_secs + 1
+    if n_buckets > _HEATMAP_MAX_BUCKETS:
+        return (
+            [],
+            0,
+            [],
+            f"Window spans {n_buckets} buckets (max {_HEATMAP_MAX_BUCKETS}); "
+            "use a larger bucket or a shorter window.",
+        )
+    starts = [first_b + i * bucket_secs for i in range(int(n_buckets))]
+
+    async def _count_bucket(b: int) -> tuple[int, list[str]]:
+        params: dict[str, Any] = {
+            "columns": "count(*):cnt",
+            "limit": 1,
+            **extra,
+            "time[gte]": str(b),
+            "time[lte]": str(b + bucket_secs - 1),  # inclusive end == [b, b+secs)
+        }
+        rows, w = await _get_client().get_with_fallback(
+            "/logs", params=params, backends=_backends(backends), method="POST"
+        )
+        return _sum_cnt(rows), w
+
+    pairs = await asyncio.gather(*[_count_bucket(b) for b in starts])
+
+    results: list[dict[str, Any]] = []
+    total = 0
+    seen: set[str] = set()
+    warnings_out: list[str] = []
+    for b, (cnt, w) in zip(starts, pairs, strict=False):
+        results.append({"bucket_start": _bucket_iso(b), "count": cnt})
+        total += cnt
+        for msg in w:
+            if msg not in seen:
+                seen.add(msg)
+                warnings_out.append(msg)
+    return results, total, warnings_out, None
 
 
 async def thruk_alert_heatmap(
@@ -658,17 +825,10 @@ async def thruk_alert_heatmap(
     ``total_alerts``, ``results`` list of ``{bucket_start, count}``
     ordered chronologically. Empty buckets are filled with ``count=0``.
 
-    When the underlying log fetch hits the ``_NOISY_MAX_ALERTS`` cap, the
-    response also carries ``truncated_before`` (ISO-UTC timestamp of the
-    *earliest* fetched event) and every bucket ending *before* the bucket that
-    contains that event is marked as ``{"count": null, "truncated": true}`` so
-    the consumer can distinguish "no alerts in this bucket" from "bucket not
-    covered by the capped fetch".
-
-    The fetch is issued newest-first (``sort="-time"``) so that when the cap is
-    hit it is the *oldest* entries that are dropped, keeping the most recent
-    buckets — the relevant ones for incident analytics — fully populated
-    (issue #250).
+    Each bucket count is an exact, federated server-side ``count(*)`` (issue
+    #312), so there is no truncation and counts are consistent with the other
+    trend tools. A window spanning more than ``_HEATMAP_MAX_BUCKETS`` buckets
+    returns an ``error`` asking for a larger bucket or a shorter window.
     """
     bucket_secs = _BUCKET_SIZES.get(bucket)
     if bucket_secs is None:
@@ -685,67 +845,14 @@ async def thruk_alert_heatmap(
     # class=5/6 external-command / current-state rows that Naemon Livestatus
     # leaks past ``type[~]`` because their ``type`` column is NULL/distinct.
     extra["class"] = "1"
-    if since:
-        extra["time[gte]"] = since
-    if until:
-        extra["time[lte]"] = until
 
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        # Newest-first (issue #250): when the cap is hit, drop the *oldest*
-        # entries so recent buckets stay populated. Bucket counting below is
-        # order-independent, so DESC fetch order does not affect aggregation.
-        "sort": "-time",
-        "columns": "time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+    # Issue #312: one exact server-side count(*) per bucket instead of fetching
+    # raw rows and bucketing client-side (which truncated busy windows).
+    results, total, agg_warnings, error = await _bucketed_log_counts(
+        extra, since, until, bucket_secs, backends
     )
-    if not isinstance(data, list):
-        data = []
-
-    # Count alerts per bucket
-    raw_counts: dict[int, int] = {}
-    total = 0
-    for entry in data:
-        t = entry.get("time")
-        if not t:
-            continue
-        b = (int(t) // bucket_secs) * bucket_secs
-        raw_counts[b] = raw_counts.get(b, 0) + 1
-        total += 1
-
-    # Build continuous timeline — fill empty buckets between window boundaries
-    ts_since = _parse_thruk_time(since)
-    ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
-
-    results: list[dict[str, Any]] = []
-    if ts_since is not None and ts_until is not None:
-        first_b = (ts_since // bucket_secs) * bucket_secs
-        last_b = (ts_until // bucket_secs) * bucket_secs
-        b = first_b
-        while b <= last_b:
-            results.append(
-                {
-                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                    "count": raw_counts.get(b, 0),
-                }
-            )
-            b += bucket_secs
-    else:
-        # Fallback: only buckets that have data (unparseable since/until)
-        for b in sorted(raw_counts):
-            results.append(
-                {
-                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                    "count": raw_counts[b],
-                }
-            )
+    if error:
+        return _tool_response({"error": error})
 
     payload: dict[str, Any] = {
         "since": since,
@@ -754,44 +861,13 @@ async def thruk_alert_heatmap(
         "total_alerts": total,
         "results": results,
     }
-
-    # When the log cap is hit, sort=-time (newest first) means we got the
-    # *most recent* entries only — buckets before the earliest fetched
-    # timestamp would silently show count=0. Mark them as null+truncated so
-    # consumers (LLM or human) do not confuse "missing data" with "quiet
-    # period" (issue #250).
-    log_capped = len(data) >= _NOISY_MAX_ALERTS
-    if log_capped and raw_counts:
-        first_ts = min(int(e["time"]) for e in data if e.get("time"))
-        first_bucket = (first_ts // bucket_secs) * bucket_secs
-        truncated_before_iso = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        payload["truncated_before"] = truncated_before_iso
-        for bucket_obj in results:
-            bs_str = bucket_obj["bucket_start"]
-            bs_epoch = int(
-                datetime.strptime(bs_str, "%Y-%m-%dT%H:%M:%SZ")
-                .replace(tzinfo=timezone.utc)
-                .timestamp()
-            )
-            if bs_epoch < first_bucket:
-                bucket_obj["count"] = None
-                bucket_obj["truncated"] = True
-
     if host_truncated:
         payload["_warning"] = (
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
-    elif log_capped:
-        payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
-            "Buckets before 'truncated_before' are reported as count=null (data not fetched)."
-            + _NOISY_CAP_HINT
-        )
-    if warnings:
-        payload["_warnings"] = warnings
+    if agg_warnings:
+        payload["_warnings"] = agg_warnings
     return _tool_response(payload)
 
 
@@ -824,17 +900,10 @@ async def thruk_notification_heatmap(
     ``total_notifications``, ``results`` list of ``{bucket_start, count}``
     ordered chronologically. Empty buckets are filled with ``count=0``.
 
-    When the underlying log fetch hits the ``_NOISY_MAX_ALERTS`` cap, the
-    response also carries ``truncated_before`` (ISO-UTC timestamp of the
-    *earliest* fetched event) and every bucket ending *before* the bucket that
-    contains that event is marked as ``{"count": null, "truncated": true}`` so
-    the consumer can distinguish "no notifications in this bucket" from "bucket
-    not covered by the capped fetch".
-
-    The fetch is issued newest-first (``sort="-time"``) so that when the cap is
-    hit it is the *oldest* entries that are dropped, keeping the most recent
-    buckets — the relevant ones for incident analytics — fully populated
-    (mirrors :func:`thruk_alert_heatmap`, issue #250).
+    Each bucket count is an exact, federated server-side ``count(*)`` (issue
+    #312), so there is no truncation. A window spanning more than
+    ``_HEATMAP_MAX_BUCKETS`` buckets returns an ``error`` asking for a larger
+    bucket or a shorter window.
     """
     bucket_secs = _BUCKET_SIZES.get(bucket)
     if bucket_secs is None:
@@ -849,69 +918,15 @@ async def thruk_notification_heatmap(
     # Notification entries are class=3 (client-side alias expansion — the
     # /notifications endpoint is broken on some Thruk versions).
     extra["class"] = "3"
-    # FIELDS_NOTIFICATIONS exposes ``since`` / ``until`` as filter leaves, so a
-    # filter-supplied time bound takes precedence over the parameters.
-    if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
-    if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
 
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        # Newest-first (issue #250): when the cap is hit, drop the *oldest*
-        # entries so recent buckets stay populated. Bucket counting below is
-        # order-independent, so DESC fetch order does not affect aggregation.
-        "sort": "-time",
-        "columns": "time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+    # Issue #312: one exact server-side count(*) per bucket. ``_bucketed_log_counts``
+    # honours a filter-supplied time[gte]/time[lte] (FIELDS_NOTIFICATIONS exposes
+    # since/until as leaves) over the since/until arguments.
+    results, total, agg_warnings, error = await _bucketed_log_counts(
+        extra, since, until, bucket_secs, backends
     )
-    if not isinstance(data, list):
-        data = []
-
-    # Count notifications per bucket
-    raw_counts: dict[int, int] = {}
-    total = 0
-    for entry in data:
-        t = entry.get("time")
-        if not t:
-            continue
-        b = (int(t) // bucket_secs) * bucket_secs
-        raw_counts[b] = raw_counts.get(b, 0) + 1
-        total += 1
-
-    # Build continuous timeline — fill empty buckets between window boundaries
-    ts_since = _parse_thruk_time(since)
-    ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
-
-    results: list[dict[str, Any]] = []
-    if ts_since is not None and ts_until is not None:
-        first_b = (ts_since // bucket_secs) * bucket_secs
-        last_b = (ts_until // bucket_secs) * bucket_secs
-        b = first_b
-        while b <= last_b:
-            results.append(
-                {
-                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                    "count": raw_counts.get(b, 0),
-                }
-            )
-            b += bucket_secs
-    else:
-        # Fallback: only buckets that have data (unparseable since/until)
-        for b in sorted(raw_counts):
-            results.append(
-                {
-                    "bucket_start": datetime.fromtimestamp(b, tz=timezone.utc).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                    "count": raw_counts[b],
-                }
-            )
+    if error:
+        return _tool_response({"error": error})
 
     payload: dict[str, Any] = {
         "since": since,
@@ -920,44 +935,13 @@ async def thruk_notification_heatmap(
         "total_notifications": total,
         "results": results,
     }
-
-    # When the log cap is hit, sort=-time (newest first) means we got the
-    # *most recent* entries only — buckets before the earliest fetched
-    # timestamp would silently show count=0. Mark them as null+truncated so
-    # consumers (LLM or human) do not confuse "missing data" with "quiet
-    # period" (mirrors thruk_alert_heatmap, issue #250).
-    log_capped = len(data) >= _NOISY_MAX_ALERTS
-    if log_capped and raw_counts:
-        first_ts = min(int(e["time"]) for e in data if e.get("time"))
-        first_bucket = (first_ts // bucket_secs) * bucket_secs
-        truncated_before_iso = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
-        payload["truncated_before"] = truncated_before_iso
-        for bucket_obj in results:
-            bs_str = bucket_obj["bucket_start"]
-            bs_epoch = int(
-                datetime.strptime(bs_str, "%Y-%m-%dT%H:%M:%SZ")
-                .replace(tzinfo=timezone.utc)
-                .timestamp()
-            )
-            if bs_epoch < first_bucket:
-                bucket_obj["count"] = None
-                bucket_obj["truncated"] = True
-
     if host_truncated:
         payload["_warning"] = (
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
-    elif log_capped:
-        payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete. "
-            "Buckets before 'truncated_before' are reported as count=null (data not fetched)."
-            + _NOISY_CAP_HINT
-        )
-    if warnings:
-        payload["_warnings"] = warnings
+    if agg_warnings:
+        payload["_warnings"] = agg_warnings
     return _tool_response(payload)
 
 
@@ -997,70 +981,38 @@ async def thruk_recurring_problems(
     if errs:
         return _tool_response({"error": errs[0]})
 
-    extra["type[~]"] = "^(HOST|SERVICE) ALERT"
-    # Defence-in-depth (issues #176 / #193): without ``class=1`` Naemon
-    # Livestatus returns rows with ``type=NULL`` (class=0 system messages,
-    # class=5 external commands, class=6 current-state snapshots) that pass
-    # the ``type[~]`` regex and inflate the per-object alert count.
-    extra["class"] = "1"
     if since:
         extra["time[gte]"] = since
     if until:
         extra["time[lte]"] = until
 
-    params: dict[str, Any] = {
-        "limit": _NOISY_MAX_ALERTS,
-        "sort": "time",
-        "columns": "host_name,service_description,state,time",
-        **extra,
-    }
-    data, warnings = await _get_client().get_with_fallback(
-        "/logs", params=params, backends=_backends(backends), method="POST"
+    # Server-side aggregation (issue #312): exact per-object counts across all
+    # federated backends, no 10 000-row truncation. ``state[!=]=0`` (recovery
+    # exclusion) and ``class=1`` are enforced inside the helper.
+    rows, warnings, hit_cap = await _aggregate_alerts(
+        type_regex="^(HOST|SERVICE) ALERT",
+        key_fields=("host_name", "service_description"),
+        extra_params=extra,
+        backends=backends,
     )
-    if not isinstance(data, list):
-        data = []
 
-    # Aggregate per (host, service) — exclude state=0 (UP/OK = recovery)
-    agg: dict[tuple[str, str], dict[str, Any]] = {}
-    for entry in data:
-        state = entry.get("state", -1)
-        if state == 0:
-            continue
-        h = entry.get("host_name") or ""
-        svc = entry.get("service_description") or ""
-        key = (h, svc)
-        t = int(entry.get("time") or 0)
-        if key not in agg:
-            agg[key] = {
-                "alert_count": 0,
-                "first_ts": t,
-                "last_ts": t,
-                "last_state_int": state,
-            }
-        else:
-            if t < agg[key]["first_ts"]:
-                agg[key]["first_ts"] = t
-            if t > agg[key]["last_ts"]:
-                agg[key]["last_ts"] = t
-                agg[key]["last_state_int"] = state
-        agg[key]["alert_count"] += 1
-
+    # rows are already sorted by alert_count descending.
     above = [
         {
-            "host": h,
-            "service": svc or None,
-            "alert_count": v["alert_count"],
-            "first_seen": _ts(v["first_ts"]),
-            "last_seen": _ts(v["last_ts"]),
+            "host": r["host_name"],
+            "service": r["service_description"] or None,
+            "alert_count": r["alert_count"],
+            "first_seen": _ts(r["first_ts"]),
+            "last_seen": _ts(r["last_ts"]),
             # Issue #245: friendly "UNKNOWN(<n>)" fallback instead of raw int.
             "last_state": _format_state_label(
-                v["last_state_int"], HOST_STATES if not svc else SERVICE_STATES
+                r["last_state_int"],
+                HOST_STATES if not r["service_description"] else SERVICE_STATES,
             ),
         }
-        for (h, svc), v in agg.items()
-        if v["alert_count"] >= min_alerts
+        for r in rows
+        if r["alert_count"] >= min_alerts
     ]
-    above.sort(key=lambda x: x["alert_count"], reverse=True)
 
     payload: dict[str, Any] = {
         "since": since,
@@ -1074,10 +1026,10 @@ async def thruk_recurring_problems(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
-    elif len(data) >= _NOISY_MAX_ALERTS:
+    elif hit_cap:
         payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
-            + _NOISY_CAP_HINT
+            f"Result capped at {_NOISY_MAX_ALERTS} distinct groups; "
+            "aggregation may be incomplete." + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
@@ -1158,6 +1110,21 @@ async def thruk_reliability_report(
     if until:
         extra["time[lte]"] = until
 
+    # Pre-check (issue #312): incident reconstruction needs the ordered HARD-state
+    # sequence, so this tool cannot be aggregated server-side. A busy window can
+    # still exceed the _NOISY_MAX_ALERTS raw-fetch cap; a cheap server-side
+    # count(*) lets us report the true event volume so the operator knows when
+    # the metrics are partial. Narrowing by alert count is unsafe here — a single
+    # long outage produces few alerts but dominates downtime — so we keep full
+    # scope and only surface an accurate warning.
+    count_rows, _count_warnings = await _get_client().get_with_fallback(
+        "/logs",
+        params={"columns": "count(*):cnt", "limit": 1, **extra},
+        backends=_backends(backends),
+        method="POST",
+    )
+    total_events = _sum_cnt(count_rows)
+
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         "sort": "time",  # ascending: incident reconstruction needs chronological order
@@ -1205,10 +1172,10 @@ async def thruk_reliability_report(
             f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
             "results may be incomplete."
         )
-    elif len(data) >= _NOISY_MAX_ALERTS:
+    elif total_events > _NOISY_MAX_ALERTS:
         payload["_warning"] = (
-            f"Result capped at {_NOISY_MAX_ALERTS} log entries; metrics may be incomplete."
-            + _NOISY_CAP_HINT
+            f"Window holds {total_events} alert log entries but only {_NOISY_MAX_ALERTS} "
+            "were analysed; metrics are partial. Narrow the window or filter." + _NOISY_CAP_HINT
         )
     if warnings:
         payload["_warnings"] = warnings
