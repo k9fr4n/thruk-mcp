@@ -10,7 +10,7 @@ from urllib.parse import parse_qs
 
 import pytest
 
-from tests.conftest import ok
+from tests.conftest import agg_rows, count_side_effect, ok
 from thruk_mcp.server import _now_utc_epoch, _parse_thruk_time
 
 
@@ -135,7 +135,7 @@ async def test_heatmap_basic_bucketing(mocked_server) -> None:
         _log(BASE_TS + 200),
         _log(BASE_TS + hour + 10),
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect(entries))
 
     since = str(BASE_TS)
     until = str(BASE_TS + 2 * hour)
@@ -206,106 +206,91 @@ async def test_heatmap_metadata_in_output(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_heatmap_cap_warning(mocked_server) -> None:
-    """Hitting _NOISY_MAX_ALERTS cap => _warning key present."""
-    mcp, router = mocked_server
-    from thruk_mcp.server import _NOISY_MAX_ALERTS
-
-    big_data = [_log(BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
-
-    result = await mcp.call_tool("thruk_alert_heatmap", {"since": "-24h"})
-    payload = json.loads(result[0].text)
-    assert "_warning" in payload
-
-
-@pytest.mark.asyncio
-async def test_heatmap_fetches_newest_first(mocked_server) -> None:
-    """Regression test for issue #250: heatmap must fetch /logs newest-first.
-
-    BEFORE FIX (broken):
-        ``sort="time"`` (ascending). When the _NOISY_MAX_ALERTS cap was hit,
-        Thruk returned the *oldest* entries, so the most recent buckets — the
-        ones that matter for incident analytics — came back unpopulated.
-
-    AFTER FIX:
-        ``sort="-time"`` (descending) so the cap drops the oldest entries and
-        recent buckets stay populated.
-    """
-    from urllib.parse import parse_qs
+async def test_heatmap_too_many_buckets_error(mocked_server) -> None:
+    """Issue #312: a window spanning more than _HEATMAP_MAX_BUCKETS buckets
+    returns an actionable error instead of fanning out thousands of count
+    queries. Replaces the obsolete raw-fetch cap warning — per-bucket
+    server-side count(*) has no row cap to hit."""
+    from thruk_mcp.tools.history import _HEATMAP_MAX_BUCKETS
 
     mcp, router = mocked_server
-    log_route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+    route = router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect([]))
 
-    await mcp.call_tool("thruk_alert_heatmap", {"since": "-24h", "bucket": "1h"})
-
-    body = parse_qs(log_route.calls.last.request.content.decode())
-    assert body.get("sort") == ["-time"], (
-        f"heatmap must request sort=-time (newest first), body was: {body}"
+    # (_HEATMAP_MAX_BUCKETS + 1) 15-minute buckets exceeds the fan-out ceiling.
+    span = (_HEATMAP_MAX_BUCKETS + 1) * 900
+    result = await mcp.call_tool(
+        "thruk_alert_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + span), "bucket": "15m"},
     )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "bucket" in payload["error"].lower()
+    assert not route.called, "must refuse before issuing any per-bucket query"
 
 
 @pytest.mark.asyncio
-async def test_heatmap_truncated_buckets_marked_null(mocked_server) -> None:
-    """Regression test for issues #178 / #250.
+async def test_heatmap_per_bucket_count_query(mocked_server) -> None:
+    """Issue #312: each bucket is one exact server-side count(*) query.
 
-    BEFORE #250 FIX (broken):
-        With ``sort="time"`` ascending and limit=_NOISY_MAX_ALERTS, when the
-        cap was hit the fetch returned only the *earliest* entries — recent
-        buckets silently showed ``count=0`` (the #178 band-aid then marked
-        buckets *after* the last fetched timestamp via ``truncated_after``,
-        which is exactly the wrong end for recent-incident analytics).
-
-    AFTER #250 FIX:
-        The fetch is newest-first, so the *earliest* buckets are the uncovered
-        ones. Buckets strictly before the bucket containing the earliest
-        fetched entry are reported as ``count=null, truncated=true`` and the
-        payload exposes ``truncated_before`` (ISO-UTC of the earliest fetched
-        event). Recent buckets are populated with real counts.
+    Replaces the obsolete sort=-time newest-first assertion: the heatmap no
+    longer fetches raw rows. Every /logs POST must request
+    ``columns=count(*):cnt`` over an explicit ``[time[gte], time[lte]]`` bucket
+    window scoped to genuine ALERT rows (``type[~]`` + ``class=1``).
     """
     mcp, router = mocked_server
-    from thruk_mcp.server import _NOISY_MAX_ALERTS
+    log_route = router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect([]))
+
+    # 6h / 1h => 7 buckets => 7 count queries.
+    await mcp.call_tool("thruk_alert_heatmap", {"since": "-6h", "bucket": "1h"})
+
+    assert len(log_route.calls) == 7
+    for call in log_route.calls:
+        p = _post_params(call)
+        assert p["columns"] == "count(*):cnt"
+        assert "time[gte]" in p and "time[lte]" in p
+        assert int(p["time[lte]"]) - int(p["time[gte]"]) == 3599  # inclusive 1h window
+        assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
+        assert p["class"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_heatmap_busy_window_exact_no_truncation(mocked_server) -> None:
+    """Issue #312: a busy window is counted exactly with no truncation.
+
+    BEFORE: a >10k-row window was fetched newest-first and capped, so the
+    earliest buckets came back ``count=null``/``truncated=true`` with a
+    top-level ``truncated_before``.
+    NOW: each bucket is an independent server-side ``count(*)``, so even a very
+    busy window yields exact integer counts in every bucket — no
+    ``truncated_before`` and no null counts.
+    """
+    mcp, router = mocked_server
 
     hour = 3600
-    # Simulate a newest-first capped fetch: _NOISY_MAX_ALERTS entries crammed
-    # into the *last* 2 hours of a 24h window (hours 22 and 23). With sort=-time
-    # the backend returns exactly these recent rows; the earliest 22 buckets
-    # were never fetched.
+    # Cram many events into the most-recent two buckets of a 24h window; the
+    # earlier buckets are genuinely empty (count=0, not null).
     base_recent = BASE_TS + 22 * hour
-    big_data = [_log(base_recent + (i % (2 * hour))) for i in range(_NOISY_MAX_ALERTS)]
-    # Force the smallest timestamp to fall in bucket #22 for determinism.
-    big_data[-1] = _log(base_recent + 1234)
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
-
-    since = str(BASE_TS)
-    until = str(BASE_TS + 24 * hour)
+    events = [_log(base_recent + (i % (2 * hour))) for i in range(5000)]
+    router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect(events))
 
     result = await mcp.call_tool(
         "thruk_alert_heatmap",
-        {"since": since, "until": until, "bucket": "1h"},
+        {"since": str(BASE_TS), "until": str(BASE_TS + 24 * hour), "bucket": "1h"},
     )
     payload = json.loads(result[0].text)
 
-    assert payload["total_alerts"] == _NOISY_MAX_ALERTS
-    assert "truncated_before" in payload, "Expected truncated_before top-level field"
-    assert payload["truncated_before"].endswith("Z")
-    assert "_warning" in payload
-
+    assert payload["total_alerts"] == 5000
+    assert "truncated_before" not in payload
+    assert "_warning" not in payload
     # 24h window @ 1h bucket => 25 buckets (inclusive of both ends).
     assert len(payload["results"]) == 25
-
-    # Buckets 22 and 23 contain real data (count is an int, not None).
-    assert isinstance(payload["results"][22]["count"], int)
-    assert payload["results"][22]["count"] > 0
-    assert isinstance(payload["results"][23]["count"], int)
-    assert payload["results"][23]["count"] > 0
-    # Bucket containing the earliest fetched event must not be marked truncated.
-    assert not payload["results"][22].get("truncated", False)
-
-    # Buckets 0..21 (before the earliest fetched bucket) must be null + truncated.
-    for bucket in payload["results"][:22]:
-        assert bucket["count"] is None, f"Expected null count, got {bucket}"
-        assert bucket["truncated"] is True
+    # Every bucket carries an exact integer count; none is null/truncated.
+    for bucket in payload["results"]:
+        assert isinstance(bucket["count"], int)
+        assert "truncated" not in bucket
+    # The events land in buckets 22 and 23; all earlier buckets are exactly zero.
+    assert payload["results"][22]["count"] + payload["results"][23]["count"] == 5000
+    assert all(payload["results"][i]["count"] == 0 for i in range(22))
 
 
 @pytest.mark.asyncio
@@ -435,7 +420,9 @@ async def test_recurring_basic(mocked_server) -> None:
     entries = [_alert("h1", "Disk", 2, BASE_TS + i * 300) for i in range(6)] + [
         _alert("h2", "CPU", 1, BASE_TS + i * 600) for i in range(3)
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -461,7 +448,9 @@ async def test_recurring_recovery_excluded(mocked_server) -> None:
         _alert("h1", "", 0, BASE_TS + 500),  # RECOVERY — must be ignored
         _alert("h1", "", 0, BASE_TS + 600),  # RECOVERY — must be ignored
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -478,7 +467,9 @@ async def test_recurring_host_alert_no_service(mocked_server) -> None:
     mcp, router = mocked_server
 
     entries = [_alert("router1", "", 1, BASE_TS + i * 60) for i in range(7)]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -497,7 +488,9 @@ async def test_recurring_sorted_by_count_desc(mocked_server) -> None:
     entries = [_alert("h-low", "svc", 2, BASE_TS + i * 100) for i in range(5)] + [
         _alert("h-high", "svc", 1, BASE_TS + i * 50) for i in range(9)
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -517,7 +510,9 @@ async def test_recurring_limit_respected(mocked_server) -> None:
     entries = [_alert("h1", "svc", 2, BASE_TS + i * 100) for i in range(8)] + [
         _alert("h2", "svc", 1, BASE_TS + i * 200) for i in range(6)
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -541,7 +536,9 @@ async def test_recurring_first_last_seen(mocked_server) -> None:
         _alert("h1", "svc", 2, BASE_TS + 4000),
         _alert("h1", "svc", 1, BASE_TS + 5000),  # last entry: state=1 = WARNING
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(entries, ("host_name", "service_description")))
+    )
 
     result = await mcp.call_tool(
         "thruk_recurring_problems",
@@ -685,32 +682,6 @@ def test_load_noisy_max_alerts_enforces_minimum() -> None:
     assert _load_noisy_max_alerts("0") == _NOISY_MAX_ALERTS_MIN
     # Negative values are also coerced up.
     assert _load_noisy_max_alerts("-100") == _NOISY_MAX_ALERTS_MIN
-
-
-@pytest.mark.asyncio
-async def test_heatmap_cap_warning_is_actionable(mocked_server) -> None:
-    """Issue #201: the cap warning must point users at the env-var mitigation.
-
-    Pre-fix message:
-        "Result capped at 10000 log entries; aggregation may be incomplete."
-    Post-fix message must additionally mention THRUK_NOISY_MAX_ALERTS so an
-    LLM consuming the tool output can immediately suggest the right fix.
-    """
-    mcp, router = mocked_server
-    from thruk_mcp.server import _NOISY_MAX_ALERTS
-
-    big_data = [_log(BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
-
-    result = await mcp.call_tool("thruk_alert_heatmap", {"since": "-24h"})
-    payload = json.loads(result[0].text)
-    warning = payload["_warning"]
-    assert "THRUK_NOISY_MAX_ALERTS" in warning, (
-        "Cap warning must mention the env var so operators know how to raise the cap."
-    )
-    assert "since" in warning, (
-        "Cap warning must suggest narrowing the time window as an alternative mitigation."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -925,7 +896,7 @@ async def test_notif_heatmap_basic_bucketing(mocked_server) -> None:
         _log(BASE_TS + 200),
         _log(BASE_TS + hour + 10),
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(entries))
+    router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect(entries))
 
     result = await mcp.call_tool(
         "thruk_notification_heatmap",
@@ -968,8 +939,9 @@ async def test_notif_heatmap_posts_class_three(mocked_server) -> None:
     p = _post_params(route.calls.last)
     assert p.get("class") == "3", "notification heatmap must POST class=3"
     assert "type[~]" not in p, "notification heatmap must not use the ALERT regex filter"
-    assert p.get("sort") == "-time", "must fetch newest-first (issue #250 parity)"
-    assert "time" in p.get("columns", "")
+    # Issue #312: per-bucket server-side count(*), not a raw newest-first fetch.
+    assert p["columns"] == "count(*):cnt"
+    assert "time[gte]" in p and "time[lte]" in p
 
 
 @pytest.mark.asyncio
@@ -1010,51 +982,50 @@ async def test_notif_heatmap_metadata_in_output(mocked_server) -> None:
 
 
 @pytest.mark.asyncio
-async def test_notif_heatmap_cap_warning(mocked_server) -> None:
-    mcp, router = mocked_server
-    from thruk_mcp.server import _NOISY_MAX_ALERTS
+async def test_notif_heatmap_busy_window_exact(mocked_server) -> None:
+    """Issue #312: notification heatmap counts each bucket exactly, no cap.
 
-    big_data = [_log(BASE_TS + i) for i in range(_NOISY_MAX_ALERTS)]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
-
-    result = await mcp.call_tool("thruk_notification_heatmap", {"since": "-24h"})
-    payload = json.loads(result[0].text)
-    assert "_warning" in payload
-    assert "THRUK_NOISY_MAX_ALERTS" in payload["_warning"]
-
-
-@pytest.mark.asyncio
-async def test_notif_heatmap_truncated_buckets_marked_null(mocked_server) -> None:
-    """Cap hit + newest-first => earliest buckets are count=null, truncated=true.
-
-    Same semantics as thruk_alert_heatmap (issue #250): with sort=-time the
-    earliest buckets are the ones not covered by the capped fetch.
+    Replaces the obsolete raw-fetch cap warning — per-bucket server-side
+    ``count(*)`` has no row cap, so a busy window has exact integer counts in
+    every bucket and no ``truncated_before`` field.
     """
     mcp, router = mocked_server
-    from thruk_mcp.server import _NOISY_MAX_ALERTS
 
     hour = 3600
-    base_recent = BASE_TS + 22 * hour
-    big_data = [_log(base_recent + (i % (2 * hour))) for i in range(_NOISY_MAX_ALERTS)]
-    big_data[-1] = _log(base_recent + 1234)  # force earliest into bucket #22
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(big_data))
+    events = [_log(BASE_TS + 22 * hour + (i % (2 * hour))) for i in range(5000)]
+    router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect(events))
 
     result = await mcp.call_tool(
         "thruk_notification_heatmap",
         {"since": str(BASE_TS), "until": str(BASE_TS + 24 * hour), "bucket": "1h"},
     )
     payload = json.loads(result[0].text)
-
-    assert payload["total_notifications"] == _NOISY_MAX_ALERTS
-    assert "truncated_before" in payload
-    assert payload["truncated_before"].endswith("Z")
+    assert payload["total_notifications"] == 5000
+    assert "truncated_before" not in payload
     assert len(payload["results"]) == 25
-    assert isinstance(payload["results"][22]["count"], int)
-    assert payload["results"][22]["count"] > 0
-    assert not payload["results"][22].get("truncated", False)
-    for bucket in payload["results"][:22]:
-        assert bucket["count"] is None
-        assert bucket["truncated"] is True
+    for bucket in payload["results"]:
+        assert isinstance(bucket["count"], int)
+        assert "truncated" not in bucket
+
+
+@pytest.mark.asyncio
+async def test_notif_heatmap_too_many_buckets_error(mocked_server) -> None:
+    """Issue #312: an over-wide window is refused with an actionable error
+    rather than fanning out thousands of per-bucket count queries."""
+    from thruk_mcp.tools.history import _HEATMAP_MAX_BUCKETS
+
+    mcp, router = mocked_server
+    route = router.post("https://thruk.test/r/logs").mock(side_effect=count_side_effect([]))
+
+    span = (_HEATMAP_MAX_BUCKETS + 1) * 900
+    result = await mcp.call_tool(
+        "thruk_notification_heatmap",
+        {"since": str(BASE_TS), "until": str(BASE_TS + span), "bucket": "15m"},
+    )
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "bucket" in payload["error"].lower()
+    assert not route.called
 
 
 @pytest.mark.asyncio

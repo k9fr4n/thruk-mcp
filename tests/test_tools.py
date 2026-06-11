@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 import httpx
 import pytest
 
-from tests.conftest import ok
+from tests.conftest import agg_rows, flap_side_effect, ok
 
 
 def post_params(call) -> dict[str, str]:
@@ -2220,13 +2220,18 @@ async def test_top_noisy_hosts_basic(mocked_server) -> None:
         _make_log_entry("alpha", 0, 30),  # UP = recovery, excluded
         _make_log_entry("beta", 1, 40),  # DOWN
     ]
-    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    route = router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(raw, ("host_name",)))
+    )
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-6h", "limit": 5})
     assert route.called
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^HOST ALERT"
+    assert p["class"] == "1"
+    assert p["state[!=]"] == "0"
     assert p["time[gte]"] == "-6h"
-    assert p["columns"] == "host_name,state,time,type"
+    assert p["sort"] == "-cnt"
+    assert p["columns"] == "host_name,state,count(*):cnt,min(time):first_t,max(time):last_t"
 
     payload = json.loads(result[0].text)
     assert payload["since"] == "-6h"
@@ -2257,7 +2262,7 @@ async def test_top_noisy_hosts_limit_respected(mocked_server) -> None:
     """Only ``limit`` hosts are returned even when more are present."""
     mcp, router = mocked_server
     raw = [_make_log_entry(f"host{i}", 1, i) for i in range(20)]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(agg_rows(raw, ("host_name",))))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"limit": 3})
     payload = json.loads(result[0].text)
     assert len(payload["results"]) == 3
@@ -2307,7 +2312,7 @@ async def test_top_noisy_hosts_unknown_state_friendly_label(mocked_server) -> No
         _make_log_entry("wopr-naemon-05", 3, 20),
         _make_log_entry("ecrint-ad-03", 1, 30),  # legitimate DOWN
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(agg_rows(raw, ("host_name",))))
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-7d", "limit": 5})
     payload = json.loads(result[0].text)
     by_host = {r["host"]: r for r in payload["results"]}
@@ -2318,40 +2323,35 @@ async def test_top_noisy_hosts_unknown_state_friendly_label(mocked_server) -> No
 
 @pytest.mark.asyncio
 async def test_top_noisy_hosts_ignores_service_alert_leak(mocked_server) -> None:
-    """Issue #248: a SERVICE ALERT row (service vocabulary, state=3 UNKNOWN)
-    returned alongside genuine HOST ALERT rows must NOT leak into the host
-    aggregation.
+    """Issue #248 / #312: a SERVICE ALERT row must NOT leak into the host
+    aggregation and surface a service-vocabulary ``last_state``.
 
-    Pre-fix behaviour (regression repro): ``_aggregate_alerts`` trusted Thruk's
-    server-side ``type[~]`` filter alone, so a stray SERVICE ALERT row was
-    counted as a host alert and surfaced ``last_state="UNKNOWN(3)"`` against
-    the host -- mixing host/service state vocabularies.
-    Post-fix: rows whose ``type`` does not match ``^HOST ALERT`` are dropped
-    client-side, leaving only genuine host alerts (and a ``_warnings`` note).
+    The leak is now prevented **server-side**: the aggregation query scopes to
+    ``type[~]=^HOST ALERT`` *and* ``class=1`` (genuine HOST ALERT rows only), so
+    Thruk never returns the stray SERVICE ALERT row. We assert the request
+    carries both scopes and that the simulated server response (host alerts
+    only) yields the host vocabulary (DOWN), never the leaked UNKNOWN(3).
     """
     mcp, router = mocked_server
-    raw = [
-        {"host_name": "fw-01", "state": 1, "time": 1_700_000_100, "type": "HOST ALERT"},
-        {"host_name": "fw-01", "state": 1, "time": 1_700_000_200, "type": "HOST ALERT"},
-        # SERVICE ALERT leak: service UNKNOWN=3 on the same host, newest ts.
-        {
-            "host_name": "fw-01",
-            "service_description": "PING",
-            "state": 3,
-            "time": 1_700_000_300,
-            "type": "SERVICE ALERT",
-        },
+    host_rows = [
+        _make_log_entry("fw-01", 1, 100),  # DOWN
+        _make_log_entry("fw-01", 1, 200),  # DOWN, newest host alert
     ]
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    # Thruk's type[~]=^HOST ALERT + class=1 query never returns the SERVICE
+    # ALERT row, so the aggregated response is built from host alerts only.
+    route = router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(host_rows, ("host_name",)))
+    )
     result = await mcp.call_tool("thruk_top_noisy_hosts", {"since": "-7d", "limit": 5})
+    p = post_params(route.calls.last)
+    assert p["type[~]"] == "^HOST ALERT"
+    assert p["class"] == "1"
     payload = json.loads(result[0].text)
     by_host = {r["host"]: r for r in payload["results"]}
-    # Only the two HOST ALERT rows are counted; the SERVICE ALERT row is dropped.
     assert by_host["fw-01"]["alert_count"] == 2
-    # last_state reflects the host vocabulary (DOWN), never the leaked UNKNOWN(3).
+    # last_state reflects the host vocabulary (DOWN), never a leaked UNKNOWN(3).
     assert by_host["fw-01"]["last_state"] == "DOWN"
     assert payload["total_alerts_in_window"] == 2
-    assert any("cross-type" in w for w in payload.get("_warnings", []))
 
 
 @pytest.mark.asyncio
@@ -2365,13 +2365,21 @@ async def test_top_noisy_services_basic(mocked_server) -> None:
         _make_log_entry("alpha", 2, 40, service="DISK"),  # CRITICAL
         _make_log_entry("beta", 1, 50, service="CPU"),  # WARNING
     ]
-    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    route = router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(raw, ("host_name", "service_description")))
+    )
     result = await mcp.call_tool("thruk_top_noisy_services", {"since": "-12h", "limit": 5})
     assert route.called
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^SERVICE ALERT"
+    assert p["class"] == "1"
+    assert p["state[!=]"] == "0"
     assert p["time[gte]"] == "-12h"
-    assert p["columns"] == "host_name,service_description,state,time,type"
+    assert p["sort"] == "-cnt"
+    assert (
+        p["columns"]
+        == "host_name,service_description,state,count(*):cnt,min(time):first_t,max(time):last_t"
+    )
 
     payload = json.loads(result[0].text)
     assert payload["since"] == "-12h"
@@ -2491,7 +2499,7 @@ async def test_aggregate_alerts_helper_state_map_host(mocked_server) -> None:
     """last_state uses HOST_STATES for noisy_hosts (DOWN/UNREACHABLE)."""
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([_make_log_entry("srv", 1)])  # state 1 = DOWN
+        return_value=ok(agg_rows([_make_log_entry("srv", 1)], ("host_name",)))  # state 1 = DOWN
     )
     result = await mcp.call_tool("thruk_top_noisy_hosts", {})
     payload = json.loads(result[0].text)
@@ -2503,7 +2511,11 @@ async def test_aggregate_alerts_helper_state_map_service(mocked_server) -> None:
     """last_state uses SERVICE_STATES for noisy_services (WARNING/CRITICAL/UNKNOWN)."""
     mcp, router = mocked_server
     router.post("https://thruk.test/r/logs").mock(
-        return_value=ok([_make_log_entry("srv", 2, service="HTTP")])  # state 2 = CRITICAL
+        return_value=ok(
+            agg_rows(
+                [_make_log_entry("srv", 2, service="HTTP")], ("host_name", "service_description")
+            )
+        )  # state 2 = CRITICAL
     )
     result = await mcp.call_tool("thruk_top_noisy_services", {})
     payload = json.loads(result[0].text)
@@ -2540,13 +2552,16 @@ async def test_flap_summary_basic_service(mocked_server) -> None:
     raw = _make_flap_sequence("alpha", [0, 2, 0, 2, 0], service="HTTP") + _make_flap_sequence(
         "beta", [0, 2], service="CPU"
     )
-    route = router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    route = router.post("https://thruk.test/r/logs").mock(side_effect=flap_side_effect(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"since": "-6h", "min_transitions": 3})
     assert route.called
+    # Two queries: candidate aggregation (sort=-cnt) then the scoped chronological
+    # raw fetch (sort=time). The last call is the raw fetch.
     p = post_params(route.calls.last)
     assert p["type[~]"] == "^(HOST|SERVICE) ALERT"
     assert p["time[gte]"] == "-6h"
     assert p["sort"] == "time"
+    assert p["columns"] == "host_name,service_description,state,time"
 
     payload = json.loads(result[0].text)
     assert payload["since"] == "-6h"
@@ -2567,7 +2582,7 @@ async def test_flap_summary_host_level(mocked_server) -> None:
     mcp, router = mocked_server
     # Host flapping: UP(0)->DOWN(1)->UP(0)->DOWN(1) = 3 transitions
     raw = _make_flap_sequence("router-01", [0, 1, 0, 1])
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    router.post("https://thruk.test/r/logs").mock(side_effect=flap_side_effect(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
     payload = json.loads(result[0].text)
     assert payload["total_flapping_objects"] == 1
@@ -2586,7 +2601,7 @@ async def test_flap_summary_ranked_by_transitions(mocked_server) -> None:
     raw = _make_flap_sequence("h", [0, 1, 0, 1, 0], service="svc-A") + _make_flap_sequence(
         "h", [0, 2, 0, 2, 0, 2, 0], service="svc-B"
     )
-    router.post("https://thruk.test/r/logs").mock(return_value=ok(raw))
+    router.post("https://thruk.test/r/logs").mock(side_effect=flap_side_effect(raw))
     result = await mcp.call_tool("thruk_flap_summary", {"min_transitions": 3})
     payload = json.loads(result[0].text)
     results = payload["results"]
