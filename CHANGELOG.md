@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-06-11
+
 ### Fixed
 - `thruk_alert_heatmap` / `thruk_notification_heatmap` returned all-zero buckets
   on busy windows: an ungrouped `count(*)` collapses to a single `{"cnt": N}`
@@ -310,7 +312,8 @@ will be announced and documented ahead of time.
 - GitHub Actions CI (ruff + pytest matrix on 3.10/3.11/3.12 + Docker
   build) and release workflow (multi-arch image with provenance + SBOM).
 
-[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/k9fr4n/thruk-mcp/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/k9fr4n/thruk-mcp/compare/v1.10.0...v1.10.1
 [1.0.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.5.0...v1.0.0
 [0.5.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/k9fr4n/thruk-mcp/compare/v0.3.0...v0.4.0
