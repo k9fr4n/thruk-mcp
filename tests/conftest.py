@@ -113,6 +113,12 @@ def count_side_effect(events):
     Counts how many ``events`` (each a dict with a ``time`` key) fall within the
     bucket window ``[time[gte], time[lte]]`` of each request, exactly as a
     server-side ``count(*)`` over that window would.
+
+    An ungrouped ``count(*)`` collapses to a **single object** ``{"cnt": N}`` on
+    Thruk's normal path — *not* a one-element list. Returning the dict shape
+    here keeps the heatmap tests honest: the issue-#312 regression where
+    ``_sum_cnt`` only summed lists (so every bucket read 0) was invisible while
+    this mock wrapped the count in a list.
     """
 
     def _se(request):
@@ -121,7 +127,7 @@ def count_side_effect(events):
             return ok([])
         gte, lte = int(p["time[gte]"]), int(p["time[lte]"])
         n = sum(1 for e in events if gte <= int(e["time"]) <= lte)
-        return ok([{"cnt": n}])
+        return ok({"cnt": n})
 
     return _se
 
