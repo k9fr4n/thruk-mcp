@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `thruk_alert_heatmap` / `thruk_notification_heatmap` returned all-zero buckets
+  on busy windows: an ungrouped `count(*)` collapses to a single `{"cnt": N}`
+  object (not a list) on Thruk's normal path, but `_sum_cnt` only summed lists.
+  Also fixes the same latent under-count in `thruk_reliability_report`'s
+  `total_events`. Regression from #312 (#314).
+
 ## [1.4.0] - 2026-05-25
 
 ### Added

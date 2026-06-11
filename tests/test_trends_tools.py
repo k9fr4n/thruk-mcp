@@ -12,12 +12,43 @@ import pytest
 
 from tests.conftest import agg_rows, count_side_effect, ok
 from thruk_mcp.server import _now_utc_epoch, _parse_thruk_time
+from thruk_mcp.tools.history import _sum_cnt
 
 
 def _post_params(call) -> dict[str, str]:
     """Local helper mirroring tests/test_tools.py::post_params."""
     body = call.request.content.decode()
     return {k: v[0] for k, v in parse_qs(body).items()}
+
+
+# ---------------------------------------------------------------------------
+# _sum_cnt unit tests (issue #312 regression)
+#
+# An ungrouped count(*) collapses to a single {"cnt": N} object on Thruk's
+# normal path; the per-backend fallback path of get_with_fallback concatenates
+# one such object per backend into a list. _sum_cnt must handle both shapes —
+# the bug was that it summed lists only, so the heatmap (and the
+# reliability-report total_events) silently read 0 on every normal-path call.
+# ---------------------------------------------------------------------------
+
+
+def test_sum_cnt_single_dict() -> None:
+    """Normal path: a bare count(*) returns one object, not a list."""
+    assert _sum_cnt({"cnt": 98364}) == 98364
+
+
+def test_sum_cnt_list_of_dicts() -> None:
+    """Fallback path: one count object per connected backend."""
+    assert _sum_cnt([{"cnt": 40}, {"cnt": 2}, {"cnt": 56}]) == 98
+
+
+def test_sum_cnt_zero_and_malformed() -> None:
+    assert _sum_cnt({"cnt": 0}) == 0
+    assert _sum_cnt({}) == 0
+    assert _sum_cnt({"cnt": None}) == 0
+    assert _sum_cnt({"cnt": "nan"}) == 0
+    assert _sum_cnt(None) == 0
+    assert _sum_cnt([]) == 0
 
 
 # ---------------------------------------------------------------------------

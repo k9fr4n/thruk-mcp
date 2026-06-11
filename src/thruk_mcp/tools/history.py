@@ -706,16 +706,20 @@ def _bucket_iso(epoch: int) -> str:
 def _sum_cnt(rows: Any) -> int:
     """Sum the ``count(*):cnt`` column across aggregated /logs rows.
 
-    Tolerates the per-backend fallback path of ``get_with_fallback`` (one row
-    per backend instead of a single merged row) and skips any non-numeric or
-    malformed row.
+    A bare ``count(*)`` query with no ``GROUP BY`` collapses to a **single
+    object** on Thruk's normal (federated) path — ``{"cnt": N}`` rather than a
+    one-element list (issue #312 regression: the heatmap and the
+    reliability-report ``total_events`` both silently read 0). The per-backend
+    fallback path of ``get_with_fallback`` instead concatenates one such object
+    per backend into a **list**. Normalise both shapes to a list of rows, then
+    sum, skipping any non-numeric or malformed row.
     """
     total = 0
-    if isinstance(rows, list):
-        for r in rows:
-            if isinstance(r, dict):
-                with contextlib.suppress(TypeError, ValueError):
-                    total += int(r.get("cnt") or 0)
+    items = rows if isinstance(rows, list) else [rows]
+    for r in items:
+        if isinstance(r, dict):
+            with contextlib.suppress(TypeError, ValueError):
+                total += int(r.get("cnt") or 0)
     return total
 
 
