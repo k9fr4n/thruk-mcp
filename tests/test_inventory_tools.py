@@ -36,6 +36,7 @@ _EXPECTED_INVENTORY_ORDER = [
     "thruk_host_availability",
     "thruk_service_availability",
     "thruk_hostgroup_availability",
+    "thruk_hostgroup_availability_summary",
     "thruk_list_hostgroups",
     "thruk_list_servicegroups",
     "thruk_list_contacts",

@@ -150,8 +150,11 @@ simultaneously),
 `time_unreachable_percent` and scheduled equivalents),
 `thruk_service_availability` (ok/warning/critical/unknown % for a single service),
 `thruk_hostgroup_availability` (availability for all hosts or services in a hostgroup,
-sorted worst-first; `type` = `hosts` | `services` | `both`).
-All three accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` shortcut
+sorted worst-first; `type` = `hosts` | `services` | `both`),
+`thruk_hostgroup_availability_summary` (one aggregated rollup instead of one row per host —
+time-weighted `availability_percent`, `worst`/`best`, `below_threshold` count, state
+distribution; ideal for incident/SLA reports on large groups).
+All accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` shortcut
 (`lastmonth`, `thismonth`, `last24hours`, `lastweek`, …).
 `thruk_reliability_report` (per host/service reliability metrics — MTTR / MTBF /
 incident counts — derived from the log over a window).

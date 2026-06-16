@@ -497,3 +497,168 @@ async def test_hostgroup_availability_empty(mocked_server) -> None:
     assert data["total"] == 0
     assert data["results"] == []
     assert "error" not in data
+
+
+# ---------------------------------------------------------------------------
+# thruk_hostgroup_availability_summary (issue #319)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_basic(mocked_server) -> None:
+    """Routes to the same /availability endpoint with type=hosts + start/end."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok([{"host_name": "web01", "time_up": 1000, "time_down": 0}])
+    )
+    await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD", "since": "-7d"},
+    )
+    assert route.called
+    params = route.calls.last.request.url.params
+    assert params["type"] == "hosts"
+    assert int(params["start"]) > 0
+    assert "end" in params
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_time_weighted(mocked_server) -> None:
+    """availability_percent is time-weighted from raw second counters."""
+    mcp, router = mocked_server
+    payload = [
+        {"host_name": "web01", "time_up": 900, "time_down": 100},  # 90%
+        {"host_name": "web02", "time_up": 990, "time_down": 10},  # 99%
+    ]
+    router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok(payload)
+    )
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD"},
+    )
+    data = json.loads(result[0].text)
+    # 1890 / 2000 = 94.5 (not the 94.5 mean here by coincidence — weighted)
+    assert data["availability_percent"] == 94.5
+    assert data["hosts"] == 2
+    assert data["worst"]["host"] == "web01"
+    assert data["worst"]["percent"] == 90.0
+    assert data["best"]["host"] == "web02"
+    assert data["distribution"]["up_percent"] == 94.5
+    assert data["distribution"]["problem_percent"] == 5.5
+    assert data["distribution"]["indeterminate_percent"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_below_threshold(mocked_server) -> None:
+    """below_threshold counts objects strictly under the threshold."""
+    mcp, router = mocked_server
+    payload = [
+        {"host_name": "a", "time_up": 900, "time_down": 100},  # 90
+        {"host_name": "b", "time_up": 1000, "time_down": 0},  # 100
+        {"host_name": "c", "time_up": 950, "time_down": 50},  # 95
+    ]
+    router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok(payload)
+    )
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD", "threshold": 99.0},
+    )
+    data = json.loads(result[0].text)
+    assert data["threshold_percent"] == 99.0
+    assert data["below_threshold"] == 2
+    below = [o["host"] for o in data["below_threshold_objects"]]
+    assert below == ["a", "c"]  # worst first
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_below_threshold_capped(mocked_server) -> None:
+    """The verbose below-threshold list is capped to avoid context spill."""
+    mcp, router = mocked_server
+    payload = [
+        {"host_name": f"h{i:03d}", "time_up": 100 + i, "time_down": 900 - i} for i in range(60)
+    ]
+    router.get("https://thruk.test/r/hostgroups/HG_BIG/availability").mock(return_value=ok(payload))
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_BIG", "threshold": 100.0},
+    )
+    data = json.loads(result[0].text)
+    assert data["below_threshold"] == 60
+    assert len(data["below_threshold_objects"]) == 50
+    assert data["below_threshold_truncated"] == 10
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_percent_fallback(mocked_server) -> None:
+    """Without second counters, falls back to the mean of *_percent columns."""
+    mcp, router = mocked_server
+    payload = [
+        {"host_name": "a", "time_up_percent": 90.0},
+        {"host_name": "b", "time_up_percent": 100.0},
+    ]
+    router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok(payload)
+    )
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD"},
+    )
+    data = json.loads(result[0].text)
+    assert data["availability_percent"] == 95.0
+    assert "distribution" not in data
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_services(mocked_server) -> None:
+    """type=services keys objects by host/description and uses time_ok."""
+    mcp, router = mocked_server
+    payload = [
+        {"host_name": "web01", "description": "HTTP", "time_ok": 900, "time_critical": 100},
+    ]
+    route = router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok(payload)
+    )
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD", "type": "services"},
+    )
+    assert route.calls.last.request.url.params["type"] == "services"
+    data = json.loads(result[0].text)
+    assert data["objects"] == 1
+    assert data["availability_percent"] == 90.0
+    assert data["worst"]["object"] == "web01/HTTP"
+    assert data["distribution"]["ok_percent"] == 90.0
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_invalid_type(mocked_server) -> None:
+    """Invalid type returns an error without calling Thruk."""
+    mcp, router = mocked_server
+    route = router.get("https://thruk.test/r/hostgroups/HG_PROD/availability").mock(
+        return_value=ok([])
+    )
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_PROD", "type": "both"},
+    )
+    data = json.loads(result[0].text)
+    assert "error" in data
+    assert not route.called
+
+
+@pytest.mark.asyncio
+async def test_hostgroup_summary_empty(mocked_server) -> None:
+    """Empty group: no crash, availability_percent is None."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/hostgroups/HG_EMPTY/availability").mock(return_value=ok([]))
+    result = await mcp.call_tool(
+        "thruk_hostgroup_availability_summary",
+        {"hostgroup": "HG_EMPTY"},
+    )
+    data = json.loads(result[0].text)
+    assert data["hosts"] == 0
+    assert data["availability_percent"] is None
+    assert data["below_threshold"] == 0
+    assert "error" not in data
