@@ -25,14 +25,6 @@ _SSL_WARNING = (
     "Set THRUK_VERIFY_SSL=true (or remove the variable) for production use."
 )
 
-_SSE_DEPRECATION = (
-    "DEPRECATION: the SSE transport (/sse) is deprecated in the MCP spec "
-    "(superseded by Streamable HTTP since revision 2025-03-26). "
-    "Prefer --transport streamable-http (endpoint /mcp). "
-    "SSE support may be removed in a future release."
-)
-
-
 async def _run_stdio(log_level: str) -> None:
     server = build_server()
     if not server._cfg.verify_ssl:
@@ -70,28 +62,6 @@ def _build_streamable_app(server: Any, *, stateless: bool, json_response: bool) 
     return Starlette(routes=[Mount("/mcp", app=handle_mcp)], lifespan=lifespan)
 
 
-def _build_sse_app(server: Any) -> Starlette:
-    """Build the Starlette app for the (deprecated) SSE transport."""
-    from mcp.server.sse import SseServerTransport
-    from starlette.applications import Starlette
-    from starlette.responses import Response
-    from starlette.routing import Mount, Route
-
-    sse = SseServerTransport("/messages/")
-
-    async def handle_sse(request: Any) -> Response:  # starlette Request — avoid heavy import
-        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
-            await server.run(streams[0], streams[1], server.create_initialization_options())
-        return Response()
-
-    return Starlette(
-        routes=[
-            Route("/sse", endpoint=handle_sse),
-            Mount("/messages/", app=sse.handle_post_message),
-        ]
-    )
-
-
 async def _serve(app: Starlette, host: str, port: int, log_level: str) -> None:
     import uvicorn
 
@@ -110,25 +80,15 @@ async def _run_streamable_http(
     await _serve(app, host, port, log_level)
 
 
-async def _run_sse(port: int, host: str, log_level: str) -> None:
-    """Run as a (deprecated) SSE server (endpoints /sse + /messages/)."""
-    server = build_server()
-    if not server._cfg.verify_ssl:
-        log.warning(_SSL_WARNING)
-    log.warning(_SSE_DEPRECATION)
-    app = _build_sse_app(server)
-    await _serve(app, host, port, log_level)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="thruk-mcp", description="Thruk MCP server.")
     parser.add_argument(
         "--transport",
-        choices=["stdio", "streamable-http", "sse"],
+        choices=["stdio", "streamable-http"],
         default=None,
         help=(
             "Transport to serve. Default: stdio, or streamable-http when --listen "
-            "is given. 'sse' is deprecated."
+            "is given."
         ),
     )
     parser.add_argument(
@@ -183,18 +143,15 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(_run_stdio(args.log_level))
     else:
         port = args.listen if args.listen is not None else DEFAULT_HTTP_PORT
-        if transport == "streamable-http":
-            asyncio.run(
-                _run_streamable_http(
-                    port,
-                    args.host,
-                    args.log_level,
-                    stateless=args.stateless,
-                    json_response=args.json_response,
-                )
+        asyncio.run(
+            _run_streamable_http(
+                port,
+                args.host,
+                args.log_level,
+                stateless=args.stateless,
+                json_response=args.json_response,
             )
-        else:  # sse
-            asyncio.run(_run_sse(port, args.host, args.log_level))
+        )
     return 0
 
 

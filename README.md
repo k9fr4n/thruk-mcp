@@ -19,7 +19,7 @@ Expose Thruk's REST API to MCP-compatible clients (Claude Desktop, Dust, LibreCh
 - **Write**: schedule/delete downtimes, acknowledge & remove acks, force rechecks
 - **Escape hatch**: `thruk_query` tool to call *any* Thruk REST endpoint
 - **Multi-backend** support (Thruk federated sites): pass `backends="prod,dr"` to any tool
-- **Transports**: stdio (default), Streamable-HTTP (`--listen <port>`, endpoint `/mcp`), or deprecated SSE (`--transport sse`)
+- **Transports**: stdio (default) or Streamable-HTTP (`--listen <port>`, endpoint `/mcp`)
 - **Async httpx client** with proper error handling and TLS verification
 - Tested with `pytest` + `respx`, linted with `ruff`, packaged with `hatchling`
 
@@ -56,13 +56,7 @@ thruk-mcp --listen 8001
 # Behind a load balancer / multiple replicas, drop per-session state
 # (no sticky routing required):
 thruk-mcp --listen 8001 --stateless --json-response
-
-# Deprecated SSE transport (endpoints /sse + /messages/), for legacy clients:
-thruk-mcp --transport sse --listen 8001
 ```
-
-> SSE is deprecated in the MCP spec (superseded by Streamable-HTTP since revision
-> `2025-03-26`) and may be removed in a future release. Prefer `streamable-http`.
 
 > For local development of the project itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
