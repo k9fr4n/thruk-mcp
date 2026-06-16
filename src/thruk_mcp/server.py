@@ -367,6 +367,9 @@ from .tools import (
     thruk_hostgroup_availability as thruk_hostgroup_availability,
 )
 from .tools import (
+    thruk_hostgroup_availability_summary as thruk_hostgroup_availability_summary,
+)
+from .tools import (
     thruk_list_alerts as thruk_list_alerts,
 )
 from .tools import (

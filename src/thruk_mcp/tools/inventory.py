@@ -407,6 +407,186 @@ async def thruk_hostgroup_availability(
     return _tool_response(meta)
 
 
+# Cap the verbose ``below_threshold`` list so a 380-host group can't spill the
+# whole parc back into the LLM context (the entire point of issue #319).
+_BELOW_THRESHOLD_CAP = 50
+
+
+def _row_id(row: dict[str, Any], type: str) -> str:
+    """Best-effort identifier for an availability row (host or service)."""
+    if type == "services":
+        host = row.get("host_name") or row.get("name") or "?"
+        desc = row.get("description") or row.get("service_description") or "?"
+        return f"{host}/{desc}"
+    return str(row.get("name") or row.get("host_name") or "?")
+
+
+def _summarize_availability(
+    rows: list[dict[str, Any]], type: str, threshold: float
+) -> dict[str, Any]:
+    """Aggregate per-object Thruk availability rows into a single group rollup.
+
+    The headline ``availability_percent`` is **time-weighted**: it is computed
+    from the raw second counters (``time_up`` etc.) summed across every object,
+    dividing by the determinate time only (indeterminate buckets are excluded
+    from the SLA denominator, the usual reporting convention). It falls back to
+    the mean of the ``*_percent`` columns when second counters are absent.
+    """
+    good: str
+    bad: tuple[str, ...]
+    if type == "services":
+        good = "time_ok"
+        bad = ("time_warning", "time_critical", "time_unknown")
+        pct_key = "time_ok_percent"
+    else:
+        good = "time_up"
+        bad = ("time_down", "time_unreachable")
+        pct_key = "time_up_percent"
+    indet = (
+        "time_indeterminate_nodata",
+        "time_indeterminate_notrunning",
+        "time_indeterminate_outside_timeperiod",
+    )
+
+    def _f(row: dict[str, Any], key: str) -> float:
+        try:
+            return float(row.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    sum_good = sum_bad = sum_indet = 0.0
+    pct_total = 0.0
+    pct_n = 0
+    have_seconds = False
+    worst: dict[str, Any] | None = None
+    best: dict[str, Any] | None = None
+    below: list[dict[str, Any]] = []
+
+    for row in rows:
+        g = _f(row, good)
+        b = sum(_f(row, k) for k in bad)
+        i = sum(_f(row, k) for k in indet)
+        if g or b or i:
+            have_seconds = True
+        sum_good += g
+        sum_bad += b
+        sum_indet += i
+
+        pct = _f(row, pct_key) if pct_key in row else (100.0 * g / (g + b) if (g + b) else None)
+        if pct is not None:
+            pct_total += pct
+            pct_n += 1
+            id_key = "object" if type == "services" else "host"
+            obj = {id_key: _row_id(row, type), "percent": round(pct, 4)}
+            if worst is None or pct < worst["percent"]:
+                worst = obj
+            if best is None or pct > best["percent"]:
+                best = obj
+            if pct < threshold:
+                below.append(obj)
+
+    determinate = sum_good + sum_bad
+    if have_seconds and determinate > 0:
+        availability_percent = round(100.0 * sum_good / determinate, 4)
+    elif pct_n:
+        availability_percent = round(pct_total / pct_n, 4)
+    else:
+        availability_percent = None
+
+    total_time = sum_good + sum_bad + sum_indet
+    if have_seconds and total_time > 0:
+        good_label = "ok" if type == "services" else "up"
+        distribution = {
+            f"{good_label}_percent": round(100.0 * sum_good / total_time, 4),
+            "problem_percent": round(100.0 * sum_bad / total_time, 4),
+            "indeterminate_percent": round(100.0 * sum_indet / total_time, 4),
+        }
+    else:
+        distribution = None
+
+    below.sort(key=lambda o: o["percent"])
+    summary: dict[str, Any] = {
+        "objects" if type == "services" else "hosts": len(rows),
+        "availability_percent": availability_percent,
+        "worst": worst,
+        "best": best,
+        "threshold_percent": threshold,
+        "below_threshold": len(below),
+        "below_threshold_objects": below[:_BELOW_THRESHOLD_CAP],
+    }
+    if len(below) > _BELOW_THRESHOLD_CAP:
+        summary["below_threshold_truncated"] = len(below) - _BELOW_THRESHOLD_CAP
+    if distribution is not None:
+        summary["distribution"] = distribution
+    return summary
+
+
+async def thruk_hostgroup_availability_summary(
+    hostgroup: str,
+    type: str = "hosts",
+    since: str | None = "-7d",
+    until: str | None = None,
+    timeperiod: str | None = None,
+    with_downtimes: bool = False,
+    include_soft_states: bool = False,
+    threshold: float = 99.0,
+    backends: str | None = None,
+) -> str:
+    """Aggregated SLA rollup for a hostgroup — one summary line, not 380 rows.
+
+    Unlike ``thruk_hostgroup_availability`` (one entry per host, which saturates
+    context on big groups), this returns a single rolled-up figure suitable for an
+    incident/management report:
+
+    - ``availability_percent`` — **time-weighted** mean across the group (computed
+      from raw second counters; indeterminate time excluded from the denominator).
+    - ``worst`` / ``best`` — the outlier host/service with its percentage.
+    - ``below_threshold`` — how many objects fell under ``threshold`` (default 99 %),
+      plus ``below_threshold_objects`` (capped at 50, worst first).
+    - ``distribution`` — up/problem/indeterminate split of total measured time.
+
+    ``type``: ``"hosts"`` (default) or ``"services"``.
+    ``since`` / ``until`` accept Thruk relative times (``"-7d"``) or ISO datetimes;
+    ``timeperiod`` (``"lastmonth"``, ``"last24hours"``…) overrides them.
+    ``with_downtimes=True`` counts scheduled downtime as an outage;
+    ``include_soft_states=True`` includes soft state changes.
+    """
+    if type not in ("hosts", "services"):
+        return _tool_response({"error": f"Invalid type {type!r}. Must be 'hosts' or 'services'."})
+
+    params: dict[str, Any] = {"type": type}
+    if timeperiod:
+        params["timeperiod"] = timeperiod
+    else:
+        ts_since = _parse_thruk_time(since)
+        ts_until = _parse_thruk_time(until) if until else _now_utc_epoch()
+        if ts_since is not None:
+            params["start"] = ts_since
+        if ts_until is not None:
+            params["end"] = ts_until
+    if with_downtimes:
+        params["withdowntimes"] = 1
+    if include_soft_states:
+        params["includesoftstates"] = 1
+
+    data = await _get_client().get(
+        f"/hostgroups/{_seg(hostgroup)}/availability",
+        params=params,
+        backends=_backends(backends),
+    )
+    raw = data if isinstance(data, list) else ([data] if data else [])
+    rows: list[dict[str, Any]] = [r for r in raw if isinstance(r, dict)]
+
+    meta: dict[str, Any] = {"hostgroup": hostgroup, "type": type}
+    if timeperiod:
+        meta["timeperiod"] = timeperiod
+    else:
+        meta["since"] = since
+        meta["until"] = until
+    meta.update(_summarize_availability(rows, type, threshold))
+    return _tool_response(meta)
+
+
 async def thruk_list_hostgroups(
     limit: int = 100,
     offset: int = 0,
@@ -995,6 +1175,63 @@ INVENTORY_REGISTRY: list[ToolSpec] = [
         ),
     ),
     ToolSpec(
+        name="thruk_hostgroup_availability_summary",
+        fn=thruk_hostgroup_availability_summary,
+        schema=_s(
+            "hostgroup",
+            hostgroup=_str("Hostgroup name"),
+            type={
+                "type": "string",
+                "default": "hosts",
+                "enum": ["hosts", "services"],
+                "description": (
+                    "What to roll up: 'hosts' (default, time_up) or 'services' (time_ok)."
+                ),
+            },
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-7d",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-7d", "-1m") '
+                    'or ISO datetime ("2026-05-01 00:00:00"). Default: last 7 days. '
+                    "Ignored when ``timeperiod`` is set."
+                ),
+            },
+            until={
+                **_OPT_STR,
+                "description": (
+                    "End of analysis window (same formats as ``since``). "
+                    "Defaults to now. Ignored when ``timeperiod`` is set."
+                ),
+            },
+            timeperiod={
+                **_OPT_STR,
+                "description": (
+                    "Thruk-native time period shortcut: "
+                    '"last24hours", "lastweek", "lastmonth", "thismonth", etc. '
+                    "Overrides ``since``/``until`` when provided."
+                ),
+            },
+            with_downtimes=_bool(
+                "Count scheduled downtime periods as outages (withdowntimes=1).",
+                default=False,
+            ),
+            include_soft_states=_bool(
+                "Include soft state changes in calculations (includesoftstates=1).",
+                default=False,
+            ),
+            threshold={
+                "type": "number",
+                "default": 99.0,
+                "description": (
+                    "SLA threshold in percent; objects below it are counted in "
+                    "``below_threshold`` (default 99.0)."
+                ),
+            },
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
         name="thruk_list_hostgroups",
         fn=thruk_list_hostgroups,
         schema=_s(
@@ -1096,6 +1333,7 @@ __all__ = [
     "thruk_get_service",
     "thruk_host_availability",
     "thruk_hostgroup_availability",
+    "thruk_hostgroup_availability_summary",
     "thruk_list_comments",
     "thruk_list_contacts",
     "thruk_list_downtimes",

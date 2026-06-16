@@ -136,10 +136,11 @@ def test_registry_tool_count() -> None:
               thruk_perfdata_near_threshold (perfdata expose, issue #284)
          → +1 thruk_reliability_report (MTTR/MTBF/incident metrics, issue #286)
          → +1 thruk_stale_checks (stale/overdue check-execution detector, issue #287)
-      = 57
+         → +1 thruk_hostgroup_availability_summary (aggregated SLA rollup, issue #319)
+      = 58
     """
-    assert len(TOOL_REGISTRY) == 57, (
-        f"Expected 57 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 58, (
+        f"Expected 58 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 

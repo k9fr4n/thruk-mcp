@@ -498,6 +498,86 @@
     }
   },
   {
+    "name": "thruk_hostgroup_availability_summary",
+    "description": "Aggregated SLA rollup for a hostgroup — one summary line instead of one row per host (avoids context spill on big groups). Returns time-weighted availability_percent, worst/best object, below_threshold count + capped list (worst first), and an up/problem/indeterminate distribution. type: hosts (default) or services. since/until accept Thruk relative times or ISO datetimes; timeperiod overrides them. threshold defaults to 99.0.",
+    "inputSchema": {
+      "type": "object",
+      "required": [
+        "hostgroup"
+      ],
+      "properties": {
+        "hostgroup": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "default": "hosts",
+          "enum": [
+            "hosts",
+            "services"
+          ]
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-7d"
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timeperiod": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "with_downtimes": {
+          "type": "boolean",
+          "default": false
+        },
+        "include_soft_states": {
+          "type": "boolean",
+          "default": false
+        },
+        "threshold": {
+          "type": "number",
+          "default": 99.0
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_list_hostgroups",
     "description": "List host groups. Default columns return name/alias and host/service counts only.",
     "inputSchema": {
