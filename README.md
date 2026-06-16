@@ -56,6 +56,10 @@ thruk-mcp --listen 8001
 # Behind a load balancer / multiple replicas, drop per-session state
 # (no sticky routing required):
 thruk-mcp --listen 8001 --stateless --json-response
+
+# Multi-tenant: each request brings its own Thruk credentials via headers
+# (no fixed THRUK_API_KEY at boot). Requires --stateless; serve over TLS.
+thruk-mcp --listen 8001 --stateless --header-auth
 ```
 
 > For local development of the project itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -251,6 +255,7 @@ client UI:
 | `THRUK_ENABLED_TOOLS`     |         | Allowlist of tool names. CSV with fnmatch wildcards. Empty = all      |
 | `THRUK_AUDIT_LOG`         | `true`  | Emit one JSON audit line on stderr per write tool invocation          |
 | `THRUK_MAX_CONCURRENT`    | `0`     | Cap of concurrent in-flight HTTP requests. 0 = unlimited              |
+| `THRUK_HTTP_HEADER_AUTH`  | `false` | Streamable-HTTP multi-tenant: take credentials from per-request headers (= `--header-auth`) |
 
 ## Security
 
@@ -276,6 +281,25 @@ client UI:
 - **Rate limit** — `THRUK_MAX_CONCURRENT=8` caps in-flight HTTP requests with
   an `asyncio.Semaphore`. Combined with the v0.3 TTL cache, this protects the
   Thruk core from an LLM that loops on tools or chains them aggressively.
+- **Header-auth multi-tenant** — run `thruk-mcp --listen 8001 --stateless
+  --header-auth` (or `THRUK_HTTP_HEADER_AUTH=1`) to serve many users from one
+  process, each with their own Thruk credentials supplied **per request** via
+  headers:
+
+  | Header              | Maps to            | Required |
+  | ------------------- | ------------------ | -------- |
+  | `X-Thruk-Auth-Key`  | `api_key`          | **yes** (else `401`) |
+  | `X-Thruk-Base-Url`  | `base_url`         | no (falls back to `THRUK_BASE_URL`) |
+  | `X-Thruk-Auth-User` | `auth_user`        | no |
+  | `X-Thruk-Backends`  | `default_backends` (CSV) | no |
+
+  The server boots without `THRUK_API_KEY`. Only credential/endpoint fields come
+  from headers — `THRUK_READ_ONLY`, `THRUK_ENABLED_TOOLS` and `THRUK_AUDIT_LOG`
+  remain **server-owned**, so a tenant cannot grant itself write access or
+  silence the audit log (which still attributes each call to the tenant's
+  `auth_user`). Per-tenant HTTP clients are pooled in a bounded LRU cache. The
+  API key travels in a header, so **serve only over TLS** (terminate TLS in
+  front, or behind a trusted reverse proxy). Requires `--stateless`.
 
 ## Development
 

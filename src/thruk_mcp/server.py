@@ -125,6 +125,9 @@ from .helpers import (
 from .helpers import (
     _build_cv_params as _build_cv_params,
 )
+from .helpers import (
+    _cfg_var as _cfg_var,
+)
 
 # Shared helpers + inventory tools moved out of server.py (issue #258).
 # Re-exported so ``from thruk_mcp.server import <name>`` keeps working.
@@ -145,6 +148,9 @@ from .helpers import (
 )
 from .helpers import (
     _format_state_label as _format_state_label,
+)
+from .helpers import (
+    _get_cfg as _get_cfg,
 )
 from .helpers import (
     _list_params as _list_params,
@@ -664,19 +670,20 @@ class ThrukMCPServer:
         fn = self._enabled.get(name)
         if fn is None:
             raise ValueError(f"Unknown or disabled tool: {name!r}")
+        # Audit attribution uses the per-request config (the calling tenant's
+        # auth_user in header-auth mode); falls back to the server's base
+        # config everywhere else. Whether to audit at all stays a server-level
+        # decision (self._cfg.audit_log) — a tenant cannot disable it.
+        cfg = _get_cfg(self._cfg) or self._cfg
         try:
             result = await fn(**arguments)
         except TypeError as exc:
             if self._cfg.audit_log and _is_auditable_write(name, arguments):
-                audit.log_call(
-                    name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
-                )
+                audit.log_call(name, arguments, user=cfg.auth_user, status="error", error=str(exc))
             raise ValueError(f"Invalid arguments for {name!r}: {exc}") from exc
         except (ThrukError, ValueError) as exc:
             if self._cfg.audit_log and _is_auditable_write(name, arguments):
-                audit.log_call(
-                    name, arguments, user=self._cfg.auth_user, status="error", error=str(exc)
-                )
+                audit.log_call(name, arguments, user=cfg.auth_user, status="error", error=str(exc))
             # Return as tool-level error content instead of raising.
             # Raising here causes the low-level MCP SDK to emit a protocol-level
             # McpError(-32603) which the client shows as the generic
@@ -686,7 +693,7 @@ class ThrukMCPServer:
             # escape to the MCP protocol layer as an unhandled exception.
             return [TextContent(type="text", text=audit.scrub(f"Error: {exc}"))]
         if self._cfg.audit_log and _is_auditable_write(name, arguments):
-            audit.log_call(name, arguments, user=self._cfg.auth_user, status="ok")
+            audit.log_call(name, arguments, user=cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
 
     async def run(self, read_stream: Any, write_stream: Any, init_options: Any = None) -> None:
@@ -911,20 +918,27 @@ class ThrukMCPServer:
         )
 
 
-def build_server(config: ThrukConfig | None = None) -> ThrukMCPServer:
+def build_server(
+    config: ThrukConfig | None = None, *, require_api_key: bool = True
+) -> ThrukMCPServer:
     """Build the MCP server with all Thruk tools registered.
 
     Uses mcp.server.Server directly (not FastMCP) so that:
     - inputSchema is defined explicitly — no annotation introspection
     - arguments arrive as a raw dict in call_tool — no Pydantic model
     - the Docker MCP Gateway cannot silently strip arguments
+
+    ``require_api_key=False`` lets the server boot without ``THRUK_API_KEY`` in
+    header-auth multi-tenant mode, where each request supplies its own key.
     """
-    cfg = config or ThrukConfig.from_env()
+    cfg = config or ThrukConfig.from_env(require_api_key=require_api_key)
     client = ThrukClient(cfg)
-    # Bind the new client to the current context so that all tool coroutines
-    # spawned from this event-loop context reach the right instance.  Each
-    # build_server() call operates independently — no shared module-level state.
+    # Bind the new client + config to the current context so that all tool
+    # coroutines spawned from this event-loop context reach the right instance.
+    # Each build_server() call operates independently — no shared module-level
+    # state.  In header-auth mode the middleware overrides both vars per request.
     _client_var.set(client)
+    _cfg_var.set(cfg)
 
     audit.configure(enabled=cfg.audit_log)
 

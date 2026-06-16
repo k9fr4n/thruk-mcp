@@ -24,6 +24,7 @@ from .filters import (
 
 if TYPE_CHECKING:
     from .client import ThrukClient
+    from .config import ThrukConfig
 
 # ---------------------------------------------------------------------------
 # Module-level client accessor (shared by server.py and tools/* submodules)
@@ -48,6 +49,24 @@ def _get_client() -> ThrukClient:
         raise RuntimeError(
             "thruk-mcp: server not initialised — call build_server() first."
         ) from exc
+
+
+# Per-context active config. Set by build_server() and, in header-auth
+# multi-tenant mode, overridden per request by the middleware so that audit
+# attribution (auth_user) reflects the calling tenant. Mirrors _client_var.
+_cfg_var: contextvars.ContextVar[ThrukConfig] = contextvars.ContextVar("thruk_mcp_cfg")
+
+
+def _get_cfg(default: ThrukConfig | None = None) -> ThrukConfig | None:
+    """Return the ThrukConfig bound to the current async context, or ``default``.
+
+    Never raises — callers pass the server's base config as the fallback so the
+    behaviour is unchanged outside header-auth mode.
+    """
+    try:
+        return _cfg_var.get()
+    except LookupError:
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -494,10 +513,12 @@ __all__ = [
     "_RESOLVE_HOSTS_HARD_LIMIT",
     "_backends",
     "_build_cv_params",
+    "_cfg_var",
     "_client_var",
     "_downtime_payload",
     "_duration_human",
     "_format_state_label",
+    "_get_cfg",
     "_get_client",
     "_list_params",
     "_now_utc_epoch",

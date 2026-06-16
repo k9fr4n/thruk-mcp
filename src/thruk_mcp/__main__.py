@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.stdio import stdio_server
 
+from .config import _envbool
 from .server import build_server
 
 if TYPE_CHECKING:
@@ -38,8 +39,15 @@ async def _run_stdio(log_level: str) -> None:
         )
 
 
-def _build_streamable_app(server: Any, *, stateless: bool, json_response: bool) -> Starlette:
-    """Build the Starlette app exposing the Streamable-HTTP endpoint at /mcp."""
+def _build_streamable_app(
+    server: Any, *, stateless: bool, json_response: bool, header_auth: bool = False
+) -> Starlette:
+    """Build the Starlette app exposing the Streamable-HTTP endpoint at /mcp.
+
+    When ``header_auth`` is set, the /mcp mount is wrapped in
+    :class:`HeaderAuthMiddleware` so each request's ``X-Thruk-*`` headers select
+    the tenant credentials, and the per-tenant client cache is closed on shutdown.
+    """
     from contextlib import asynccontextmanager
 
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -55,12 +63,24 @@ def _build_streamable_app(server: Any, *, stateless: bool, json_response: bool) 
     async def handle_mcp(scope: Any, receive: Any, send: Any) -> None:
         await session_manager.handle_request(scope, receive, send)
 
+    mount_app: Any = handle_mcp
+    cache = None
+    if header_auth:
+        from .multitenant import ClientCache, HeaderAuthMiddleware
+
+        cache = ClientCache()
+        mount_app = HeaderAuthMiddleware(handle_mcp, base_cfg=server._cfg, cache=cache)
+
     @asynccontextmanager
     async def lifespan(_app: Starlette) -> Any:
         async with session_manager.run():
-            yield
+            try:
+                yield
+            finally:
+                if cache is not None:
+                    await cache.aclose_all()
 
-    return Starlette(routes=[Mount("/mcp", app=handle_mcp)], lifespan=lifespan)
+    return Starlette(routes=[Mount("/mcp", app=mount_app)], lifespan=lifespan)
 
 
 async def _serve(app: Starlette, host: str, port: int, log_level: str) -> None:
@@ -71,13 +91,29 @@ async def _serve(app: Starlette, host: str, port: int, log_level: str) -> None:
 
 
 async def _run_streamable_http(
-    port: int, host: str, log_level: str, *, stateless: bool, json_response: bool
+    port: int,
+    host: str,
+    log_level: str,
+    *,
+    stateless: bool,
+    json_response: bool,
+    header_auth: bool = False,
 ) -> None:
     """Run as a Streamable-HTTP server (endpoint /mcp)."""
-    server = build_server()
+    # In header-auth mode the server boots without THRUK_API_KEY; each request
+    # brings its own via headers. The base config still supplies the shared,
+    # server-owned knobs (read_only, enabled_tools, audit_log, pools).
+    server = build_server(require_api_key=not header_auth)
     if not server._cfg.verify_ssl:
         log.warning(_SSL_WARNING)
-    app = _build_streamable_app(server, stateless=stateless, json_response=json_response)
+    if header_auth:
+        log.warning(
+            "header-auth mode: Thruk credentials are read from per-request headers. "
+            "Serve only over TLS — credentials travel in X-Thruk-Auth-Key."
+        )
+    app = _build_streamable_app(
+        server, stateless=stateless, json_response=json_response, header_auth=header_auth
+    )
     await _serve(app, host, port, log_level)
 
 
@@ -116,6 +152,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--header-auth",
+        action="store_true",
+        default=_envbool("THRUK_HTTP_HEADER_AUTH", False),
+        help=(
+            "Multi-tenant Streamable-HTTP: take Thruk credentials per request from "
+            "X-Thruk-Auth-Key / X-Thruk-Base-Url / X-Thruk-Auth-User / X-Thruk-Backends "
+            "headers instead of THRUK_API_KEY. Requires --stateless. TLS is mandatory "
+            "(credentials travel in headers). Env: THRUK_HTTP_HEADER_AUTH=1."
+        ),
+    )
+    parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     args = parser.parse_args(argv)
@@ -135,6 +182,14 @@ def main(argv: list[str] | None = None) -> int:
             "--stateless / --json-response are only valid with --transport streamable-http"
         )
 
+    if args.header_auth:
+        if transport != "streamable-http":
+            parser.error("--header-auth requires --transport streamable-http")
+        if not args.stateless:
+            # Headers are only reliably present per request in stateless mode;
+            # in stateful mode they bind once at session init (see plan/issue).
+            parser.error("--header-auth requires --stateless")
+
     if transport == "stdio":
         if args.listen is not None:
             parser.error("--listen is not valid with --transport stdio")
@@ -148,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.log_level,
                 stateless=args.stateless,
                 json_response=args.json_response,
+                header_auth=args.header_auth,
             )
         )
     return 0

@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 __all__ = ["ThrukConfig"]
+
+# Inbound HTTP headers (lower-cased) that may override credential / endpoint
+# fields per request in header-auth multi-tenant mode. Security knobs
+# (read_only, enabled_tools, audit_log, pools) are deliberately NOT here — a
+# client must never be able to escalate its own privileges via a header.
+HEADER_AUTH_KEY = "x-thruk-auth-key"
+HEADER_BASE_URL = "x-thruk-base-url"
+HEADER_AUTH_USER = "x-thruk-auth-user"
+HEADER_BACKENDS = "x-thruk-backends"
 
 # Sentinel values injected by orchestrators (e.g. Docker MCP Gateway) when an
 # optional secret is declared in the catalog but left unbound by the operator.
@@ -92,10 +103,12 @@ class ThrukConfig:
     max_keepalive_connections: int = 10
 
     @classmethod
-    def from_env(cls) -> ThrukConfig:
-        # THRUK_API_KEY is mandatory — also reject the placeholder.
+    def from_env(cls, *, require_api_key: bool = True) -> ThrukConfig:
+        # THRUK_API_KEY is mandatory — also reject the placeholder — unless the
+        # server runs in header-auth mode, where each request brings its own key
+        # via the X-Thruk-Auth-Key header (require_api_key=False at boot).
         api_key = _str_env("THRUK_API_KEY").strip()
-        if not api_key:
+        if not api_key and require_api_key:
             raise RuntimeError(
                 "THRUK_API_KEY is required. Generate one from the Thruk user profile page "
                 "(see https://www.thruk.org/documentation/rest.html#api-key)."
@@ -147,3 +160,35 @@ class ThrukConfig:
         if self.auth_user:
             h["X-Thruk-Auth-User"] = self.auth_user
         return h
+
+    def with_overrides(self, **changes: Any) -> ThrukConfig:
+        """Return a copy with the given fields replaced (frozen dataclass)."""
+        return replace(self, **changes)
+
+    @classmethod
+    def from_headers(cls, base: ThrukConfig, headers: Mapping[str, str]) -> ThrukConfig:
+        """Derive a per-request config from inbound ``X-Thruk-*`` headers.
+
+        ``headers`` must be a mapping with **lower-cased** keys. Only the
+        credential / endpoint fields are overridden; every security knob
+        (``read_only``, ``enabled_tools``, ``audit_log``, pool sizes) is
+        inherited from ``base`` so a client cannot grant itself write access or
+        disable the audit log through a header.
+
+        Raises ``ValueError`` when no ``X-Thruk-Auth-Key`` is supplied — the
+        middleware turns that into an HTTP 401.
+        """
+        api_key = (headers.get(HEADER_AUTH_KEY) or "").strip()
+        if not api_key:
+            raise ValueError(f"missing required header {HEADER_AUTH_KEY!r}")
+        overrides: dict[str, Any] = {"api_key": api_key}
+        base_url = (headers.get(HEADER_BASE_URL) or "").strip()
+        if base_url:
+            overrides["base_url"] = base_url.rstrip("/")
+        auth_user = (headers.get(HEADER_AUTH_USER) or "").strip()
+        if auth_user:
+            overrides["auth_user"] = auth_user
+        backends = (headers.get(HEADER_BACKENDS) or "").strip()
+        if backends:
+            overrides["default_backends"] = _split_csv(backends)
+        return base.with_overrides(**overrides)
