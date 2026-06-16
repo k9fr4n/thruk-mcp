@@ -2290,8 +2290,10 @@ async def test_top_noisy_hosts_since_until(mocked_server) -> None:
         {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59"},
     )
     p = post_params(router.calls.last)
-    assert p["time[gte]"] == "2026-05-20 00:00:00"
-    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    # Issue #317: absolute ISO bounds are normalised to epoch on the wire so the
+    # /logs time filter matches (relative bounds pass through verbatim).
+    assert p["time[gte]"] == "1779235200"  # 2026-05-20 00:00:00 UTC
+    assert p["time[lte]"] == "1779321599"  # 2026-05-20 23:59:59 UTC
     payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
@@ -2427,8 +2429,10 @@ async def test_top_noisy_services_since_until(mocked_server) -> None:
         {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59"},
     )
     p = post_params(router.calls.last)
-    assert p["time[gte]"] == "2026-05-20 00:00:00"
-    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    # Issue #317: absolute ISO bounds are normalised to epoch on the wire so the
+    # /logs time filter matches (relative bounds pass through verbatim).
+    assert p["time[gte]"] == "1779235200"  # 2026-05-20 00:00:00 UTC
+    assert p["time[lte]"] == "1779321599"  # 2026-05-20 23:59:59 UTC
     payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"
@@ -2644,8 +2648,10 @@ async def test_flap_summary_since_until(mocked_server) -> None:
         {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59", "min_transitions": 2},
     )
     p = post_params(router.calls.last)
-    assert p["time[gte]"] == "2026-05-20 00:00:00"
-    assert p["time[lte]"] == "2026-05-20 23:59:59"
+    # Issue #317: absolute ISO bounds are normalised to epoch on the wire so the
+    # /logs time filter matches (relative bounds pass through verbatim).
+    assert p["time[gte]"] == "1779235200"  # 2026-05-20 00:00:00 UTC
+    assert p["time[lte]"] == "1779321599"  # 2026-05-20 23:59:59 UTC
     payload = json.loads(result[0].text)
     assert payload["since"] == "2026-05-20 00:00:00"
     assert payload["until"] == "2026-05-20 23:59:59"

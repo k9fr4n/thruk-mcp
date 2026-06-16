@@ -64,6 +64,7 @@ from ..helpers import (
     _backends,
     _build_cv_params,
     _duration_human,
+    _epoch_filter_value,
     _format_state_label,
     _get_client,
     _list_params,
@@ -178,9 +179,9 @@ async def _fetch_logs(
     if service:
         params["service_description"] = service
     if since:
-        params["time[gte]"] = since
+        params["time[gte]"] = _epoch_filter_value(since)
     if until:
-        params["time[lte]"] = until
+        params["time[lte]"] = _epoch_filter_value(until)
     if message_regex:
         params["message[regex]"] = message_regex
     host_truncated = False
@@ -399,9 +400,9 @@ async def thruk_top_noisy_hosts(
         return _tool_response({"error": errs[0]})
 
     if since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     rows, warnings, hit_limit = await _aggregate_alerts(
         type_regex="^HOST ALERT",
@@ -477,9 +478,9 @@ async def thruk_top_noisy_services(
         return _tool_response({"error": errs[0]})
 
     if since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     rows, warnings, hit_limit = await _aggregate_alerts(
         type_regex="^SERVICE ALERT",
@@ -563,9 +564,9 @@ async def thruk_flap_summary(
         return _tool_response({"error": errs[0]})
 
     if since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     # Step 1 (issue #312): find candidate objects via server-side aggregation.
     # An object that fired fewer than ``min_transitions`` alerts cannot possibly
@@ -986,9 +987,9 @@ async def thruk_recurring_problems(
         return _tool_response({"error": errs[0]})
 
     if since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     # Server-side aggregation (issue #312): exact per-object counts across all
     # federated backends, no 10 000-row truncation. ``state[!=]=0`` (recovery
@@ -1110,9 +1111,9 @@ async def thruk_reliability_report(
     # class=0 system messages (type=NULL) cannot leak past the regex filter.
     extra["class"] = "1"
     if since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     # Pre-check (issue #312): incident reconstruction needs the ordered HARD-state
     # sequence, so this tool cannot be aggregated server-side. A busy window can
@@ -1214,9 +1215,9 @@ async def thruk_list_logs(
         return _tool_response({"error": errs[0]})
     # since/until defaults only when not overridden by filter
     if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
     data, warnings = await _fetch_logs(
         "/logs",
         None,
@@ -1280,9 +1281,9 @@ async def thruk_list_alerts(
     # cheap and reliable cut. See issue #176.
     extra["class"] = "1"
     if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
     data, warnings = await _fetch_logs(
         "/logs",
         None,
@@ -1329,9 +1330,9 @@ async def thruk_list_notifications(
         return _tool_response({"error": errs[0]})
     extra["class"] = "3"
     if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
     data, warnings = await _fetch_logs(
         "/logs",
         None,
@@ -1413,9 +1414,9 @@ async def thruk_notification_summary(
 
     extra["class"] = "3"
     if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     # group_by=state needs service_description to tell a host notification
     # (HOST_STATES) from a service one (SERVICE_STATES) — issue #282.
@@ -1517,7 +1518,7 @@ async def thruk_recent_events(
         # ``type=NULL`` from the regex filter).
         extra["class"] = "1"
     if "time[gte]" not in extra:
-        extra["time[gte]"] = f"-{hours}h"
+        extra["time[gte]"] = _epoch_filter_value(f"-{hours}h")
     data, warnings = await _fetch_logs(
         "/logs",
         None,
