@@ -35,7 +35,7 @@ THRUK_BASE_URL=http://localhost:8080/demo \
   pytest -m integration
 ```
 
-Run the server locally: `thruk-mcp` (stdio) or `thruk-mcp --listen 8001` (HTTP/SSE). Needs `THRUK_BASE_URL` + `THRUK_API_KEY` (copy `.env.example` → `.env`).
+Run the server locally: `thruk-mcp` (stdio) or `thruk-mcp --listen 8001` (Streamable-HTTP, endpoint `/mcp`). `--transport {stdio,streamable-http,sse}` picks the transport explicitly; `--listen` alone implies `streamable-http`. SSE (`--transport sse`, `/sse` + `/messages/`) is deprecated. `--stateless`/`--json-response` apply to streamable-http only (transport wiring lives in `__main__.py`). Needs `THRUK_BASE_URL` + `THRUK_API_KEY` (copy `.env.example` → `.env`).
 
 ## Architecture
 

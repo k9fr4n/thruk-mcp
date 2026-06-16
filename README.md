@@ -19,7 +19,7 @@ Expose Thruk's REST API to MCP-compatible clients (Claude Desktop, Dust, LibreCh
 - **Write**: schedule/delete downtimes, acknowledge & remove acks, force rechecks
 - **Escape hatch**: `thruk_query` tool to call *any* Thruk REST endpoint
 - **Multi-backend** support (Thruk federated sites): pass `backends="prod,dr"` to any tool
-- **Two transports**: stdio (default) or Streamable-HTTP (`--listen <port>`)
+- **Transports**: stdio (default) or Streamable-HTTP (`--listen <port>`, endpoint `/mcp`)
 - **Async httpx client** with proper error handling and TLS verification
 - Tested with `pytest` + `respx`, linted with `ruff`, packaged with `hatchling`
 
@@ -49,8 +49,13 @@ pip install thruk-mcp        # or: pipx install thruk-mcp
 # stdio mode (for Claude Desktop, LibreChat, etc.)
 thruk-mcp
 
-# HTTP mode
+# Streamable-HTTP mode — endpoint http://localhost:8001/mcp
 thruk-mcp --listen 8001
+# equivalently: thruk-mcp --transport streamable-http --listen 8001
+
+# Behind a load balancer / multiple replicas, drop per-session state
+# (no sticky routing required):
+thruk-mcp --listen 8001 --stateless --json-response
 ```
 
 > For local development of the project itself, see [CONTRIBUTING.md](CONTRIBUTING.md).
