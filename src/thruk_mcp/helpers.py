@@ -443,6 +443,48 @@ def _parse_thruk_time(value: str | None) -> int | None:
     return None
 
 
+def _epoch_filter_value(value: str | None) -> str | None:
+    """Normalise an absolute since/until bound to epoch for ``time[gte]``/``time[lte]``.
+
+    Thruk's ``/logs`` REST filter accepts epoch integers and relative
+    expressions (``-4h``) but silently matches nothing for a bare ISO datetime
+    (``2026-06-16 14:46:00``), so absolute windows returned empty results while
+    the equivalent relative window worked — issue #317.
+
+    Only absolute datetime strings are rewritten to epoch (via
+    :func:`_parse_thruk_time`). Relative expressions and bare epoch integers are
+    already understood by Thruk and pass through verbatim, as does any value
+    that cannot be parsed (so a caller never loses its filter).
+    """
+    if value is None:
+        return None
+    s = value.strip()
+    # Relative ('-4h') and bare epoch integers are resolved natively by Thruk;
+    # only the ISO-datetime case is broken, so leave the rest untouched.
+    if _THRUK_REL_RE.match(s):
+        return value
+    try:
+        int(s)
+    except ValueError:
+        pass
+    else:
+        return value
+    ts = _parse_thruk_time(s)
+    return str(ts) if ts is not None else value
+
+
+def _normalize_time_params(params: dict[str, Any]) -> None:
+    """Rewrite any ``time[gte]``/``time[lte]`` entries of *params* to epoch in place.
+
+    Used on the compiled filter output so filter-supplied ``since``/``until``
+    leaves get the same epoch normalisation as the dedicated tool parameters
+    (issue #317).
+    """
+    for key in ("time[gte]", "time[lte]"):
+        if key in params:
+            params[key] = _epoch_filter_value(params[key])
+
+
 async def _resolve_log_filter(
     filter_node: dict[str, Any] | None,
     allowed_fields: frozenset,
@@ -468,6 +510,9 @@ async def _resolve_log_filter(
     extra: dict[str, Any] = {}
     if direct_node is not None:
         extra.update(compile_filter(direct_node, "logs"))
+        # Filter-supplied since/until leaves compile to raw time[gte]/time[lte];
+        # normalise them to epoch so absolute ISO bounds match (issue #317).
+        _normalize_time_params(extra)
     if lookup_node is not None:
         lookup_params = compile_filter(lookup_node, "hosts")
         host_regex, host_truncated = await _resolve_hosts_to_regex_from_params(
@@ -517,10 +562,12 @@ __all__ = [
     "_client_var",
     "_downtime_payload",
     "_duration_human",
+    "_epoch_filter_value",
     "_format_state_label",
     "_get_cfg",
     "_get_client",
     "_list_params",
+    "_normalize_time_params",
     "_now_utc_epoch",
     "_parse_thruk_time",
     "_resolve_hosts_to_regex_from_params",

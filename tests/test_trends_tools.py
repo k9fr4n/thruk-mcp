@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 import pytest
 
 from tests.conftest import agg_rows, count_side_effect, ok
-from thruk_mcp.server import _now_utc_epoch, _parse_thruk_time
+from thruk_mcp.server import _epoch_filter_value, _now_utc_epoch, _parse_thruk_time
 from thruk_mcp.tools.history import _sum_cnt
 
 
@@ -120,6 +120,35 @@ def test_parse_thruk_time_none() -> None:
 
 def test_parse_thruk_time_unparseable() -> None:
     assert _parse_thruk_time("not-a-time") is None
+
+
+# ---------------------------------------------------------------------------
+# _epoch_filter_value — issue #317: absolute ISO since/until matched nothing on
+# /logs because Thruk needs epoch/relative, not a bare ISO datetime string.
+# ---------------------------------------------------------------------------
+
+
+def test_epoch_filter_value_iso_normalised_to_epoch() -> None:
+    """A bare ISO datetime is rewritten to its UTC epoch string."""
+    expected = str(int(datetime(2026, 5, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp()))
+    assert _epoch_filter_value("2026-05-20 00:00:00") == expected
+
+
+def test_epoch_filter_value_relative_passthrough() -> None:
+    """Relative expressions are understood by Thruk and pass through verbatim."""
+    assert _epoch_filter_value("-6h") == "-6h"
+    assert _epoch_filter_value("-7d") == "-7d"
+
+
+def test_epoch_filter_value_epoch_passthrough() -> None:
+    """A bare epoch integer is already valid and is left untouched."""
+    assert _epoch_filter_value("1779235200") == "1779235200"
+
+
+def test_epoch_filter_value_none_and_unparseable() -> None:
+    assert _epoch_filter_value(None) is None
+    # Unparseable values pass through so a caller never loses its filter.
+    assert _epoch_filter_value("not-a-time") == "not-a-time"
 
 
 def test_now_utc_epoch_is_timezone_aware() -> None:

@@ -137,3 +137,31 @@ class TestBehaviourEquivalence:
         assert len(payload["results"]) == 1
         assert payload["results"][0]["count"] == 3
         assert sorted(payload["results"][0]["hosts"]) == ["h1", "h2", "h3"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_failures_absolute_since_normalised_to_epoch(
+        self, mocked_server
+    ) -> None:
+        """Issue #317: absolute ISO since/until reach /logs as epoch, not raw ISO.
+
+        Thruk's /logs time filter silently matches nothing for a bare ISO
+        datetime, so the absolute window previously returned 0 events while the
+        equivalent relative window worked. The payload still echoes the
+        operator's original input.
+        """
+        from urllib.parse import parse_qs
+
+        mcp, router = mocked_server
+        route = router.post("https://thruk.test/r/logs").mock(return_value=ok([]))
+        result = await mcp.call_tool(
+            "thruk_concurrent_failures",
+            {"since": "2026-05-20 00:00:00", "until": "2026-05-20 23:59:59"},
+        )
+        assert route.called
+        body = parse_qs(route.calls.last.request.content.decode())
+        params = {k: v[0] for k, v in body.items()}
+        assert params["time[gte]"] == "1779235200"  # 2026-05-20 00:00:00 UTC
+        assert params["time[lte]"] == "1779321599"  # 2026-05-20 23:59:59 UTC
+        payload = json.loads(result[0].text)
+        assert payload["since"] == "2026-05-20 00:00:00"
+        assert payload["until"] == "2026-05-20 23:59:59"

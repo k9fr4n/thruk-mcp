@@ -56,6 +56,7 @@ from ..helpers import (
     _backends,
     _decode_form_value,
     _duration_human,
+    _epoch_filter_value,
     _get_client,
     _now_utc_epoch,
     _resolve_log_filter,
@@ -435,9 +436,9 @@ async def thruk_concurrent_failures(
     extra["class"] = "1"
     extra["state[gte]"] = "1"  # exclude state 0 (UP / recovery)
     if "time[gte]" not in extra and since:
-        extra["time[gte]"] = since
+        extra["time[gte]"] = _epoch_filter_value(since)
     if "time[lte]" not in extra and until:
-        extra["time[lte]"] = until
+        extra["time[lte]"] = _epoch_filter_value(until)
 
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
