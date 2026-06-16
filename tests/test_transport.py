@@ -62,13 +62,20 @@ def test_listen_alone_promotes_to_streamable_http() -> None:
     """--listen without --transport serves Streamable-HTTP."""
     stdio, shttp = _dispatch(["--listen", "8001"])
     stdio.assert_not_called()
-    shttp.assert_called_once_with(8001, "0.0.0.0", "INFO", stateless=False, json_response=False)
+    shttp.assert_called_once_with(
+        8001, "0.0.0.0", "INFO", stateless=False, json_response=False, header_auth=False
+    )
 
 
 def test_streamable_http_default_port() -> None:
     _stdio, shttp = _dispatch(["--transport", "streamable-http"])
     shttp.assert_called_once_with(
-        m.DEFAULT_HTTP_PORT, "0.0.0.0", "INFO", stateless=False, json_response=False
+        m.DEFAULT_HTTP_PORT,
+        "0.0.0.0",
+        "INFO",
+        stateless=False,
+        json_response=False,
+        header_auth=False,
     )
 
 
@@ -85,7 +92,9 @@ def test_streamable_http_flags_and_host() -> None:
             "--json-response",
         ]
     )
-    shttp.assert_called_once_with(9000, "127.0.0.1", "INFO", stateless=True, json_response=True)
+    shttp.assert_called_once_with(
+        9000, "127.0.0.1", "INFO", stateless=True, json_response=True, header_auth=False
+    )
 
 
 def test_listen_with_stdio_is_error() -> None:
@@ -139,7 +148,9 @@ async def test_run_streamable_http_passes_flags_and_serves(caplog) -> None:
     ):
         await m._run_streamable_http(8001, "0.0.0.0", "INFO", stateless=True, json_response=True)
 
-    build_app.assert_called_once_with(fake_server, stateless=True, json_response=True)
+    build_app.assert_called_once_with(
+        fake_server, stateless=True, json_response=True, header_auth=False
+    )
     serve.assert_awaited_once_with(fake_app, "0.0.0.0", 8001, "INFO")
     # verify_ssl=False must surface the SSL warning.
     msgs = [r.message for r in caplog.records]
