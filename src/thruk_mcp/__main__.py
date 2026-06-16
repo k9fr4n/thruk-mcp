@@ -25,6 +25,7 @@ _SSL_WARNING = (
     "Set THRUK_VERIFY_SSL=true (or remove the variable) for production use."
 )
 
+
 async def _run_stdio(log_level: str) -> None:
     server = build_server()
     if not server._cfg.verify_ssl:
@@ -86,10 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         "--transport",
         choices=["stdio", "streamable-http"],
         default=None,
-        help=(
-            "Transport to serve. Default: stdio, or streamable-http when --listen "
-            "is given."
-        ),
+        help=("Transport to serve. Default: stdio, or streamable-http when --listen is given."),
     )
     parser.add_argument(
         "--listen",

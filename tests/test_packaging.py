@@ -105,11 +105,14 @@ class TestDependencyBounds:
         )
 
     def test_mcp_lower_bound_preserved(self) -> None:
-        """mcp lower bound must remain >= 1.2.0."""
+        """mcp lower bound must not regress below 1.2.0 (issue #78)."""
         dep = self._find_dep("mcp")
         assert dep is not None
-        assert ">=1.2.0" in dep or ">=1.2" in dep, (
-            f"mcp dependency '{dep}' lost its lower bound '>=1.2.0'."
+        m = re.search(r">=\s*(\d+)\.(\d+)(?:\.(\d+))?", dep)
+        assert m, f"mcp dependency '{dep}' has no '>=' lower bound."
+        lower = tuple(int(p) for p in m.groups(default="0"))
+        assert lower >= (1, 2, 0), (
+            f"mcp dependency '{dep}' lower bound {lower} regressed below 1.2.0."
         )
 
     # --- httpx --------------------------------------------------------------
