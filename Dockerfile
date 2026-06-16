@@ -24,7 +24,7 @@ LABEL io.docker.server.metadata="$SERVER_METADATA"
 USER thruk
 ENV PYTHONUNBUFFERED=1
 # Default = stdio transport (Docker MCP Gateway / Claude Desktop / LibreChat).
-# For HTTP/Streamable-HTTP, override CMD: ["--listen", "8001"]
+# For Streamable-HTTP (endpoint /mcp), override CMD: ["--listen", "8001"]
 EXPOSE 8001
 ENTRYPOINT ["thruk-mcp"]
 CMD []
