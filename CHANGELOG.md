@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- "Ventilation par client": `group_by` parameter on the alert/notification
+  analytics tools. `thruk_top_noisy_hosts` accepts `host` (default) or
+  `hostgroup`; `thruk_top_noisy_services` accepts `service` (default), `host`,
+  `hostgroup` or `servicegroup`; `thruk_notification_summary` additionally
+  accepts `hostgroup` / `servicegroup`. `/logs` exposes no group column, so
+  counts are aggregated per host/(host,service) and fanned out across each
+  object's group membership via a `/hosts` or `/services` lookup (an object in
+  N groups counts in each; objects in none land in a `"(none)"` bucket) (#318).
+
 ## [1.10.1] - 2026-06-11
 
 ### Fixed

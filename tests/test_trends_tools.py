@@ -1117,3 +1117,188 @@ async def test_notif_heatmap_invalid_filter(mocked_server) -> None:
     )
     payload = json.loads(result[0].text)
     assert "error" in payload
+
+
+# ---------------------------------------------------------------------------
+# group_by=hostgroup / servicegroup — "ventilation par client" (issue #318)
+#
+# /logs has no group column, so the aggregation tools first count per
+# host/(host,service) then fan the counts out across each object's group
+# membership, fetched from /hosts (GET) or /services (GET). A host/service in N
+# groups contributes its full count to each; objects in none land in "(none)".
+# ---------------------------------------------------------------------------
+
+
+def _galert(host: str, state: int, t: int, *, service: str | None = None) -> dict:
+    """Build a log row for the group_by regrouping tests (issue #318)."""
+    e: dict = {"host_name": host, "state": state, "time": t}
+    if service is not None:
+        e["service_description"] = service
+    return e
+
+
+@pytest.mark.asyncio
+async def test_noisy_hosts_group_by_hostgroup(mocked_server) -> None:
+    """Per-host counts are re-bucketed by hostgroup; overlap double-counts."""
+    mcp, router = mocked_server
+    raw = [
+        _galert("alpha", 1, BASE_TS + 10),
+        _galert("alpha", 1, BASE_TS + 20),
+        _galert("beta", 1, BASE_TS + 40),
+    ]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(agg_rows(raw, ("host_name",))))
+    # alpha is in two clients, beta in one (and shares HG_A with alpha).
+    hosts_route = router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok(
+            [
+                {"name": "alpha", "groups": ["HG_A", "HG_B"]},
+                {"name": "beta", "groups": ["HG_A"]},
+            ]
+        )
+    )
+
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"group_by": "hostgroup", "since": "-6h"})
+    payload = json.loads(result[0].text)
+
+    assert hosts_route.called
+    assert payload["group_by"] == "hostgroup"
+    assert payload["total_alerts_in_window"] == 3  # un-double-counted total
+    by_group = {r["hostgroup"]: r for r in payload["results"]}
+    # HG_A = alpha(2) + beta(1) = 3, two hosts affected.
+    assert by_group["HG_A"]["alert_count"] == 3
+    assert by_group["HG_A"]["hosts_affected"] == 2
+    # HG_B = alpha(2) only.
+    assert by_group["HG_B"]["alert_count"] == 2
+    assert by_group["HG_B"]["hosts_affected"] == 1
+    # Sorted by count desc -> HG_A first.
+    assert payload["results"][0]["hostgroup"] == "HG_A"
+
+
+@pytest.mark.asyncio
+async def test_noisy_hosts_group_by_hostgroup_ungrouped_bucket(mocked_server) -> None:
+    """Hosts with no hostgroup membership fall into the '(none)' bucket."""
+    mcp, router = mocked_server
+    raw = [_galert("orphan", 1, BASE_TS + 1)]
+    router.post("https://thruk.test/r/logs").mock(return_value=ok(agg_rows(raw, ("host_name",))))
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok([{"name": "orphan", "groups": []}])
+    )
+
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"group_by": "hostgroup"})
+    payload = json.loads(result[0].text)
+    assert payload["results"][0]["hostgroup"] == "(none)"
+    assert payload["results"][0]["alert_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_noisy_hosts_invalid_group_by(mocked_server) -> None:
+    mcp, _ = mocked_server
+    result = await mcp.call_tool("thruk_top_noisy_hosts", {"group_by": "servicegroup"})
+    payload = json.loads(result[0].text)
+    assert "error" in payload
+    assert "servicegroup" in payload["error"]
+
+
+@pytest.mark.asyncio
+async def test_noisy_services_group_by_host(mocked_server) -> None:
+    """group_by=host rolls service alerts up per host (no topology lookup)."""
+    mcp, router = mocked_server
+    raw = [
+        _galert("h1", 2, BASE_TS + 1, service="cpu"),
+        _galert("h1", 2, BASE_TS + 2, service="mem"),
+        _galert("h2", 2, BASE_TS + 3, service="cpu"),
+    ]
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(raw, ("host_name", "service_description")))
+    )
+    result = await mcp.call_tool("thruk_top_noisy_services", {"group_by": "host"})
+    payload = json.loads(result[0].text)
+    assert payload["group_by"] == "host"
+    top = payload["results"][0]
+    assert top["host"] == "h1"
+    assert top["alert_count"] == 2
+    assert top["services_affected"] == 2
+
+
+@pytest.mark.asyncio
+async def test_noisy_services_group_by_servicegroup(mocked_server) -> None:
+    """Per-(host,service) counts re-bucketed by servicegroup via /services."""
+    mcp, router = mocked_server
+    raw = [
+        _galert("h1", 2, BASE_TS + 1, service="cpu"),
+        _galert("h1", 2, BASE_TS + 2, service="cpu"),
+        _galert("h2", 2, BASE_TS + 3, service="disk"),
+    ]
+    router.post("https://thruk.test/r/logs").mock(
+        return_value=ok(agg_rows(raw, ("host_name", "service_description")))
+    )
+    svc_route = router.get("https://thruk.test/r/services").mock(
+        return_value=ok(
+            [
+                {"host_name": "h1", "description": "cpu", "groups": ["SG_PERF"]},
+                {"host_name": "h2", "description": "disk", "groups": ["SG_PERF", "SG_STORAGE"]},
+            ]
+        )
+    )
+    result = await mcp.call_tool("thruk_top_noisy_services", {"group_by": "servicegroup"})
+    payload = json.loads(result[0].text)
+    assert svc_route.called
+    assert payload["group_by"] == "servicegroup"
+    by_group = {r["servicegroup"]: r for r in payload["results"]}
+    # SG_PERF = h1/cpu(2) + h2/disk(1) = 3, two services affected.
+    assert by_group["SG_PERF"]["alert_count"] == 3
+    assert by_group["SG_PERF"]["services_affected"] == 2
+    assert by_group["SG_PERF"]["hosts_affected"] == 2
+    assert by_group["SG_STORAGE"]["alert_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_group_by_hostgroup(mocked_server) -> None:
+    """Notification counts ventilated per hostgroup via a /hosts lookup."""
+    mcp, router = mocked_server
+    rows = [
+        {"host_name": "h1", "time": BASE_TS + 1},
+        {"host_name": "h1", "time": BASE_TS + 2},
+        {"host_name": "h2", "time": BASE_TS + 3},
+    ]
+    log_route = router.post("https://thruk.test/r/logs").mock(return_value=ok(rows))
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok(
+            [
+                {"name": "h1", "groups": ["HG_A"]},
+                {"name": "h2", "groups": ["HG_A", "HG_B"]},
+            ]
+        )
+    )
+    result = await mcp.call_tool("thruk_notification_summary", {"group_by": "hostgroup"})
+    payload = json.loads(result[0].text)
+
+    # host_name column is requested so rows can be mapped onto hostgroups.
+    assert "host_name" in _post_params(log_route.calls.last)["columns"]
+    assert payload["group_by"] == "hostgroup"
+    assert payload["total"] == 3
+    by_group = {r["hostgroup"]: r for r in payload["results"]}
+    assert by_group["HG_A"]["count"] == 3
+    assert by_group["HG_A"]["hosts_affected"] == 2
+    assert by_group["HG_B"]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_summary_group_by_servicegroup(mocked_server) -> None:
+    """group_by=servicegroup requests service_description and maps via /services."""
+    mcp, router = mocked_server
+    rows = [
+        {"host_name": "h1", "service_description": "cpu", "time": BASE_TS + 1},
+        {"host_name": "h1", "service_description": "cpu", "time": BASE_TS + 2},
+    ]
+    log_route = router.post("https://thruk.test/r/logs").mock(return_value=ok(rows))
+    router.get("https://thruk.test/r/services").mock(
+        return_value=ok([{"host_name": "h1", "description": "cpu", "groups": ["SG_PERF"]}])
+    )
+    result = await mcp.call_tool("thruk_notification_summary", {"group_by": "servicegroup"})
+    payload = json.loads(result[0].text)
+    cols = _post_params(log_route.calls.last)["columns"]
+    assert "service_description" in cols and "host_name" in cols
+    assert payload["results"][0]["servicegroup"] == "SG_PERF"
+    assert payload["results"][0]["count"] == 2
+    assert payload["results"][0]["services_affected"] == 1

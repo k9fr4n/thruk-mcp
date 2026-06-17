@@ -554,6 +554,148 @@ async def _resolve_hosts_to_regex_from_params(
     return f"^({'|'.join(re.escape(n) for n in names)})$", truncated
 
 
+# ---------------------------------------------------------------------------
+# Topology regrouping for analytics tools (issue #318)
+#
+# The /logs endpoint exposes no hostgroup/servicegroup column, so analytics
+# tools that need a "ventilation par client" (hostgroup == client) must first
+# aggregate per host/(host,service) and then fan the counts out across each
+# object's group membership, fetched from /hosts and /services. A host or
+# service that belongs to N groups contributes its full count to all N groups
+# (groups overlap); objects with no membership land in a ``"(none)"`` bucket so
+# the regrouped totals still reconcile with the ungrouped total.
+# ---------------------------------------------------------------------------
+
+#: Bucket label for objects with no hostgroup/servicegroup membership.
+_UNGROUPED_LABEL = "(none)"
+
+#: Hard caps on the /hosts and /services listings used to build the group maps.
+_REGROUP_HOSTS_HARD_LIMIT: int = _RESOLVE_HOSTS_HARD_LIMIT
+_REGROUP_SERVICES_HARD_LIMIT: int = 50_000
+
+
+async def _host_to_groups_map(backends: str | None) -> tuple[dict[str, list[str]], bool]:
+    """Map every host name to its hostgroup list via ``/hosts?columns=name,groups``.
+
+    Returns ``(mapping, truncated)``; ``truncated`` is ``True`` when the listing
+    reached :data:`_REGROUP_HOSTS_HARD_LIMIT` and may be incomplete.
+    """
+    mapping: dict[str, list[str]] = {}
+    count = 0
+    async for row in _get_client().get_all(
+        "/hosts",
+        params={"columns": "name,groups"},
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=_REGROUP_HOSTS_HARD_LIMIT,
+    ):
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not name:
+            continue
+        groups = row.get("groups")
+        mapping[str(name)] = [str(g) for g in groups] if isinstance(groups, list) else []
+        count += 1
+    return mapping, count >= _REGROUP_HOSTS_HARD_LIMIT
+
+
+async def _service_to_groups_map(
+    backends: str | None,
+) -> tuple[dict[tuple[str, str], list[str]], bool]:
+    """Map every ``(host, service)`` to its servicegroup list via ``/services``.
+
+    Returns ``(mapping, truncated)``; ``truncated`` mirrors
+    :func:`_host_to_groups_map` against :data:`_REGROUP_SERVICES_HARD_LIMIT`.
+    """
+    mapping: dict[tuple[str, str], list[str]] = {}
+    count = 0
+    async for row in _get_client().get_all(
+        "/services",
+        params={"columns": "host_name,description,groups"},
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=_REGROUP_SERVICES_HARD_LIMIT,
+    ):
+        if not isinstance(row, dict):
+            continue
+        host = row.get("host_name")
+        desc = row.get("description")
+        if not host or not desc:
+            continue
+        groups = row.get("groups")
+        mapping[(str(host), str(desc))] = (
+            [str(g) for g in groups] if isinstance(groups, list) else []
+        )
+        count += 1
+    return mapping, count >= _REGROUP_SERVICES_HARD_LIMIT
+
+
+async def _regroup_records_by_group(
+    records: list[dict[str, Any]],
+    group_by: str,
+    *,
+    count_key: str,
+    backends: str | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Re-bucket per-host / per-service records by ``hostgroup`` or ``servicegroup``.
+
+    Each record must carry ``host_name`` (and, for ``servicegroup``,
+    ``service_description``), a numeric ``count_key`` and an integer ``last_ts``.
+    A host/service in N groups contributes its full count to each of the N
+    groups; objects with no group membership fall into the ``"(none)"`` bucket.
+
+    Returns ``(rows, truncated)`` sorted by ``count_key`` descending. Each row
+    carries the group name under ``group_by``, the summed ``count_key``,
+    ``hosts_affected`` (and ``services_affected`` for servicegroup) and
+    ``last_ts`` (epoch of the most recent contributing event).
+    """
+    if group_by == "servicegroup":
+        smap, truncated = await _service_to_groups_map(backends)
+
+        def groups_for(rec: dict[str, Any]) -> list[str]:
+            key = (str(rec.get("host_name") or ""), str(rec.get("service_description") or ""))
+            return smap.get(key, [])
+    else:  # hostgroup
+        hmap, truncated = await _host_to_groups_map(backends)
+
+        def groups_for(rec: dict[str, Any]) -> list[str]:
+            return hmap.get(str(rec.get("host_name") or ""), [])
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for rec in records:
+        try:
+            cnt = int(rec.get(count_key) or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        host = str(rec.get("host_name") or "")
+        svc = str(rec.get("service_description") or "")
+        last_ts = int(rec.get("last_ts") or 0)
+        for g in groups_for(rec) or [_UNGROUPED_LABEL]:
+            b = buckets.setdefault(g, {"count": 0, "hosts": set(), "services": set(), "last_ts": 0})
+            b["count"] += cnt
+            if host:
+                b["hosts"].add(host)
+            if svc:
+                b["services"].add((host, svc))
+            if last_ts > b["last_ts"]:
+                b["last_ts"] = last_ts
+
+    rows: list[dict[str, Any]] = []
+    for g, b in buckets.items():
+        row: dict[str, Any] = {
+            group_by: g,
+            count_key: b["count"],
+            "hosts_affected": len(b["hosts"]),
+            "last_ts": b["last_ts"],
+        }
+        if group_by == "servicegroup":
+            row["services_affected"] = len(b["services"])
+        rows.append(row)
+    rows.sort(key=lambda x: x[count_key], reverse=True)
+    return rows, truncated
+
+
 __all__ = [
     "_RESOLVE_HOSTS_HARD_LIMIT",
     "_backends",
@@ -566,15 +708,18 @@ __all__ = [
     "_format_state_label",
     "_get_cfg",
     "_get_client",
+    "_host_to_groups_map",
     "_list_params",
     "_normalize_time_params",
     "_now_utc_epoch",
     "_parse_thruk_time",
+    "_regroup_records_by_group",
     "_resolve_hosts_to_regex_from_params",
     "_resolve_log_filter",
     "_resolve_peer_for_host",
     "_sanitize_latency",
     "_seg",
+    "_service_to_groups_map",
     "_tool_response",
     "_ts",
 ]
