@@ -550,6 +550,363 @@ async def thruk_concurrent_failures(
 
 
 # ---------------------------------------------------------------------------
+# Root-cause analysis via parent/child topology (issue #322)
+# ---------------------------------------------------------------------------
+
+#: Tight Livestatus column set for the topology map fetch.
+_ROOT_CAUSE_TOPO_COLUMNS: str = "name,parents,groups,state"
+#: Default cap on hosts scanned when building the topology map.
+_ROOT_CAUSE_TOPO_LIMIT: int = 5000
+
+
+async def _fetch_host_alert_states(
+    since: str | None,
+    until: str | None,
+    filter: dict[str, Any] | None,
+    backends: str | None,
+) -> dict[str, Any]:
+    """Fetch HOST ALERT log rows over ``[since, until]`` split by state.
+
+    Returns a dict with ``down`` / ``unreachable`` (sets of host names that hit
+    state 1 / state 2 in the window — a host may appear in both),
+    ``total_events``, ``capped`` (log cap reached), ``errs`` (filter errors),
+    ``host_truncated`` and ``warnings``. Mirrors ``thruk_concurrent_failures``'s
+    hardened ``/logs`` fetch: ``class=1`` defence-in-depth (issues #176/#193),
+    ``state[gte]=1`` to drop recoveries, and ``sort=-time`` so a hit cap keeps
+    the most recent events (issue #250).
+    """
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
+    if errs:
+        return {
+            "down": set(),
+            "unreachable": set(),
+            "total_events": 0,
+            "capped": False,
+            "errs": errs,
+            "host_truncated": host_truncated,
+            "warnings": [],
+        }
+
+    extra["type[~]"] = "^HOST ALERT"
+    extra["class"] = "1"
+    extra["state[gte]"] = "1"
+    if "time[gte]" not in extra and since:
+        extra["time[gte]"] = _epoch_filter_value(since)
+    if "time[lte]" not in extra and until:
+        extra["time[lte]"] = _epoch_filter_value(until)
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "-time",
+        "columns": "host_name,state,time",
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    down: set[str] = set()
+    unreachable: set[str] = set()
+    for e in data:
+        host = e.get("host_name")
+        if not host:
+            continue
+        try:
+            st = int(e.get("state"))
+        except (TypeError, ValueError):
+            continue
+        if st == 1:
+            down.add(str(host))
+        elif st == 2:
+            unreachable.add(str(host))
+
+    return {
+        "down": down,
+        "unreachable": unreachable,
+        "total_events": len(data),
+        "capped": len(data) >= _NOISY_MAX_ALERTS,
+        "errs": [],
+        "host_truncated": host_truncated,
+        "warnings": warnings,
+    }
+
+
+async def _fetch_topology(
+    backends: str | None, limit: int
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, int], bool]:
+    """Fetch the host ``parents`` topology map → ``(parents, groups, states, truncated)``.
+
+    Fetched **unfiltered** on purpose: the root cause of a storm is often a core
+    device in a different hostgroup than its victims, so any caller-supplied
+    filter must not restrict topology resolution. ``truncated`` is ``True`` when
+    ``limit`` hosts were scanned (map may be incomplete).
+    """
+    parents: dict[str, list[str]] = {}
+    groups: dict[str, list[str]] = {}
+    states: dict[str, int] = {}
+    count = 0
+    async for row in _get_client().get_all(
+        "/hosts",
+        params={"columns": _ROOT_CAUSE_TOPO_COLUMNS},
+        backends=_backends(backends),
+        page_size=500,
+        hard_limit=limit,
+    ):
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        if not name:
+            continue
+        name = str(name)
+        ps = row.get("parents")
+        parents[name] = [str(p) for p in ps] if isinstance(ps, list) else []
+        gs = row.get("groups")
+        groups[name] = [str(g) for g in gs] if isinstance(gs, list) else []
+        raw_state = row.get("state")
+        try:
+            states[name] = int(raw_state) if raw_state is not None else -1
+        except (TypeError, ValueError):
+            states[name] = -1
+        count += 1
+    return parents, groups, states, count >= limit
+
+
+def _attribute_root_causes(
+    down: set[str],
+    unreachable: set[str],
+    parents: dict[str, list[str]],
+) -> tuple[dict[str, set[str]], list[str]]:
+    """Attribute each affected host to its root-cause ancestor (pure function).
+
+    Returns ``(clusters, unattributed)``. ``clusters`` maps each root-cause host
+    — a DOWN host with no DOWN ancestor above it — to the set of affected hosts
+    (including the root) attributed to it. ``unattributed`` lists UNREACHABLE
+    hosts whose upward ``parents`` walk reaches no DOWN host (the cause fell
+    outside the window or its parent is unmonitored), sorted.
+
+    A host is attributed to the **topmost** DOWN ancestor on its parent chain
+    (ties broken by sorted name). All walks are cycle-guarded against
+    mis-configured parent loops.
+    """
+    affected = down | unreachable
+
+    def _down_ancestors(host: str) -> set[str]:
+        """Upward closure of ``host`` (inclusive) restricted to DOWN members."""
+        out: set[str] = set()
+        seen: set[str] = set()
+        stack = [host]
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if node in down:
+                out.add(node)
+            stack.extend(parents.get(node, []))
+        return out
+
+    has_down_above_cache: dict[str, bool] = {}
+
+    def _has_down_above(host: str) -> bool:
+        """True if a DOWN host sits strictly above ``host`` on the parent chain."""
+        if host in has_down_above_cache:
+            return has_down_above_cache[host]
+        seen: set[str] = set()
+        stack = list(parents.get(host, []))
+        result = False
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if node in down:
+                result = True
+                break
+            stack.extend(parents.get(node, []))
+        has_down_above_cache[host] = result
+        return result
+
+    root_cache: dict[str, str | None] = {}
+
+    def _root_of(host: str) -> str | None:
+        if host in root_cache:
+            return root_cache[host]
+        anc = _down_ancestors(host)
+        if not anc:
+            root_cache[host] = None
+            return None
+        tops = sorted(d for d in anc if not _has_down_above(d))
+        root = tops[0] if tops else sorted(anc)[0]
+        root_cache[host] = root
+        return root
+
+    clusters: dict[str, set[str]] = {}
+    unattributed: list[str] = []
+    for host in affected:
+        root = _root_of(host)
+        if root is None:
+            unattributed.append(host)
+        else:
+            clusters.setdefault(root, set()).add(host)
+    return clusters, sorted(unattributed)
+
+
+def _root_cause_confidence(impacted_count: int) -> str:
+    """Confidence tier for a cluster: high (>=3 impacted), medium (2), low (1)."""
+    if impacted_count >= 3:
+        return "high"
+    if impacted_count == 2:
+        return "medium"
+    return "low"
+
+
+async def thruk_root_cause(
+    since: str | None = "-1h",
+    until: str | None = None,
+    filter: dict[str, Any] | None = None,
+    limit: int = _ROOT_CAUSE_TOPO_LIMIT,
+    sample_limit: int = 50,
+    backends: str | None = None,
+) -> str:
+    """Collapse a DOWN/UNREACHABLE storm into its root cause(s) via parent topology.
+
+    During a mass outage the actionable signal is the common cause (the root
+    network device), not the hundreds of UNREACHABLE victims. This tool:
+
+    1. fetches ``HOST ALERT`` DOWN (state=1) / UNREACHABLE (state=2) log entries
+       over ``[since, until]`` (Thruk relative ``"-2h"`` / ISO datetime; default
+       last 1 hour),
+    2. fetches the host ``parents`` topology (unfiltered — the root cause is
+       often in a different hostgroup than its victims),
+    3. walks each affected host up its ``parents`` chain to the topmost DOWN
+       ancestor, and
+    4. clusters victims under that root.
+
+    ``filter`` (AND/OR tree, fields ``host`` / ``hostgroup`` / ``custom_var``)
+    scopes only the *affected* set, never topology resolution. ``limit`` caps the
+    topology scan (default 5000); ``sample_limit`` caps each per-cluster
+    ``impacted_hosts`` sample (default 50).
+
+    Returns ``{since, until, total_affected_hosts, down_count,
+    unreachable_count, root_causes, unattributed_unreachable}``. Each entry of
+    ``root_causes`` (sorted by ``impacted_count`` descending) carries
+    ``{root_cause_host, root_cause_state, impacted_count, impacted_hosts,
+    impacted_hosts_truncated, impacted_hostgroups, confidence}``. ``confidence``
+    is ``high`` (>=3 impacted), ``medium`` (2) or ``low`` (1 — isolated failure).
+
+    On a flat estate (no ``parents`` configured) every DOWN host is its own
+    low-confidence root and UNREACHABLE hosts with no known DOWN ancestor land in
+    ``unattributed_unreachable``.
+    """
+    res = await _fetch_host_alert_states(since, until, filter, backends)
+    if res["errs"]:
+        return _tool_response({"error": res["errs"][0]})
+    down, unreachable = res["down"], res["unreachable"]
+    affected = down | unreachable
+
+    parents, groups, states, topo_truncated = await _fetch_topology(backends, max(1, limit))
+    clusters, unattributed = _attribute_root_causes(down, unreachable, parents)
+
+    root_causes: list[dict[str, Any]] = []
+    for root, members in clusters.items():
+        impacted = sorted(members)
+        hgs = sorted({g for m in members for g in groups.get(m, [])})
+        root_causes.append(
+            {
+                "root_cause_host": root,
+                "root_cause_state": HOST_STATES.get(states.get(root, -1), "DOWN"),
+                "impacted_count": len(members),
+                "impacted_hosts": impacted[:sample_limit],
+                "impacted_hosts_truncated": len(impacted) > sample_limit,
+                "impacted_hostgroups": hgs,
+                "confidence": _root_cause_confidence(len(members)),
+            }
+        )
+    root_causes.sort(key=lambda r: (-r["impacted_count"], r["root_cause_host"]))
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "total_affected_hosts": len(affected),
+        "down_count": len(down),
+        "unreachable_count": len(unreachable),
+        "root_causes": root_causes,
+        "unattributed_unreachable": unattributed[:sample_limit],
+    }
+    if res["host_truncated"]:
+        payload["_warning"] = (
+            f"Host filter list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "affected set may be incomplete."
+        )
+    elif res["capped"]:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; analysis may be incomplete."
+            + _NOISY_CAP_HINT
+        )
+    elif topo_truncated:
+        payload["_warning"] = (
+            f"Topology scan capped at {limit} hosts; parent resolution may be incomplete."
+        )
+    if res["warnings"]:
+        payload["_warnings"] = res["warnings"]
+    return _tool_response(payload)
+
+
+async def thruk_unreachable_vs_down(
+    since: str | None = "-1h",
+    until: str | None = None,
+    filter: dict[str, Any] | None = None,
+    sample_limit: int = 100,
+    backends: str | None = None,
+) -> str:
+    """Split a host outage window into DOWN (cause) vs UNREACHABLE (consequence).
+
+    The lightweight companion to ``thruk_root_cause``: fetches ``HOST ALERT`` log
+    entries over ``[since, until]`` and separates hosts that went DOWN (state=1 —
+    the actual failures) from those that went UNREACHABLE (state=2 — downstream
+    victims cut off by a DOWN parent). No topology walk.
+
+    ``since`` / ``until`` accept Thruk relative times or ISO datetimes (default
+    last 1 hour). ``filter`` (fields ``host`` / ``hostgroup`` / ``custom_var``)
+    scopes the set; ``sample_limit`` caps each returned host list (default 100).
+
+    Returns ``{since, until, down_count, unreachable_count, both_count,
+    down_hosts, unreachable_hosts}`` (``both_count`` = hosts that hit both states
+    in the window). Host lists are sorted and capped at ``sample_limit``.
+    """
+    res = await _fetch_host_alert_states(since, until, filter, backends)
+    if res["errs"]:
+        return _tool_response({"error": res["errs"][0]})
+    down, unreachable = res["down"], res["unreachable"]
+    both = down & unreachable
+
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "down_count": len(down),
+        "unreachable_count": len(unreachable),
+        "both_count": len(both),
+        "down_hosts": sorted(down)[:sample_limit],
+        "unreachable_hosts": sorted(unreachable)[:sample_limit],
+    }
+    if res["host_truncated"]:
+        payload["_warning"] = (
+            f"Host filter list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "result may be incomplete."
+        )
+    elif res["capped"]:
+        payload["_warning"] = (
+            f"Result capped at {_NOISY_MAX_ALERTS} log entries; result may be incomplete."
+            + _NOISY_CAP_HINT
+        )
+    if res["warnings"]:
+        payload["_warnings"] = res["warnings"]
+    return _tool_response(payload)
+
+
+# ---------------------------------------------------------------------------
 # Stale-checks detector (issue #287)
 # ---------------------------------------------------------------------------
 
@@ -1137,19 +1494,69 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    # ----------------------------------------- root-cause topology analysis (issue #322)
+    ToolSpec(
+        name="thruk_root_cause",
+        fn=thruk_root_cause,
+        schema=build_tool_schema(
+            FIELDS_NOISY_HOSTS,
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-1h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
+                ),
+            },
+            until=_UNTIL,
+            limit=_int(
+                "Maximum hosts scanned when building the parent topology map (default 5000).",
+                default=_ROOT_CAUSE_TOPO_LIMIT,
+            ),
+            sample_limit=_int(
+                "Maximum hosts listed per cluster in 'impacted_hosts' (default 50).",
+                default=50,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_unreachable_vs_down",
+        fn=thruk_unreachable_vs_down,
+        schema=build_tool_schema(
+            FIELDS_NOISY_HOSTS,
+            since={
+                "anyOf": [{"type": "string"}, {"type": "null"}],
+                "default": "-1h",
+                "description": (
+                    'Start of analysis window. Thruk relative time ("-2h", "-7d") '
+                    'or ISO datetime ("2026-05-20 14:00:00"). Default: last 1 hour.'
+                ),
+            },
+            until=_UNTIL,
+            sample_limit=_int(
+                "Maximum hosts listed in each returned host array (default 100).",
+                default=100,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 
 __all__ = [
     "TRIAGE_REGISTRY",
+    "_attribute_root_causes",
     "_classify_check",
     "_classify_worker_artefact",
     "_project_problem_counts",
     "thruk_concurrent_failures",
     "thruk_oldest_problems",
     "thruk_problem_counts",
+    "thruk_root_cause",
     "thruk_stale_acks",
     "thruk_stale_checks",
     "thruk_unacked_critical",
+    "thruk_unreachable_vs_down",
     "thruk_worker_health",
 ]

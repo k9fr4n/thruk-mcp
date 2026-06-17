@@ -126,15 +126,18 @@ from .perfdata import (
 )
 from .triage import (
     TRIAGE_REGISTRY,
+    _attribute_root_causes,
     _classify_check,
     _classify_worker_artefact,
     _project_problem_counts,
     thruk_concurrent_failures,
     thruk_oldest_problems,
     thruk_problem_counts,
+    thruk_root_cause,
     thruk_stale_acks,
     thruk_stale_checks,
     thruk_unacked_critical,
+    thruk_unreachable_vs_down,
     thruk_worker_health,
 )
 
@@ -188,6 +191,7 @@ __all__ = [
     "_UNTIL",
     "ToolSpec",
     "_aggregate_alerts",
+    "_attribute_root_causes",
     "_bool",
     "_classify_check",
     "_classify_worker_artefact",
@@ -249,6 +253,7 @@ __all__ = [
     "thruk_recurring_problems",
     "thruk_reliability_report",
     "thruk_remove_acknowledgement",
+    "thruk_root_cause",
     "thruk_run_background_query",
     "thruk_schedule_downtime",
     "thruk_schedule_host_services_downtime",
@@ -264,5 +269,6 @@ __all__ = [
     "thruk_top_noisy_services",
     "thruk_totals",
     "thruk_unacked_critical",
+    "thruk_unreachable_vs_down",
     "thruk_worker_health",
 ]

@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `thruk_root_cause`: collapses a DOWN/UNREACHABLE storm into its common cause
+  via the host `parents` topology. Fetches `HOST ALERT` DOWN (state=1) /
+  UNREACHABLE (state=2) log rows over `[since, until]`, fetches the host
+  topology map (`name,parents,groups,state`) **unfiltered** — the root cause is
+  often a core device in a different hostgroup than its victims — then walks
+  each affected host up its `parents` chain to the topmost DOWN ancestor and
+  clusters victims under that root. Returns per-cluster
+  `{root_cause_host, root_cause_state, impacted_count, impacted_hosts,
+  impacted_hostgroups, confidence}` (confidence: high ≥3 impacted / medium 2 /
+  low 1). UNREACHABLE hosts whose chain reaches no DOWN host land in
+  `unattributed_unreachable`; on a flat estate (no `parents`) every DOWN host is
+  its own low-confidence root. A scoping `filter` (`host`/`hostgroup`/
+  `custom_var`) restricts only the affected set, never topology resolution (#322).
+- `thruk_unreachable_vs_down`: the lightweight companion to `thruk_root_cause` —
+  splits a host outage window into DOWN (cause) vs UNREACHABLE (consequence)
+  with no topology walk, returning `down_count`/`unreachable_count`/`both_count`
+  and the sorted host lists (#322).
 - `thruk_incident_timeline`: reconstructs the ordered event chronology (the
   "déroulé" of a post-mortem) for a host, service or hostgroup straight from
   `/logs` — every state change, notification, downtime, flap and

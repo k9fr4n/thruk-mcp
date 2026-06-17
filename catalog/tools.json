@@ -4444,5 +4444,134 @@
         }
       }
     }
+  },
+  {
+    "name": "thruk_root_cause",
+    "description": "Collapse a DOWN/UNREACHABLE storm into its root cause(s) via the host parents topology. Fetches HOST ALERT DOWN (state=1) / UNREACHABLE (state=2) log entries over [since, until], fetches the host parents topology unfiltered (the root cause is often in a different hostgroup than its victims), walks each affected host up its parents chain to the topmost DOWN ancestor, and clusters victims under that root. Returns {since, until, total_affected_hosts, down_count, unreachable_count, root_causes, unattributed_unreachable}. Each root_causes entry (sorted by impacted_count desc) carries root_cause_host, root_cause_state, impacted_count, impacted_hosts, impacted_hosts_truncated, impacted_hostgroups, confidence (high >=3 / medium 2 / low 1). On a flat estate (no parents) every DOWN host is its own low-confidence root and UNREACHABLE hosts with no known DOWN ancestor land in unattributed_unreachable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree scoping only the affected set (never topology). Fields: host, hostgroup, custom_var."
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-1h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-20 14:00:00\"). Default: last 1 hour."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 5000,
+          "description": "Maximum hosts scanned when building the parent topology map (default 5000)."
+        },
+        "sample_limit": {
+          "type": "integer",
+          "default": 50,
+          "description": "Maximum hosts listed per cluster in 'impacted_hosts' (default 50)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_unreachable_vs_down",
+    "description": "Split a host outage window into DOWN (cause) vs UNREACHABLE (consequence). The lightweight companion to thruk_root_cause: fetches HOST ALERT log entries over [since, until] and separates hosts that went DOWN (state=1, the actual failures) from those that went UNREACHABLE (state=2, downstream victims cut off by a DOWN parent). No topology walk. Returns {since, until, down_count, unreachable_count, both_count, down_hosts, unreachable_hosts}; both_count is the number of hosts that hit both states. Host lists are sorted and capped at sample_limit.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree. Fields: host, hostgroup, custom_var."
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-1h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-20 14:00:00\"). Default: last 1 hour."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "sample_limit": {
+          "type": "integer",
+          "default": 100,
+          "description": "Maximum hosts listed in each returned host array (default 100)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
   }
 ]
