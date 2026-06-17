@@ -112,7 +112,7 @@ Then point any MCP client (Claude Desktop, VS Code, Cursor, ...) at the gateway 
 
 ## What's exposed
 
-### 57 MCP Tools
+### 65 MCP Tools
 
 **Read — state**
 `thruk_list_hosts`, `thruk_get_host`, `thruk_list_services`, `thruk_get_service`,
@@ -123,7 +123,10 @@ than `thruk_stats`), `thruk_sites`.
 **Read — history & comments**
 `thruk_list_logs`, `thruk_list_alerts`, `thruk_list_notifications`,
 `thruk_notification_summary` (notifications grouped by contact/host/service/state/command),
-`thruk_recent_events`, `thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`.
+`thruk_recent_events`, `thruk_list_comments`, `thruk_list_downtimes`, `thruk_get_downtime`,
+`thruk_state_at` (reconstruct the parc state at a past instant from `/logs` — a post-mortem
+snapshot), `thruk_state_diff` (what changed between two past instants `t1` → `t2`, replayed
+from `/logs`).
 
 **Read — noise & flap analysis**
 `thruk_top_noisy_hosts` (hosts ranked by alert count over a window),
@@ -136,14 +139,20 @@ than `thruk_stats`), `thruk_sites`.
 `thruk_stale_acks` (acknowledgements older than N days — forgotten problems),
 `thruk_problem_counts` (flat aggregate of unhealthy-state counts, filterable by hostgroup,
 custom vars or any structured filter — replaces the former thruk_problems_by_hostgroup),
-`thruk_stale_checks` (surface checks that stopped running — the dangerous "false green").
+`thruk_stale_checks` (surface checks that stopped running — the dangerous "false green"),
+`thruk_backend_health` (per-site supervision-backend health: latency, replication lag,
+blind spots), `thruk_worker_health` (distinguish a real outage from a mod-gearman
+supervision blind spot).
 
 **Read — analytics**
 `thruk_alert_heatmap` (alert counts bucketed by time, useful for spotting recurring
 patterns), `thruk_notification_heatmap` (notification counts bucketed by time — spot
 mail/paging storms), `thruk_concurrent_failures` (windows where multiple hosts failed
 simultaneously),
-`thruk_recurring_problems` (hosts/services generating repeated alerts over a window).
+`thruk_recurring_problems` (hosts/services generating repeated alerts over a window),
+`thruk_root_cause` (collapse a DOWN/UNREACHABLE storm into its root cause(s) via parent
+topology), `thruk_unreachable_vs_down` (split a host outage window into DOWN cause vs
+UNREACHABLE consequence).
 
 **Read — availability / SLA**
 `thruk_host_availability` (uptime % for a single host — `time_up_percent`, `time_down_percent`,
