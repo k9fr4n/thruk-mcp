@@ -4093,6 +4093,47 @@
     }
   },
   {
+    "name": "thruk_worker_health",
+    "description": "Distinguish a real outage from a mod-gearman supervision blind spot. Thruk's REST API exposes no mod-gearman endpoint and the Livestatus status latency/queue columns return null through LMD, so true queue depth / worker liveness are not available (use gearman_top / gearadmin --status on the host). This tool scans /services (and /hosts) with a server-side plugin_output regex for the worker-failure signatures left in plugin output: orphaned (extracts the gearman queue name), worker_timeout (Timed Out On Worker), address_undef (Invalid hostname/address - undef). It aggregates per signature, queue and backend, and reads /sites for backend connectivity (a disconnected backend means its whole worker layer is a blind spot). Returns {now, patterns, total_artefacts, artefact_counts, by_queue, by_backend, backends, samples, assessment}.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "include_hosts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Also scan /hosts host checks for worker artefacts (default true)."
+        },
+        "include_services": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan /services for worker artefacts (default true)."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 500,
+          "description": "Maximum rows scanned per object type (max 5000, default 500)."
+        },
+        "sample_limit": {
+          "type": "integer",
+          "default": 20,
+          "description": "Maximum example rows returned in 'samples' (default 20)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_recurring_problems",
     "description": "Return hosts/services that generated repeated alerts over a time window. Identifies chronic problems by counting non-recovery HOST/SERVICE ALERT entries per object and filtering by a minimum threshold. Results sorted by alert count descending.",
     "inputSchema": {

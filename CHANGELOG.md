@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `thruk_worker_health`: distinguishes a real outage from a mod-gearman
+  supervision blind spot. Thruk's REST API exposes no mod-gearman endpoint and
+  the Livestatus `status` latency/queue columns return null through LMD, so the
+  tool scans `/services` and `/hosts` with a server-side `plugin_output` regex
+  (`q=plugin_output ~~ "..."`) for the worker-failure signatures (`orphaned`,
+  `worker_timeout`, `address_undef`), extracts the gearman queue name from
+  orphaned messages, and aggregates per signature, queue and backend. It also
+  reads `/sites` for backend connectivity. True queue depth / worker liveness
+  still require `gearman_top` / `gearadmin --status` on the host (#320).
 - "Ventilation par client": `group_by` parameter on the alert/notification
   analytics tools. `thruk_top_noisy_hosts` accepts `host` (default) or
   `hostgroup`; `thruk_top_noisy_services` accepts `service` (default), `host`,

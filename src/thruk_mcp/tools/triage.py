@@ -28,6 +28,7 @@ no cycle).
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import Counter, deque
 from typing import Any
 
@@ -70,6 +71,7 @@ from .base import (
     ToolSpec,
     _bool,
     _int,
+    _s,
 )
 from .inventory import _strip_filter_field
 
@@ -780,6 +782,228 @@ async def thruk_stale_checks(
 
 
 # ---------------------------------------------------------------------------
+# thruk_worker_health — mod-gearman worker/queue supervision-artefact scan (#320)
+# ---------------------------------------------------------------------------
+# Thruk's REST API exposes no mod-gearman endpoint, and the Livestatus ``status``
+# latency/queue columns come back null through LMD, so true queue depth / worker
+# liveness is not available here. What *is* observable — and what distinguishes a
+# real outage from a supervision blind spot — are the worker-failure signatures
+# mod-gearman leaves in plugin output, which Thruk *can* filter server-side via
+# the q-language (``plugin_output ~~ "<regex>"``). This tool scans hosts/services
+# for those signatures, attributes them per backend and per gearman queue, and
+# reports backend connectivity from /sites.
+
+# Signature -> case-insensitive regex matched against plugin_output. The orphaned
+# message names the gearman queue ("... worker on queue 'service' running?"), so
+# ``_WORKER_QUEUE_RE`` extracts it. First match wins, in declared order.
+_WORKER_SIGNATURES: dict[str, re.Pattern[str]] = {
+    "orphaned": re.compile(r"orphaned", re.IGNORECASE),
+    "worker_timeout": re.compile(r"Timed Out On Worker", re.IGNORECASE),
+    "address_undef": re.compile(r"Invalid hostname/address\s*-\s*undef", re.IGNORECASE),
+}
+_WORKER_QUEUE_RE = re.compile(r"queue '([^']+)'", re.IGNORECASE)
+
+# Combined alternation handed to Thruk as a single quoted q-language regex so the
+# candidate set is filtered server-side (one /services + one /hosts fetch). The
+# q-parser treats a bare "(" as logical grouping and splits on unquoted
+# whitespace, so the value MUST be double-quoted and MUST NOT wrap the
+# alternation in parentheses.
+_WORKER_Q_REGEX = "orphaned|Timed Out On Worker|Invalid hostname/address - undef"
+
+_WORKER_MAX_LIMIT = 5000
+_WORKER_SVC_COLUMNS = "host_name,description,plugin_output,peer_name,state,last_check"
+_WORKER_HOST_COLUMNS = "name,plugin_output,peer_name,state,last_check"
+
+
+def _classify_worker_artefact(plugin_output: str) -> tuple[str | None, str | None]:
+    """Classify a plugin-output line as a mod-gearman worker artefact.
+
+    Returns ``(signature, queue)`` where ``signature`` is one of the
+    ``_WORKER_SIGNATURES`` keys (or ``None`` when nothing matched) and ``queue``
+    is the gearman queue name parsed from an orphaned message (or ``None``). The
+    first matching signature wins, in ``_WORKER_SIGNATURES`` declaration order.
+    """
+    text = plugin_output or ""
+    for signature, pattern in _WORKER_SIGNATURES.items():
+        if pattern.search(text):
+            m = _WORKER_QUEUE_RE.search(text)
+            return signature, (m.group(1) if m else None)
+    return None, None
+
+
+async def thruk_worker_health(
+    include_hosts: bool = True,
+    include_services: bool = True,
+    limit: int = 500,
+    sample_limit: int = 20,
+    backends: str | None = None,
+) -> str:
+    """Distinguish a real outage from a mod-gearman supervision blind spot.
+
+    During a large incident a share of the DOWN/CRITICAL states are **artefacts
+    of the check-execution layer** (mod-gearman), not real failures: saturated
+    queues, dead workers, orphaned checks, ``undef`` addresses. Thruk's REST API
+    exposes **no** mod-gearman endpoint and the Livestatus ``status`` latency /
+    queue columns return null through LMD, so true queue depth and worker
+    liveness are **not** available here — use ``gearman_top`` / ``gearadmin
+    --status`` on the host for those.
+
+    What this tool *can* do over REST is surface the worker-failure **signatures**
+    mod-gearman leaves in plugin output and attribute them per backend and per
+    gearman queue. It scans ``/services`` (and ``/hosts`` when ``include_hosts``)
+    with a server-side ``plugin_output`` regex filter, classifying each match:
+
+    * ``orphaned``       — ``(... check orphaned, is the mod-gearman worker on
+      queue 'X' running?)`` — the queue name ``X`` is extracted into ``by_queue``.
+    * ``worker_timeout`` — ``... Timed Out On Worker ...``.
+    * ``address_undef``  — ``Invalid hostname/address - undef`` (worker handed an
+      unresolved target).
+
+    It also reads ``/sites`` for backend connectivity — a disconnected backend
+    means its whole worker layer is a blind spot regardless of artefact counts.
+
+    ``limit`` caps rows scanned per object type (max 5000); ``sample_limit`` caps
+    the returned ``samples``. ``backends`` selects sites.
+
+    Returns ``now``, ``patterns`` (the signatures used), ``total_artefacts``,
+    ``artefact_counts`` (per signature), ``by_queue``, ``by_backend``,
+    ``backends`` (connectivity), ``samples`` and a factual ``assessment``. A
+    ``_warning`` is added when a per-object cap is reached (detection may be
+    incomplete).
+    """
+    now = _now_utc_epoch()
+    capped = max(1, min(limit, _WORKER_MAX_LIMIT))
+    q_expr = f'plugin_output ~~ "{_WORKER_Q_REGEX}"'
+    svc_params: dict[str, Any] = {"q": q_expr, "columns": _WORKER_SVC_COLUMNS, "limit": capped}
+    host_params: dict[str, Any] = {"q": q_expr, "columns": _WORKER_HOST_COLUMNS, "limit": capped}
+    be = _backends(backends)
+
+    sites, services, hosts = await asyncio.gather(
+        _get_client().get("/sites", backends=be),
+        _get_client().get("/services", params=svc_params, backends=be)
+        if include_services
+        else asyncio.sleep(0, result=[]),
+        _get_client().get("/hosts", params=host_params, backends=be)
+        if include_hosts
+        else asyncio.sleep(0, result=[]),
+    )
+
+    sites_rows: list[Any] = sites if isinstance(sites, list) else []
+    svc_rows: list[Any] = services if isinstance(services, list) else []
+    host_rows: list[Any] = hosts if isinstance(hosts, list) else []
+
+    # Backend connectivity from /sites: connected==1 and status==0 means healthy.
+    connected_n = 0
+    disconnected: list[dict[str, Any]] = []
+    for s in sites_rows:
+        if not isinstance(s, dict):
+            continue
+        if int(s.get("connected") or 0) == 1 and int(s.get("status") or 0) == 0:
+            connected_n += 1
+        else:
+            disconnected.append({"name": s.get("name", ""), "last_error": s.get("last_error", "")})
+
+    artefact_counts: Counter[str] = Counter()
+    by_queue: Counter[str] = Counter()
+    by_backend: dict[str, Counter[str]] = {}
+    samples: list[dict[str, Any]] = []
+
+    def _record(
+        obj_type: str,
+        host: str,
+        service: str | None,
+        backend: str,
+        sig: str,
+        queue: str | None,
+        output: str,
+    ) -> None:
+        artefact_counts[sig] += 1
+        if queue:
+            by_queue[queue] += 1
+        by_backend.setdefault(backend or "(unknown)", Counter())[sig] += 1
+        if len(samples) < sample_limit:
+            sample: dict[str, Any] = {
+                "object_type": obj_type,
+                "host": host,
+                "backend": backend,
+                "signature": sig,
+                "plugin_output": output,
+            }
+            if service is not None:
+                sample["service"] = service
+            if queue:
+                sample["queue"] = queue
+            samples.append(sample)
+
+    for row in svc_rows:
+        if not isinstance(row, dict):
+            continue
+        output = row.get("plugin_output", "")
+        sig, queue = _classify_worker_artefact(output)
+        if sig is None:
+            continue
+        _record(
+            "service",
+            row.get("host_name", ""),
+            row.get("description", ""),
+            row.get("peer_name", ""),
+            sig,
+            queue,
+            output,
+        )
+
+    for row in host_rows:
+        if not isinstance(row, dict):
+            continue
+        output = row.get("plugin_output", "")
+        sig, queue = _classify_worker_artefact(output)
+        if sig is None:
+            continue
+        _record("host", row.get("name", ""), None, row.get("peer_name", ""), sig, queue, output)
+
+    total = sum(artefact_counts.values())
+    if total == 0 and not disconnected:
+        assessment = "No mod-gearman worker artefacts detected and all backends connected."
+    else:
+        parts: list[str] = []
+        if total:
+            parts.append(
+                f"{total} worker artefact(s) across {len(by_queue)} queue(s) — these "
+                "non-OK states are supervision artefacts (dead/saturated workers, "
+                "orphaned checks, unresolved addresses), not necessarily real outages."
+            )
+        if disconnected:
+            parts.append(
+                f"{len(disconnected)} backend(s) disconnected — their worker layer is a blind spot."
+            )
+        assessment = " ".join(parts)
+
+    payload: dict[str, Any] = {
+        "now": _ts(now),
+        "patterns": {k: v.pattern for k, v in _WORKER_SIGNATURES.items()},
+        "total_artefacts": total,
+        "artefact_counts": dict(artefact_counts),
+        "by_queue": dict(by_queue.most_common()),
+        "by_backend": {k: dict(v) for k, v in sorted(by_backend.items())},
+        "backends": {
+            "connected": connected_n,
+            "disconnected": len(disconnected),
+            "disconnected_sites": disconnected,
+        },
+        "samples": samples,
+        "assessment": assessment,
+    }
+    svc_capped = include_services and len(svc_rows) >= capped
+    host_capped = include_hosts and len(host_rows) >= capped
+    if svc_capped or host_capped:
+        payload["_warning"] = (
+            f"Result set reached the per-object cap ({capped}); detection may be "
+            "incomplete. Narrow with backends= or raise limit."
+        )
+    return _tool_response(payload)
+
+
+# ---------------------------------------------------------------------------
 # TRIAGE_REGISTRY: co-located tool specs (spliced into server.TOOL_REGISTRY)
 # ---------------------------------------------------------------------------
 
@@ -892,12 +1116,34 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    # --------------------------------------------- mod-gearman worker health (issue #320)
+    ToolSpec(
+        name="thruk_worker_health",
+        fn=thruk_worker_health,
+        schema=_s(
+            include_hosts=_bool(
+                "Also scan /hosts host checks for worker artefacts (default true).",
+                default=True,
+            ),
+            include_services=_bool(
+                "Scan /services for worker artefacts (default true).", default=True
+            ),
+            limit=_int(
+                "Maximum rows scanned per object type (max 5000, default 500).", default=500
+            ),
+            sample_limit=_int(
+                "Maximum example rows returned in 'samples' (default 20).", default=20
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 
 __all__ = [
     "TRIAGE_REGISTRY",
     "_classify_check",
+    "_classify_worker_artefact",
     "_project_problem_counts",
     "thruk_concurrent_failures",
     "thruk_oldest_problems",
@@ -905,4 +1151,5 @@ __all__ = [
     "thruk_stale_acks",
     "thruk_stale_checks",
     "thruk_unacked_critical",
+    "thruk_worker_health",
 ]

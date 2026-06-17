@@ -3070,3 +3070,175 @@ async def test_recent_events_without_only_alerts_does_not_force_class(mocked_ser
         "recent_events(only_alerts=False) must not force class=1 — it is a generic feed."
     )
     assert p.get("type[~]") is None
+
+
+# ---------------------------------------------------------------------------
+# thruk_worker_health — mod-gearman supervision-artefact scan (issue #320)
+# ---------------------------------------------------------------------------
+from thruk_mcp.tools.triage import _classify_worker_artefact  # noqa: E402
+
+
+def test_classify_worker_artefact_orphaned_extracts_queue() -> None:
+    sig, queue = _classify_worker_artefact(
+        "(service check orphaned, is the mod-gearman worker on queue 'service' running?)"
+    )
+    assert sig == "orphaned"
+    assert queue == "service"
+
+
+def test_classify_worker_artefact_host_queue() -> None:
+    sig, queue = _classify_worker_artefact(
+        "(host check orphaned, is the mod-gearman worker on queue 'host' running?)"
+    )
+    assert sig == "orphaned"
+    assert queue == "host"
+
+
+def test_classify_worker_artefact_worker_timeout() -> None:
+    sig, queue = _classify_worker_artefact("Host Check Timed Out On Worker host-01")
+    assert sig == "worker_timeout"
+    assert queue is None
+
+
+def test_classify_worker_artefact_address_undef() -> None:
+    sig, queue = _classify_worker_artefact("check_ping: Invalid hostname/address - undef")
+    assert sig == "address_undef"
+    assert queue is None
+
+
+def test_classify_worker_artefact_no_match() -> None:
+    sig, queue = _classify_worker_artefact("OK - all good")
+    assert sig is None
+    assert queue is None
+
+
+def test_classify_worker_artefact_empty() -> None:
+    assert _classify_worker_artefact("") == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_worker_health_routing(mocked_server) -> None:
+    """The plugin_output signature filter must be pushed server-side as a single
+    quoted q-language regex on both /services and /hosts, and /sites must be read
+    for backend connectivity."""
+    mcp, router = mocked_server
+    r_sites = router.get("https://thruk.test/r/sites").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    r_host = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_worker_health", {"limit": 123})
+
+    assert r_sites.called and r_svc.called and r_host.called
+    expected_q = 'plugin_output ~~ "orphaned|Timed Out On Worker|Invalid hostname/address - undef"'
+    for route in (r_svc, r_host):
+        params = route.calls.last.request.url.params
+        assert params["q"] == expected_q
+        assert params["limit"] == "123"
+        assert "peer_name" in params["columns"]
+        assert "plugin_output" in params["columns"]
+
+
+@pytest.mark.asyncio
+async def test_worker_health_include_hosts_false_skips_hosts(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(return_value=ok([]))
+    r_svc = router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    r_host = router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+
+    await mcp.call_tool("thruk_worker_health", {"include_hosts": False})
+
+    assert r_svc.called
+    assert not r_host.called, "include_hosts=False must not query /hosts"
+
+
+@pytest.mark.asyncio
+async def test_worker_health_aggregation(mocked_server) -> None:
+    """Artefacts are classified and aggregated per signature, queue and backend;
+    /sites disconnection is surfaced; samples and assessment are populated."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(
+        return_value=ok(
+            [
+                {"name": "wopr-node-02", "connected": 1, "status": 0, "last_error": ""},
+                {"name": "wopr-dead-01", "connected": 0, "status": 2, "last_error": "timeout"},
+            ]
+        )
+    )
+    router.get("https://thruk.test/r/services").mock(
+        return_value=ok(
+            [
+                {
+                    "host_name": "aprt-rl10-02",
+                    "description": "FS_BOOT_INODE",
+                    "plugin_output": (
+                        "(service check orphaned, is the mod-gearman worker on "
+                        "queue 'service' running?)"
+                    ),
+                    "peer_name": "wopr-node-02",
+                    "state": 3,
+                },
+                {
+                    "host_name": "aprt-rl10-02",
+                    "description": "PING",
+                    "plugin_output": "check_ping: Invalid hostname/address - undef",
+                    "peer_name": "wopr-node-02",
+                    "state": 2,
+                },
+                {
+                    "host_name": "noise-01",
+                    "description": "OK_SVC",
+                    "plugin_output": "OK - nothing to see",
+                    "peer_name": "wopr-node-02",
+                    "state": 0,
+                },
+            ]
+        )
+    )
+    router.get("https://thruk.test/r/hosts").mock(
+        return_value=ok(
+            [
+                {
+                    "name": "cdsgroupe-brocade2",
+                    "plugin_output": "Host Check Timed Out On Worker",
+                    "peer_name": "wopr-node-01",
+                    "state": 1,
+                },
+            ]
+        )
+    )
+
+    result = await mcp.call_tool("thruk_worker_health", {})
+    payload = json.loads(result[0].text)
+
+    assert payload["total_artefacts"] == 3
+    assert payload["artefact_counts"] == {
+        "orphaned": 1,
+        "address_undef": 1,
+        "worker_timeout": 1,
+    }
+    assert payload["by_queue"] == {"service": 1}
+    assert payload["by_backend"]["wopr-node-02"] == {"orphaned": 1, "address_undef": 1}
+    assert payload["by_backend"]["wopr-node-01"] == {"worker_timeout": 1}
+    assert payload["backends"]["connected"] == 1
+    assert payload["backends"]["disconnected"] == 1
+    assert payload["backends"]["disconnected_sites"][0]["name"] == "wopr-dead-01"
+    assert len(payload["samples"]) == 3
+    assert "supervision artefacts" in payload["assessment"]
+    assert "blind spot" in payload["assessment"]
+
+
+@pytest.mark.asyncio
+async def test_worker_health_clean(mocked_server) -> None:
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(
+        return_value=ok([{"name": "s1", "connected": 1, "status": 0}])
+    )
+    router.get("https://thruk.test/r/services").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/hosts").mock(return_value=ok([]))
+
+    result = await mcp.call_tool("thruk_worker_health", {})
+    payload = json.loads(result[0].text)
+
+    assert payload["total_artefacts"] == 0
+    assert payload["by_queue"] == {}
+    assert payload["assessment"].startswith("No mod-gearman worker artefacts")

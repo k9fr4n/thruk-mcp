@@ -126,6 +126,7 @@ from .perfdata import (
 from .triage import (
     TRIAGE_REGISTRY,
     _classify_check,
+    _classify_worker_artefact,
     _project_problem_counts,
     thruk_concurrent_failures,
     thruk_oldest_problems,
@@ -133,6 +134,7 @@ from .triage import (
     thruk_stale_acks,
     thruk_stale_checks,
     thruk_unacked_critical,
+    thruk_worker_health,
 )
 
 # ---------------------------------------------------------------------------
@@ -187,6 +189,7 @@ __all__ = [
     "_aggregate_alerts",
     "_bool",
     "_classify_check",
+    "_classify_worker_artefact",
     "_coerce_hours_to_since",
     "_collect_hostgroup_constraints",
     "_delete_downtimes_by_host_comment",
@@ -259,4 +262,5 @@ __all__ = [
     "thruk_top_noisy_services",
     "thruk_totals",
     "thruk_unacked_critical",
+    "thruk_worker_health",
 ]
