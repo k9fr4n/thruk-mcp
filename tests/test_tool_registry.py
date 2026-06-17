@@ -143,10 +143,12 @@ def test_registry_tool_count() -> None:
               root-cause analysis, issue #322)
          → +1 thruk_backend_health (per-site backend latency/replication-lag
               health, issue #323)
-      = 63
+         → +2 thruk_state_at, thruk_state_diff (point-in-time parc-state
+              reconstruction from /logs, issue #324)
+      = 65
     """
-    assert len(TOOL_REGISTRY) == 63, (
-        f"Expected 63 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 65, (
+        f"Expected 65 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 

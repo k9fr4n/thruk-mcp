@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `thruk_state_at` / `thruk_state_diff`: point-in-time parc-state reconstruction
+  from `/logs` for post-mortems. `thruk_state_at(timestamp, filter)` answers
+  "qu'est-ce qui était DOWN à 15h45 ?" — it replays HOST/SERVICE ALERT +
+  DOWNTIME/ACKNOWLEDGE ALERT rows up to a **past** instant to rebuild each
+  object's `state` (+ SOFT/HARD `state_type`), `since`, `in_downtime` and
+  `acknowledged`, independently of the current (often already-recovered) state;
+  `problems_only` drops OK/UP rows and a `summary` gives `total`/`ok`/`problems`/
+  `by_state`. `thruk_state_diff(t1, t2, filter)` reconstructs at both instants
+  (one `/logs` fetch) and lists what moved — `new_problem` / `recovered` /
+  `state_changed` / `downtime_changed` / `ack_changed`. Both require a scoping
+  `filter` (host/service/hostgroup/custom_var); only objects with a log row in
+  the replayed window appear, and acks logged solely as class-2 `EXTERNAL
+  COMMAND` are not reflected (#324).
 - `thruk_backend_health`: per-site supervision-backend health — `thruk_sites`
   only reports connected/disconnected, so a muted or lagging collector turns its
   whole perimeter into a green-looking blind spot. This enriches the `/sites`
