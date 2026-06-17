@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `thruk_backend_health`: per-site supervision-backend health — `thruk_sites`
+  only reports connected/disconnected, so a muted or lagging collector turns its
+  whole perimeter into a green-looking blind spot. This enriches the `/sites`
+  baseline with per-peer Livestatus **latency** and data **freshness** by merging
+  three endpoints with graceful degradation: `/sites` (mandatory — `connected`,
+  `status`, `last_error`, `addr`), `/lmd/sites` (optional, LMD only —
+  `response_time` latency, `last_online`/`last_update` freshness, `queries`, byte
+  counters) and `/processinfo` (optional — `program_start` uptime,
+  `accept_passive_*_checks`, `cached`). Each site is classified `disconnected`
+  (not connected / non-OK status — carries `last_error`), `degraded` (connected
+  but latency `> latency_warn_seconds`, data age `> lag_warn_seconds`, passive
+  checks off, or a non-empty error) or `ok`. Returns `{now, summary, sites
+  (worst-first), degraded_sites, disconnected_sites, lmd_available,
+  processinfo_available, assessment}`; when neither optional endpoint answers the
+  report degrades to connectivity-only and says so (#323).
 - `thruk_root_cause`: collapses a DOWN/UNREACHABLE storm into its common cause
   via the host `parents` topology. Fetches `HOST ALERT` DOWN (state=1) /
   UNREACHABLE (state=2) log rows over `[since, until]`, fetches the host
