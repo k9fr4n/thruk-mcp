@@ -24,6 +24,8 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: mypy src
+      - name: catalog/tools.json in sync with tool registry
+        run: python scripts/gen_tools_json.py --check
       - name: pytest with coverage
         run: pytest -v --cov=thruk_mcp --cov-report=term --cov-report=xml --cov-fail-under=80
       - name: Upload coverage to Codecov
