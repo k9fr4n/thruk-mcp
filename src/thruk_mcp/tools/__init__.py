@@ -90,6 +90,8 @@ from .history import (
     thruk_recent_events,
     thruk_recurring_problems,
     thruk_reliability_report,
+    thruk_state_at,
+    thruk_state_diff,
     thruk_top_noisy_hosts,
     thruk_top_noisy_services,
 )
@@ -270,6 +272,8 @@ __all__ = [
     "thruk_sites",
     "thruk_stale_acks",
     "thruk_stale_checks",
+    "thruk_state_at",
+    "thruk_state_diff",
     "thruk_stats",
     "thruk_top_noisy_hosts",
     "thruk_top_noisy_services",

@@ -1602,6 +1602,409 @@ async def thruk_incident_timeline(
     return _tool_response(payload)
 
 
+# ---------------------------------------------------------------------------
+# thruk_state_at / thruk_state_diff (issue #324)
+# ---------------------------------------------------------------------------
+# Point-in-time reconstruction of the parc state at a *past* timestamp, replayed
+# from ``/logs`` — answers "qu'est-ce qui était DOWN à 15h45 ?" independently of
+# the current (often already-recovered) state. Reuses the timeline classifier /
+# detail extractor; the reducer is pure so ``thruk_state_diff`` can fetch the log
+# window once and reconstruct at two distinct cut-off instants.
+# ---------------------------------------------------------------------------
+
+#: One regex spanning the alert families we replay to rebuild state. HOST/SERVICE
+#: ALERT carries the state + state_type; DOWNTIME/ACKNOWLEDGE ALERT carry the
+#: in_downtime / acknowledged flags via their STARTED/STOPPED detail.
+_STATE_AT_TYPE_REGEX = "^(HOST|SERVICE) (ALERT|DOWNTIME ALERT|ACKNOWLEDGE ALERT)"
+
+#: ``/logs`` columns needed to reconstruct each object's state.
+_STATE_AT_COLUMNS = "host_name,service_description,state,state_type,time,type,plugin_output,message"
+
+
+def _reconstruct_state_at(rows: list[Any], at_epoch: int) -> dict[tuple[str, str], dict[str, Any]]:
+    """Replay ``/logs`` rows to rebuild each object's state as of ``at_epoch``.
+
+    Walks the rows chronologically, ignoring any with ``time > at_epoch`` (this
+    cut-off is what lets :func:`thruk_state_diff` fetch one window and rebuild at
+    two instants). Per ``(host, service)`` we track:
+
+    * ``state`` / ``state_type`` — from the last HOST/SERVICE ALERT row. The row
+      time becomes ``since``; a run of same-state rows (e.g. SOFT then HARD of the
+      same code) keeps the *earliest* entry, so ``since`` marks when the object
+      entered that state.
+    * ``in_downtime`` — toggled by DOWNTIME ALERT STARTED vs STOPPED/CANCELLED/EXPIRED.
+    * ``acknowledged`` — set by ACKNOWLEDGE ALERT, cleared on a recovery (state
+      back to OK/UP) or an explicit STOPPED/CANCELLED/EXPIRED.
+
+    Host- vs service-level rows are distinguished by an empty ``service_description``.
+    Objects with no replayable row in the fetched window simply do not appear —
+    an inherent limit of log replay, surfaced via the caller's cap ``_warning``.
+    """
+    state: dict[tuple[str, str], dict[str, Any]] = {}
+    ordered = sorted(
+        (r for r in rows if isinstance(r, dict) and int(r.get("time") or 0) <= at_epoch),
+        key=lambda r: int(r.get("time") or 0),
+    )
+    for entry in ordered:
+        epoch = int(entry.get("time") or 0)
+        host = entry.get("host_name") or ""
+        svc = entry.get("service_description") or ""
+        key = (host, svc)
+        rec = state.setdefault(
+            key,
+            {
+                "state": None,
+                "state_type": None,
+                "since": None,
+                "in_downtime": False,
+                "acknowledged": False,
+                "plugin_output": None,
+            },
+        )
+        category = _classify_timeline_type(entry.get("type"))
+        if category == "state_change":
+            try:
+                s = int(entry.get("state", -1))
+            except (TypeError, ValueError):
+                s = -1
+            if s != rec["state"]:
+                rec["since"] = epoch
+            rec["state"] = s
+            rec["state_type"] = str(entry.get("state_type") or "").upper() or None
+            rec["plugin_output"] = entry.get("plugin_output") or None
+            if s == 0:  # recovery (OK/UP) clears any standing acknowledgement
+                rec["acknowledged"] = False
+        elif category == "downtime":
+            detail = _timeline_detail(entry)
+            if detail == "STARTED":
+                rec["in_downtime"] = True
+            elif detail in ("STOPPED", "CANCELLED", "EXPIRED"):
+                rec["in_downtime"] = False
+        elif category == "ack":
+            detail = _timeline_detail(entry)
+            if detail in ("STOPPED", "CANCELLED", "EXPIRED"):
+                rec["acknowledged"] = False
+            else:
+                # STARTED — or no explicit marker, which Naemon omits on the
+                # initial ACKNOWLEDGE ALERT row: presence means it is acked.
+                rec["acknowledged"] = True
+    return state
+
+
+def _state_object(host: str, svc: str, rec: dict[str, Any]) -> dict[str, Any]:
+    """Format one reconstructed ``(host, service)`` record into an output object."""
+    state_map = SERVICE_STATES if svc else HOST_STATES
+    since = rec["since"]
+    return {
+        "host": host,
+        "service": svc or None,
+        "state": _format_state_label(rec["state"], state_map),
+        "state_type": rec["state_type"],
+        "since": _ts(since) if since else None,
+        "since_human": _duration_human(_now_utc_epoch() - since) if since else None,
+        "in_downtime": rec["in_downtime"],
+        "acknowledged": rec["acknowledged"],
+        "plugin_output": rec["plugin_output"],
+    }
+
+
+def _is_problem(rec: dict[str, Any]) -> bool:
+    """True when the reconstructed state is a non-OK/UP problem (state code > 0)."""
+    s = rec.get("state")
+    return isinstance(s, int) and s > 0
+
+
+def _state_snapshot(
+    state: dict[tuple[str, str], dict[str, Any]],
+    problems_only: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Turn a reconstructed state map into a sorted object list + summary.
+
+    Objects are sorted problems-first, then by host/service. The ``summary``
+    counts total / ok / problems and a ``by_state`` breakdown over the full
+    reconstructed set (independent of ``problems_only``, which only filters the
+    returned object list).
+    """
+    by_state: dict[str, int] = {}
+    problems = 0
+    for (_host, svc), rec in state.items():
+        label = _format_state_label(rec["state"], SERVICE_STATES if svc else HOST_STATES)
+        by_state[label] = by_state.get(label, 0) + 1
+        if _is_problem(rec):
+            problems += 1
+    summary = {
+        "total": len(state),
+        "ok": len(state) - problems,
+        "problems": problems,
+        "by_state": dict(sorted(by_state.items())),
+    }
+    items = [
+        ((host, svc), rec)
+        for (host, svc), rec in state.items()
+        if not problems_only or _is_problem(rec)
+    ]
+    items.sort(key=lambda kv: (not _is_problem(kv[1]), kv[0][0], kv[0][1]))
+    objects = [_state_object(host, svc, rec) for (host, svc), rec in items]
+    return objects, summary
+
+
+def _diff_states(
+    before: dict[tuple[str, str], dict[str, Any]],
+    after: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Diff two reconstructed state maps, one change object per object that moved.
+
+    Each change carries the object identity plus, for the dimensions that
+    actually moved, ``*_change`` blocks. ``category`` summarises the move:
+    ``new_problem`` (OK→non-OK), ``recovered`` (non-OK→OK), ``state_changed``
+    (non-OK→different non-OK), ``downtime_changed`` / ``ack_changed`` (only the
+    flag moved). Objects present in only one snapshot use ``None`` as the missing
+    side's state. Objects identical on every tracked dimension are omitted.
+    """
+    changes: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    empty = {"state": None, "state_type": None, "in_downtime": False, "acknowledged": False}
+    for key in sorted(before.keys() | after.keys()):
+        host, svc = key
+        b = before.get(key, empty)
+        a = after.get(key, empty)
+        state_moved = b["state"] != a["state"]
+        dt_moved = b["in_downtime"] != a["in_downtime"]
+        ack_moved = b["acknowledged"] != a["acknowledged"]
+        if not (state_moved or dt_moved or ack_moved):
+            continue
+        if state_moved:
+            if not _is_problem(b) and _is_problem(a):
+                category = "new_problem"
+            elif _is_problem(b) and not _is_problem(a):
+                category = "recovered"
+            else:
+                category = "state_changed"
+        elif dt_moved:
+            category = "downtime_changed"
+        else:
+            category = "ack_changed"
+        counts[category] = counts.get(category, 0) + 1
+        state_map = SERVICE_STATES if svc else HOST_STATES
+        change: dict[str, Any] = {
+            "host": host,
+            "service": svc or None,
+            "category": category,
+        }
+        if state_moved:
+            change["from_state"] = _format_state_label(b["state"], state_map)
+            change["to_state"] = _format_state_label(a["state"], state_map)
+        if dt_moved:
+            change["in_downtime"] = {"from": b["in_downtime"], "to": a["in_downtime"]}
+        if ack_moved:
+            change["acknowledged"] = {"from": b["acknowledged"], "to": a["acknowledged"]}
+        changes.append(change)
+    summary = {"changed": len(changes), "by_category": dict(sorted(counts.items()))}
+    return changes, summary
+
+
+async def _fetch_state_logs(
+    extra: dict[str, Any], upto_epoch: int, backends: str | None
+) -> tuple[list[Any], int, list[str]]:
+    """Fetch the ``/logs`` window up to ``upto_epoch`` for state reconstruction.
+
+    Returns ``(rows, total, warnings)``. ``total`` is a server-side ``count(*)``
+    used to warn when the pre-cut-off history exceeds ``_NOISY_MAX_ALERTS`` (an
+    object whose last change predates the fetched slice would be missed). Mirrors
+    the bounded-fetch + count pattern of :func:`thruk_incident_timeline`.
+    """
+    scoped = {**extra, "type[~]": _STATE_AT_TYPE_REGEX, "time[lte]": str(upto_epoch)}
+    count_rows, _count_warnings = await _get_client().get_with_fallback(
+        "/logs",
+        params={"columns": "count(*):cnt", "limit": 1, **scoped},
+        backends=_backends(backends),
+        method="POST",
+    )
+    total = _sum_cnt(count_rows)
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs",
+        params={
+            "limit": _NOISY_MAX_ALERTS,
+            "sort": "-time",
+            "columns": _STATE_AT_COLUMNS,
+            **scoped,
+        },
+        backends=_backends(backends),
+        method="POST",
+    )
+    if not isinstance(data, list):
+        data = []
+    return data, total, warnings
+
+
+def _state_cap_warning(total: int) -> str | None:
+    """Warn when the replayed window exceeded the raw-fetch cap (partial state)."""
+    if total > _NOISY_MAX_ALERTS:
+        return (
+            f"Window holds {total} log entries but only {_NOISY_MAX_ALERTS} were "
+            "replayed; objects whose last change predates that slice are missing. "
+            "Narrow the filter." + _NOISY_CAP_HINT
+        )
+    return None
+
+
+async def thruk_state_at(
+    timestamp: str | None = None,
+    filter: dict[str, Any] | None = None,
+    problems_only: bool = False,
+    backends: str | None = None,
+) -> str:
+    """Reconstruct the parc state at a **past** instant from ``/logs`` (post-mortem snapshot).
+
+    Answers "qu'est-ce qui était DOWN à 15h45 ?" — the state of every host /
+    service at ``timestamp``, **independent of the current state** (which has
+    often already recovered by the time the analysis runs). State is replayed
+    from the ``/logs`` table: each object's state is the last HOST/SERVICE ALERT
+    with ``time <= timestamp``; ``in_downtime`` / ``acknowledged`` are derived
+    from DOWNTIME / ACKNOWLEDGE ALERT rows over the same window.
+
+    ``timestamp`` is required (Thruk relative ``"-2h"`` or absolute
+    ``"2026-06-16 15:45:00"`` — interpreted as UTC). A scoping ``filter``
+    (``host`` / ``service`` / ``hostgroup`` / ``custom_var``) is also **required**:
+    an unscoped parc-wide replay is unbounded. ``hostgroup`` / ``custom_var`` are
+    resolved to a ``host_name[regex]`` via a ``/hosts`` lookup, like the other
+    log-family tools. Set ``problems_only=true`` to drop OK/UP objects.
+
+    Each returned object carries ``host``, ``service`` (``null`` for host-level),
+    ``state`` + ``state_type`` (SOFT/HARD — soft states are transient and shown
+    explicitly), ``since`` / ``since_human`` (when the object entered that state),
+    ``in_downtime``, ``acknowledged`` and ``plugin_output``. The ``summary`` block
+    reports ``total`` / ``ok`` / ``problems`` and a ``by_state`` breakdown over
+    the full reconstructed set.
+
+    Limits: only objects with at least one log row in the fetched window appear
+    (objects unchanged for a long time before ``timestamp`` may be missing — a
+    ``_warning`` is set when the window exceeds the replay cap). Acknowledgements
+    that the core logs only as a class-2 ``EXTERNAL COMMAND`` (rather than a
+    native ``* ACKNOWLEDGE ALERT`` row) are not reflected in ``acknowledged``.
+    """
+    if not timestamp:
+        return _tool_response(
+            {"error": "thruk_state_at requires a 'timestamp' (the past instant to reconstruct)."}
+        )
+    if not filter:
+        return _tool_response(
+            {
+                "error": (
+                    "thruk_state_at requires a 'filter' scoping the snapshot to a host, "
+                    "service, hostgroup or custom_var."
+                )
+            }
+        )
+    at_epoch = _parse_thruk_time(timestamp)
+    if at_epoch is None:
+        return _tool_response({"error": f"Could not parse timestamp: {timestamp!r}."})
+
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    rows, total, warnings = await _fetch_state_logs(extra, at_epoch, backends)
+    state = _reconstruct_state_at(rows, at_epoch)
+    objects, summary = _state_snapshot(state, problems_only)
+
+    payload: dict[str, Any] = {
+        "timestamp": _ts(at_epoch),
+        "problems_only": problems_only,
+        "summary": summary,
+        "objects": objects,
+    }
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    else:
+        cap = _state_cap_warning(total)
+        if cap:
+            payload["_warning"] = cap
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
+async def thruk_state_diff(
+    t1: str | None = None,
+    t2: str | None = None,
+    filter: dict[str, Any] | None = None,
+    backends: str | None = None,
+) -> str:
+    """List what changed between two **past** instants ``t1`` → ``t2`` (replayed from ``/logs``).
+
+    Reconstructs the parc state at ``t1`` and at ``t2`` (one ``/logs`` fetch up to
+    the later instant, replayed at both cut-offs) and reports every object whose
+    state, downtime flag or acknowledgement moved — the "diff of two photos" for a
+    report, e.g. what broke between the start and the peak of an incident.
+
+    Both ``t1`` and ``t2`` are required (Thruk relative ``"-2h"`` or absolute
+    ``"2026-06-16 15:45:00"`` — UTC); order is normalised so ``t1`` is the
+    earlier instant. A scoping ``filter`` (``host`` / ``service`` / ``hostgroup``
+    / ``custom_var``) is **required**, as for :func:`thruk_state_at`.
+
+    Each change carries ``host``, ``service``, a ``category`` (``new_problem`` =
+    OK→non-OK, ``recovered`` = non-OK→OK, ``state_changed`` = non-OK→other non-OK,
+    ``downtime_changed`` / ``ack_changed``) and, for the dimensions that moved,
+    ``from_state`` / ``to_state`` and/or ``in_downtime`` / ``acknowledged``
+    ``{from, to}`` blocks. Objects identical at both instants are omitted; the
+    ``summary`` reports the total changed count and a ``by_category`` breakdown.
+
+    Same log-replay limits and acknowledgement caveat as :func:`thruk_state_at`.
+    """
+    if not t1 or not t2:
+        return _tool_response(
+            {"error": "thruk_state_diff requires both 't1' and 't2' (the two instants to compare)."}
+        )
+    if not filter:
+        return _tool_response(
+            {
+                "error": (
+                    "thruk_state_diff requires a 'filter' scoping the diff to a host, "
+                    "service, hostgroup or custom_var."
+                )
+            }
+        )
+    e1, e2 = _parse_thruk_time(t1), _parse_thruk_time(t2)
+    if e1 is None:
+        return _tool_response({"error": f"Could not parse t1: {t1!r}."})
+    if e2 is None:
+        return _tool_response({"error": f"Could not parse t2: {t2!r}."})
+    if e1 > e2:  # normalise so t1 is the earlier instant
+        t1, t2, e1, e2 = t2, t1, e2, e1
+
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    rows, total, warnings = await _fetch_state_logs(extra, e2, backends)
+    before = _reconstruct_state_at(rows, e1)
+    after = _reconstruct_state_at(rows, e2)
+    changes, summary = _diff_states(before, after)
+
+    payload: dict[str, Any] = {
+        "t1": _ts(e1),
+        "t2": _ts(e2),
+        "summary": summary,
+        "changes": changes,
+    }
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    else:
+        cap = _state_cap_warning(total)
+        if cap:
+            payload["_warning"] = cap
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
 # ``_resolve_log_filter`` / ``_resolve_hosts_to_regex_from_params`` live in
 # :mod:`thruk_mcp.helpers` (issue #258); ``_resolve_log_filter`` is imported above.
 
@@ -2174,6 +2577,44 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    ToolSpec(
+        name="thruk_state_at",
+        fn=thruk_state_at,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            timestamp={
+                "type": "string",
+                "description": (
+                    'Past instant to reconstruct (required). Thruk relative ("-2h") or '
+                    'absolute ("2026-06-16 15:45:00", interpreted as UTC).'
+                ),
+            },
+            problems_only=_bool(
+                "Return only non-OK/UP objects (drops the OK/UP rows). Default false.",
+                default=False,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
+    ToolSpec(
+        name="thruk_state_diff",
+        fn=thruk_state_diff,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            t1={
+                "type": "string",
+                "description": (
+                    'First instant (required). Thruk relative ("-2h") or absolute '
+                    '("2026-06-16 15:45:00", UTC). Order is normalised to earlier→later.'
+                ),
+            },
+            t2={
+                "type": "string",
+                "description": "Second instant (required, same formats as t1).",
+            },
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
@@ -2289,6 +2730,8 @@ __all__ = [
     "thruk_recent_events",
     "thruk_recurring_problems",
     "thruk_reliability_report",
+    "thruk_state_at",
+    "thruk_state_diff",
     "thruk_top_noisy_hosts",
     "thruk_top_noisy_services",
 ]

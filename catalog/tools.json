@@ -4477,6 +4477,89 @@
     }
   },
   {
+    "name": "thruk_state_at",
+    "description": "Reconstruct the parc state at a PAST instant from /logs (post-mortem snapshot) — answers \"qu'est-ce qui était DOWN à 15h45 ?\" independently of the current (often already-recovered) state. Replays HOST/SERVICE ALERT rows (state + SOFT/HARD state_type, with 'since' = when the object entered that state) plus DOWNTIME/ACKNOWLEDGE ALERT rows up to the timestamp to derive in_downtime / acknowledged per host/service. Returns {timestamp, problems_only, summary (total/ok/problems/by_state), objects}; each object carries host, service, state, state_type, since/since_human, in_downtime, acknowledged, plugin_output. timestamp and a scoping filter (host/service/hostgroup/custom_var) are required; problems_only drops OK/UP rows. Only objects with a log row in the replayed window appear; acks logged solely as class-2 EXTERNAL COMMAND are not reflected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree (required). Fields: host, service, hostgroup, custom_var."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Past instant to reconstruct (required). Thruk relative (\"-2h\") or absolute (\"2026-06-16 15:45:00\", interpreted as UTC)."
+        },
+        "problems_only": {
+          "type": "boolean",
+          "default": false,
+          "description": "Return only non-OK/UP objects (drops the OK/UP rows). Default false."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
+    "name": "thruk_state_diff",
+    "description": "List what changed between two PAST instants t1 → t2, replayed from /logs (the \"diff of two photos\" for a report — e.g. what broke between the start and the peak of an incident). Reconstructs the parc state at both instants from one /logs fetch and reports every object whose state, downtime flag or acknowledgement moved. Returns {t1, t2, summary (changed count + by_category), changes}; each change carries host, service, a category (new_problem = OK→non-OK, recovered = non-OK→OK, state_changed = non-OK→other non-OK, downtime_changed, ack_changed) and, for the dimensions that moved, from_state/to_state and/or in_downtime/acknowledged {from,to} blocks. t1, t2 and a scoping filter (host/service/hostgroup/custom_var) are required; order is normalised to earlier→later. Same log-replay limits and acknowledgement caveat as thruk_state_at.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree (required). Fields: host, service, hostgroup, custom_var."
+        },
+        "t1": {
+          "type": "string",
+          "description": "First instant (required). Thruk relative (\"-2h\") or absolute (\"2026-06-16 15:45:00\", UTC). Order is normalised to earlier→later."
+        },
+        "t2": {
+          "type": "string",
+          "description": "Second instant (required, same formats as t1)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_root_cause",
     "description": "Collapse a DOWN/UNREACHABLE storm into its root cause(s) via the host parents topology. Fetches HOST ALERT DOWN (state=1) / UNREACHABLE (state=2) log entries over [since, until], fetches the host parents topology unfiltered (the root cause is often in a different hostgroup than its victims), walks each affected host up its parents chain to the topmost DOWN ancestor, and clusters victims under that root. Returns {since, until, total_affected_hosts, down_count, unreachable_count, root_causes, unattributed_unreachable}. Each root_causes entry (sorted by impacted_count desc) carries root_cause_host, root_cause_state, impacted_count, impacted_hosts, impacted_hosts_truncated, impacted_hostgroups, confidence (high >=3 / medium 2 / low 1). On a flat estate (no parents) every DOWN host is its own low-confidence root and UNREACHABLE hosts with no known DOWN ancestor land in unattributed_unreachable.",
     "inputSchema": {
