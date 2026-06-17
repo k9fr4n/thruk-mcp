@@ -723,8 +723,12 @@ class ThrukMCPServer:
             audit.log_call(name, arguments, user=cfg.auth_user, status="ok")
         return [TextContent(type="text", text=result)]
 
-    async def run(self, read_stream: Any, write_stream: Any, init_options: Any = None) -> None:
-        await self._server.run(read_stream, write_stream, init_options)
+    async def run(
+        self, read_stream: Any, write_stream: Any, init_options: Any = None, **kwargs: Any
+    ) -> None:
+        # Forward any extra kwargs (e.g. `stateless`) the MCP SDK passes through
+        # from streamable_http_manager.run_server() to the wrapped Server.run().
+        await self._server.run(read_stream, write_stream, init_options, **kwargs)
 
     def create_initialization_options(self) -> Any:
         return self._server.create_initialization_options()

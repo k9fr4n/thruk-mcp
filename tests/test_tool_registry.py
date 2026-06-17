@@ -249,6 +249,26 @@ class TestThrukMCPServerInterface:
         init_param = sig.parameters["init_options"]
         assert init_param.default is not inspect.Parameter.empty
 
+    async def test_run_forwards_extra_kwargs(self) -> None:
+        """run() must forward extra kwargs (e.g. ``stateless``) to the wrapped Server.
+
+        Regression: the MCP SDK's StreamableHTTPSessionManager.run_server() calls
+        ``app.run(read, write, init_options, stateless=...)``. The wrapper override
+        previously dropped **kwargs, so every streamable-http session crashed with
+        ``TypeError: run() got an unexpected keyword argument 'stateless'``.
+        """
+        from unittest.mock import AsyncMock, MagicMock
+
+        from thruk_mcp.server import ThrukMCPServer
+
+        inner = MagicMock()
+        inner.run = AsyncMock()
+        wrapper = ThrukMCPServer(inner, {}, MagicMock(), MagicMock())
+
+        await wrapper.run("read", "write", "init", stateless=True)
+
+        inner.run.assert_awaited_once_with("read", "write", "init", stateless=True)
+
 
 # ---------------------------------------------------------------------------
 # Regression: issue #177
