@@ -70,6 +70,7 @@ from ..helpers import (
     _list_params,
     _now_utc_epoch,
     _parse_thruk_time,
+    _regroup_records_by_group,
     _resolve_log_filter,
     _tool_response,
     _ts,
@@ -101,6 +102,18 @@ SERVICE_STATES: dict[int, str] = SVC_STATE_STR
 # every alert in the window. Cap the candidate host set so a pathological window
 # cannot rebuild an unbounded ``host_name[regex]``.
 _FLAP_CANDIDATE_CAP = 500
+
+# Valid ``group_by`` dimensions for the alert-aggregation tools (issue #318).
+# ``host`` / ``service`` are the identity (per-object) groupings preserving the
+# historical behaviour; ``hostgroup`` / ``servicegroup`` fan the per-object
+# counts out across each object's group membership (a "ventilation par client"
+# where one hostgroup == one client). /logs has no group column, so the latter
+# are resolved via a /hosts or /services lookup (see _regroup_records_by_group).
+_NOISY_HOSTS_GROUP_BY: tuple[str, ...] = ("host", "hostgroup")
+_NOISY_SERVICES_GROUP_BY: tuple[str, ...] = ("service", "host", "hostgroup", "servicegroup")
+
+# Group-map lookups (/hosts, /services) are bounded; surface incompleteness.
+_REGROUP_TRUNC_WARNING = "Group membership lookup truncated; per-group totals may be incomplete."
 
 
 async def _resolve_hosts_to_regex(
@@ -369,6 +382,7 @@ async def thruk_top_noisy_hosts(
     since: str | None = _DEFAULT_SINCE,
     until: str | None = None,
     limit: int = 10,
+    group_by: str = "host",
     filter: dict[str, Any] | None = None,
     backends: str | None = None,
     hours: int | None = None,
@@ -382,6 +396,12 @@ async def thruk_top_noisy_hosts(
     (``2026-05-20 14:00:00``) values — same format as ``thruk_list_alerts``.
     Default window: last 24 h (``since="-24h"``, ``until=None``).
 
+    ``group_by`` selects the aggregation dimension: ``host`` (default, one row
+    per host) or ``hostgroup`` (a "ventilation par client" — counts fanned out
+    across each host's hostgroup membership, issue #318). A host in several
+    hostgroups contributes its full count to each; hosts in none land in a
+    ``"(none)"`` bucket.
+
     ``filter`` fields: ``host`` (eq/regex), ``hostgroup``, ``custom_var``
     (host-level Nagios variable, resolved via /hosts lookup).
 
@@ -390,10 +410,16 @@ async def thruk_top_noisy_hosts(
     ``since="-{hours}h"``. Prefer ``since`` / ``until`` for new code.
 
     Returns a wrapped object:
-    ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
-    ``results`` list sorted by ``alert_count`` desc, each entry containing
-    ``host``, ``alert_count``, ``last_state``, ``last_alert_time``.
+    ``since``, ``until``, ``group_by``, ``total_alerts_in_window`` (after
+    RECOVERY exclusion), ``results`` sorted by ``alert_count`` desc. Per-host
+    entries carry ``host``, ``alert_count``, ``last_state``, ``last_alert_time``;
+    per-hostgroup entries carry ``hostgroup``, ``alert_count``,
+    ``hosts_affected``, ``last_alert_time``.
     """
+    if group_by not in _NOISY_HOSTS_GROUP_BY:
+        return _tool_response(
+            {"error": f"Invalid group_by {group_by!r}. Allowed: {', '.join(_NOISY_HOSTS_GROUP_BY)}"}
+        )
     since = _coerce_hours_to_since(hours, since, "thruk_top_noisy_hosts")
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_HOSTS, backends)
     if errs:
@@ -411,19 +437,35 @@ async def thruk_top_noisy_hosts(
         backends=backends,
     )
     total = sum(r["alert_count"] for r in rows)
-    results = [
-        {
-            "host": r["host_name"],
-            "alert_count": r["alert_count"],
-            "last_state": _format_state_label(r["last_state_int"], HOST_STATES),
-            "last_alert_time": _ts(r["last_ts"]),
-        }
-        for r in rows[:limit]
-    ]
+    regroup_trunc = False
+    if group_by == "hostgroup":
+        grouped, regroup_trunc = await _regroup_records_by_group(
+            rows, "hostgroup", count_key="alert_count", backends=backends
+        )
+        results = [
+            {
+                "hostgroup": r["hostgroup"],
+                "alert_count": r["alert_count"],
+                "hosts_affected": r["hosts_affected"],
+                "last_alert_time": _ts(r["last_ts"]),
+            }
+            for r in grouped[:limit]
+        ]
+    else:
+        results = [
+            {
+                "host": r["host_name"],
+                "alert_count": r["alert_count"],
+                "last_state": _format_state_label(r["last_state_int"], HOST_STATES),
+                "last_alert_time": _ts(r["last_ts"]),
+            }
+            for r in rows[:limit]
+        ]
 
     payload: dict[str, Any] = {
         "since": since,
         "until": until,
+        "group_by": group_by,
         "total_alerts_in_window": total,
         "results": results,
     }
@@ -437,6 +479,8 @@ async def thruk_top_noisy_hosts(
             f"Result capped at {_NOISY_MAX_ALERTS} distinct groups; "
             "aggregation may be incomplete." + _NOISY_CAP_HINT
         )
+    elif regroup_trunc:
+        payload["_warning"] = _REGROUP_TRUNC_WARNING
     if warnings:
         payload["_warnings"] = warnings
     return _tool_response(payload)
@@ -446,6 +490,7 @@ async def thruk_top_noisy_services(
     since: str | None = _DEFAULT_SINCE,
     until: str | None = None,
     limit: int = 10,
+    group_by: str = "service",
     filter: dict[str, Any] | None = None,
     backends: str | None = None,
     hours: int | None = None,
@@ -459,6 +504,13 @@ async def thruk_top_noisy_services(
     (``2026-05-20 14:00:00``) values — same format as ``thruk_list_alerts``.
     Default window: last 24 h (``since="-24h"``, ``until=None``).
 
+    ``group_by`` selects the aggregation dimension (issue #318): ``service``
+    (default, one row per host+service), ``host`` (service alerts rolled up per
+    host), ``hostgroup`` or ``servicegroup`` (a "ventilation par client" —
+    counts fanned out across group membership). An object in several groups
+    contributes its full count to each; objects in none land in a ``"(none)"``
+    bucket.
+
     ``filter`` fields: ``host`` (eq/regex), ``service`` (eq/regex),
     ``hostgroup``, ``custom_var`` (host-level Nagios variable, resolved via
     /hosts lookup).
@@ -467,11 +519,22 @@ async def thruk_top_noisy_services(
     still using the legacy ``hours: int`` schema have it translated to
     ``since="-{hours}h"``. Prefer ``since`` / ``until`` for new code.
 
-    Returns a wrapped object:
-    ``since``, ``until``, ``total_alerts_in_window`` (after RECOVERY exclusion),
-    ``results`` list sorted by ``alert_count`` desc, each entry containing
-    ``host``, ``service``, ``alert_count``, ``last_state``, ``last_alert_time``.
+    Returns a wrapped object: ``since``, ``until``, ``group_by``,
+    ``total_alerts_in_window`` (after RECOVERY exclusion) and ``results`` sorted
+    by ``alert_count`` desc. Per-service entries carry ``host``, ``service``,
+    ``alert_count``, ``last_state``, ``last_alert_time``; per-host entries carry
+    ``host``, ``alert_count``, ``services_affected``, ``last_alert_time``;
+    per-(host|service)group entries carry the group name, ``alert_count``,
+    ``hosts_affected`` (and ``services_affected`` for servicegroup) and
+    ``last_alert_time``.
     """
+    if group_by not in _NOISY_SERVICES_GROUP_BY:
+        return _tool_response(
+            {
+                "error": f"Invalid group_by {group_by!r}. "
+                f"Allowed: {', '.join(_NOISY_SERVICES_GROUP_BY)}"
+            }
+        )
     since = _coerce_hours_to_since(hours, since, "thruk_top_noisy_services")
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
     if errs:
@@ -489,20 +552,59 @@ async def thruk_top_noisy_services(
         backends=backends,
     )
     total = sum(r["alert_count"] for r in rows)
-    results = [
-        {
-            "host": r["host_name"],
-            "service": r["service_description"],
-            "alert_count": r["alert_count"],
-            "last_state": _format_state_label(r["last_state_int"], SERVICE_STATES),
-            "last_alert_time": _ts(r["last_ts"]),
-        }
-        for r in rows[:limit]
-    ]
+    regroup_trunc = False
+    if group_by in ("hostgroup", "servicegroup"):
+        grouped, regroup_trunc = await _regroup_records_by_group(
+            rows, group_by, count_key="alert_count", backends=backends
+        )
+        results = []
+        for r in grouped[:limit]:
+            entry: dict[str, Any] = {
+                group_by: r[group_by],
+                "alert_count": r["alert_count"],
+                "hosts_affected": r["hosts_affected"],
+            }
+            if group_by == "servicegroup":
+                entry["services_affected"] = r["services_affected"]
+            entry["last_alert_time"] = _ts(r["last_ts"])
+            results.append(entry)
+    elif group_by == "host":
+        # Roll service alerts up per host (no topology lookup needed).
+        per_host: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            b = per_host.setdefault(
+                r["host_name"], {"alert_count": 0, "services": set(), "last_ts": 0}
+            )
+            b["alert_count"] += r["alert_count"]
+            b["services"].add(r["service_description"])
+            if r["last_ts"] > b["last_ts"]:
+                b["last_ts"] = r["last_ts"]
+        ranked = sorted(per_host.items(), key=lambda kv: kv[1]["alert_count"], reverse=True)
+        results = [
+            {
+                "host": h,
+                "alert_count": b["alert_count"],
+                "services_affected": len(b["services"]),
+                "last_alert_time": _ts(b["last_ts"]),
+            }
+            for h, b in ranked[:limit]
+        ]
+    else:
+        results = [
+            {
+                "host": r["host_name"],
+                "service": r["service_description"],
+                "alert_count": r["alert_count"],
+                "last_state": _format_state_label(r["last_state_int"], SERVICE_STATES),
+                "last_alert_time": _ts(r["last_ts"]),
+            }
+            for r in rows[:limit]
+        ]
 
     payload: dict[str, Any] = {
         "since": since,
         "until": until,
+        "group_by": group_by,
         "total_alerts_in_window": total,
         "results": results,
     }
@@ -516,6 +618,8 @@ async def thruk_top_noisy_services(
             f"Result capped at {_NOISY_MAX_ALERTS} distinct groups; "
             "aggregation may be incomplete." + _NOISY_CAP_HINT
         )
+    elif regroup_trunc:
+        payload["_warning"] = _REGROUP_TRUNC_WARNING
     if warnings:
         payload["_warnings"] = warnings
     return _tool_response(payload)
@@ -1370,6 +1474,11 @@ _NOTIF_GROUP_FIELDS: dict[str, str] = {
     "command": "command_name",
 }
 
+#: ``group_by`` dimensions that have no /logs column and are instead resolved by
+#: aggregating per host/(host,service) and fanning out across group membership
+#: via a /hosts or /services lookup (issue #318).
+_NOTIF_TOPOLOGY_GROUP_BY: tuple[str, ...] = ("hostgroup", "servicegroup")
+
 
 async def thruk_notification_summary(
     group_by: str = "contact",
@@ -1385,7 +1494,11 @@ async def thruk_notification_summary(
     equivalent of :func:`thruk_top_noisy_hosts` for alerts.
 
     ``group_by`` selects the dimension: ``contact`` (default), ``host``,
-    ``service``, ``state`` or ``command``.
+    ``service``, ``state``, ``command``, ``hostgroup`` or ``servicegroup``.
+    The last two are a "ventilation par client" (issue #318): counts are
+    aggregated per host/(host,service) and then fanned out across each object's
+    group membership (an object in N groups contributes to each; objects in
+    none land in a ``"(none)"`` bucket).
 
     ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
     absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
@@ -1395,17 +1508,21 @@ async def thruk_notification_summary(
     lookup) — identical to :func:`thruk_list_notifications`.
 
     Returns a wrapped object: ``since``, ``until``, ``group_by``, ``total``
-    (notifications counted in the window) and ``results`` — a list of
-    ``{<group_by>, count, last_time}`` sorted by ``count`` desc.
+    (notifications counted in the window) and ``results`` sorted by ``count``
+    desc. Most dimensions yield ``{<group_by>, count, last_time}``; the
+    ``hostgroup`` / ``servicegroup`` dimensions additionally carry
+    ``hosts_affected`` (and ``services_affected`` for servicegroup).
 
     The fetch is issued newest-first (``sort="-time"``) so that when the
     ``_NOISY_MAX_ALERTS`` cap is hit it is the *oldest* notifications that are
     dropped, keeping the most recent ones counted.
     """
+    is_topology = group_by in _NOTIF_TOPOLOGY_GROUP_BY
     group_field = _NOTIF_GROUP_FIELDS.get(group_by)
-    if group_field is None:
+    if group_field is None and not is_topology:
+        allowed = [*_NOTIF_GROUP_FIELDS, *_NOTIF_TOPOLOGY_GROUP_BY]
         return _tool_response(
-            {"error": f"Invalid group_by {group_by!r}. Allowed: {', '.join(_NOTIF_GROUP_FIELDS)}"}
+            {"error": f"Invalid group_by {group_by!r}. Allowed: {', '.join(allowed)}"}
         )
 
     extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOTIFICATIONS, backends)
@@ -1418,11 +1535,19 @@ async def thruk_notification_summary(
     if "time[lte]" not in extra and until:
         extra["time[lte]"] = _epoch_filter_value(until)
 
-    # group_by=state needs service_description to tell a host notification
-    # (HOST_STATES) from a service one (SERVICE_STATES) — issue #282.
-    wanted_cols = {group_field, "time"}
-    if group_by == "state":
-        wanted_cols.add("service_description")
+    # Columns: topology grouping needs host_name (+ service_description for
+    # servicegroup) to map onto groups; group_by=state needs service_description
+    # to tell a host notification from a service one (issue #282).
+    wanted_cols = {"time"}
+    if is_topology:
+        wanted_cols.add("host_name")
+        if group_by == "servicegroup":
+            wanted_cols.add("service_description")
+    else:
+        assert group_field is not None  # narrowed by the validation above
+        wanted_cols.add(group_field)
+        if group_by == "state":
+            wanted_cols.add("service_description")
     params: dict[str, Any] = {
         "limit": _NOISY_MAX_ALERTS,
         # Newest-first (mirrors thruk_alert_heatmap, issue #250): when the cap
@@ -1437,36 +1562,68 @@ async def thruk_notification_summary(
     if not isinstance(data, list):
         data = []
 
-    counts: dict[str, dict[str, Any]] = {}
     total = 0
-    for entry in data:
-        if not isinstance(entry, dict):
-            continue
-        if group_by == "state":
-            # Derive host-vs-service context per row, then map the raw code to
-            # a label. Routing through _format_state_label means state 0 maps
-            # to "UP"/"OK" (no more bare "" bucket from `0 or ""`) and unmapped
-            # codes surface as "UNKNOWN(<n>)" rather than a raw int (issue #282).
-            state_map = SERVICE_STATES if entry.get("service_description") else HOST_STATES
-            key = _format_state_label(entry.get("state"), state_map)
-        else:
-            key = str(entry.get(group_field) or "")
-        rec = counts.setdefault(key, {"count": 0, "_last_ts": 0, "last_time": None})
-        rec["count"] += 1
-        total += 1
-        t = entry.get("time") or 0
-        if t > rec["_last_ts"]:
-            rec["_last_ts"] = t
-            rec["last_time"] = _ts(t)
-
-    results = sorted(
-        (
-            {group_by: key, "count": v["count"], "last_time": v["last_time"]}
-            for key, v in counts.items()
-        ),
-        key=lambda x: x["count"],
-        reverse=True,
-    )
+    regroup_trunc = False
+    if is_topology:
+        # Count per (host[,service]) then fan out across group membership.
+        need_service = group_by == "servicegroup"
+        per_obj: dict[tuple[str, str], dict[str, Any]] = {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            host = str(entry.get("host_name") or "")
+            svc = str(entry.get("service_description") or "") if need_service else ""
+            rec = per_obj.setdefault(
+                (host, svc),
+                {"host_name": host, "service_description": svc, "count": 0, "last_ts": 0},
+            )
+            rec["count"] += 1
+            total += 1
+            t = int(entry.get("time") or 0)
+            if t > rec["last_ts"]:
+                rec["last_ts"] = t
+        grouped, regroup_trunc = await _regroup_records_by_group(
+            list(per_obj.values()), group_by, count_key="count", backends=backends
+        )
+        results = [
+            {
+                group_by: r[group_by],
+                "count": r["count"],
+                "hosts_affected": r["hosts_affected"],
+                **({"services_affected": r["services_affected"]} if need_service else {}),
+                "last_time": _ts(r["last_ts"]),
+            }
+            for r in grouped
+        ]
+    else:
+        counts: dict[str, dict[str, Any]] = {}
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            if group_by == "state":
+                # Derive host-vs-service context per row, then map the raw code
+                # to a label. Routing through _format_state_label means state 0
+                # maps to "UP"/"OK" (no more bare "" bucket from `0 or ""`) and
+                # unmapped codes surface as "UNKNOWN(<n>)" (issue #282).
+                state_map = SERVICE_STATES if entry.get("service_description") else HOST_STATES
+                key = _format_state_label(entry.get("state"), state_map)
+            else:
+                key = str(entry.get(group_field) or "")
+            rec = counts.setdefault(key, {"count": 0, "_last_ts": 0, "last_time": None})
+            rec["count"] += 1
+            total += 1
+            t = entry.get("time") or 0
+            if t > rec["_last_ts"]:
+                rec["_last_ts"] = t
+                rec["last_time"] = _ts(t)
+        results = sorted(
+            (
+                {group_by: key, "count": v["count"], "last_time": v["last_time"]}
+                for key, v in counts.items()
+            ),
+            key=lambda x: x["count"],
+            reverse=True,
+        )
 
     payload: dict[str, Any] = {
         "since": since,
@@ -1485,6 +1642,8 @@ async def thruk_notification_summary(
             f"Result capped at {_NOISY_MAX_ALERTS} log entries; aggregation may be incomplete."
             + _NOISY_CAP_HINT
         )
+    elif regroup_trunc:
+        payload["_warning"] = _REGROUP_TRUNC_WARNING
     if warnings:
         payload["_warnings"] = warnings
     return _tool_response(payload)
@@ -1581,6 +1740,16 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
             since=_SINCE_WINDOW,
             until=_UNTIL,
             limit=_int(default=10),
+            group_by={
+                "type": "string",
+                "default": "host",
+                "description": (
+                    "Aggregation dimension: 'host' (default, one row per host) or "
+                    "'hostgroup' (ventilation par client — counts fanned out across "
+                    "hostgroup membership)."
+                ),
+                "enum": ["host", "hostgroup"],
+            },
             backends=_BACKENDS,
         ),
     ),
@@ -1592,6 +1761,16 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
             since=_SINCE_WINDOW,
             until=_UNTIL,
             limit=_int(default=10),
+            group_by={
+                "type": "string",
+                "default": "service",
+                "description": (
+                    "Aggregation dimension: 'service' (default, one row per "
+                    "host+service), 'host' (rolled up per host), 'hostgroup' or "
+                    "'servicegroup' (ventilation par client)."
+                ),
+                "enum": ["service", "host", "hostgroup", "servicegroup"],
+            },
             backends=_BACKENDS,
         ),
     ),
@@ -1725,9 +1904,19 @@ HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
                 "default": "contact",
                 "description": (
                     "Dimension to group notification counts by: 'contact' "
-                    "(default), 'host', 'service', 'state' or 'command'."
+                    "(default), 'host', 'service', 'state', 'command', "
+                    "'hostgroup' or 'servicegroup' (the last two: ventilation "
+                    "par client)."
                 ),
-                "enum": ["contact", "host", "service", "state", "command"],
+                "enum": [
+                    "contact",
+                    "host",
+                    "service",
+                    "state",
+                    "command",
+                    "hostgroup",
+                    "servicegroup",
+                ],
             },
             since=_SINCE_WINDOW,
             until=_UNTIL,
