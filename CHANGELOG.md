@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `thruk_incident_timeline`: reconstructs the ordered event chronology (the
+  "déroulé" of a post-mortem) for a host, service or hostgroup straight from
+  `/logs` — every state change, notification, downtime, flap and
+  acknowledgement in chronological order. `state_change` events carry
+  `from_state`/`to_state`, `soft_hard` and `duration_in_state`; notifications
+  carry the `contact`; downtime/flap/ack events carry a `STARTED`/`STOPPED`
+  detail. A `summary` block reports transition counts, total downtime, longest
+  incident and MTTR, reusing the same HARD-transition incident reducer as
+  `thruk_reliability_report`. A scoping `filter` is required (#321).
 - `thruk_worker_health`: distinguishes a real outage from a mod-gearman
   supervision blind spot. Thruk's REST API exposes no mod-gearman endpoint and
   the Livestatus `status` latency/queue columns return null through LMD, so the

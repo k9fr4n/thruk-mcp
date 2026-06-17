@@ -75,7 +75,7 @@ from ..helpers import (
     _tool_response,
     _ts,
 )
-from ..reliability import summarize_reliability
+from ..reliability import extract_incidents, summarize_reliability
 from .base import (
     _BACKENDS,
     _COLUMNS,
@@ -1291,6 +1291,317 @@ async def thruk_reliability_report(
     return _tool_response(payload)
 
 
+# ---------------------------------------------------------------------------
+# Incident timeline (issue #321)
+#
+# Where ``thruk_reliability_report`` collapses a window into *aggregate* metrics
+# (MTTR / MTBF / incident count), an operator writing a post-mortem needs the
+# ordered *déroulé*: every state change, notification, downtime, flap and ack
+# for one object (host / service / hostgroup), in chronological order. This is
+# reconstructed straight from ``/logs`` and reuses the :mod:`thruk_mcp.reliability`
+# incident reducer for the summary block.
+# ---------------------------------------------------------------------------
+
+#: ``/logs`` columns the timeline needs (per-event detail, not just counts).
+_TIMELINE_COLUMNS = (
+    "host_name,service_description,state,state_type,time,type,plugin_output,contact_name,message"
+)
+
+#: One regex spanning every ``type`` we surface. It anchors on the known
+#: HOST/SERVICE alert-family + notification names, so ``type=NULL`` system rows
+#: and ``EXTERNAL COMMAND`` entries are excluded without a ``class`` filter
+#: (we span class 1 + 3, so a single ``class=`` value cannot scope the query).
+_TIMELINE_TYPE_REGEX = (
+    "^(HOST|SERVICE) (ALERT|NOTIFICATION|DOWNTIME ALERT|FLAPPING ALERT|ACKNOWLEDGE ALERT)"
+)
+
+#: ``type`` suffix -> timeline event category.
+_TIMELINE_TYPE_MAP: tuple[tuple[str, str], ...] = (
+    ("DOWNTIME ALERT", "downtime"),
+    ("FLAPPING ALERT", "flap"),
+    ("ACKNOWLEDGE ALERT", "ack"),
+    ("NOTIFICATION", "notification"),
+    ("ALERT", "state_change"),  # plain HOST/SERVICE ALERT — must be checked last
+)
+
+#: STARTED / STOPPED / CANCELLED markers carried in the ``state`` (string) or
+#: ``message`` column of downtime / flapping / ack rows.
+_TIMELINE_DETAIL_RE = re.compile(r"\b(STARTED|STOPPED|CANCELLED|EXPIRED)\b", re.IGNORECASE)
+
+
+def _classify_timeline_type(type_str: Any) -> str:
+    """Map a Naemon ``/logs`` ``type`` value to a timeline event category.
+
+    Returns one of ``state_change`` / ``notification`` / ``downtime`` / ``flap``
+    / ``ack`` / ``other``. The order of :data:`_TIMELINE_TYPE_MAP` matters:
+    ``DOWNTIME ALERT`` / ``FLAPPING ALERT`` / ``ACKNOWLEDGE ALERT`` all contain
+    the substring ``ALERT`` and must be matched before the bare alert fallback.
+    """
+    t = str(type_str or "").strip().upper()
+    for needle, category in _TIMELINE_TYPE_MAP:
+        if needle in t:
+            return category
+    return "other"
+
+
+def _timeline_detail(entry: dict[str, Any]) -> str | None:
+    """Extract a STARTED/STOPPED/CANCELLED marker for downtime/flap/ack rows.
+
+    Naemon writes the marker into the ``state`` column (as a string) for these
+    alert types, but some exports keep it only in ``message``. We scan both.
+    """
+    for field in ("state", "plugin_output", "message"):
+        m = _TIMELINE_DETAIL_RE.search(str(entry.get(field) or ""))
+        if m:
+            return m.group(1).upper()
+    return None
+
+
+def _build_timeline(rows: list[Any]) -> list[dict[str, Any]]:
+    """Reduce raw ``/logs`` rows into an ordered list of timeline events.
+
+    Rows are sorted chronologically and walked once, tracking the last seen
+    state per ``(host, service)`` so each ``state_change`` event can carry its
+    ``from_state`` / ``to_state`` and ``duration_in_state`` (seconds the object
+    spent in the previous state — ``None`` for the first transition seen).
+
+    Host- vs service-level rows are distinguished by an empty
+    ``service_description`` so the correct state vocabulary is used.
+    """
+    events: list[dict[str, Any]] = []
+    # Per (host, service): (last_state_int, last_state_change_epoch).
+    last_seen: dict[tuple[str, str], tuple[int, int]] = {}
+    ordered = sorted(
+        (r for r in rows if isinstance(r, dict)),
+        key=lambda r: int(r.get("time") or 0),
+    )
+    for entry in ordered:
+        epoch = int(entry.get("time") or 0)
+        host = entry.get("host_name") or ""
+        svc = entry.get("service_description") or ""
+        category = _classify_timeline_type(entry.get("type"))
+        state_map = SERVICE_STATES if svc else HOST_STATES
+        event: dict[str, Any] = {
+            "time": _ts(epoch),
+            "epoch": epoch,
+            "host": host,
+            "service": svc or None,
+            "type": category,
+        }
+        if category == "state_change":
+            try:
+                to_state_int = int(entry.get("state", -1))
+            except (TypeError, ValueError):
+                to_state_int = -1
+            prev = last_seen.get((host, svc))
+            event["from_state"] = (
+                _format_state_label(prev[0], state_map) if prev is not None else None
+            )
+            event["to_state"] = _format_state_label(to_state_int, state_map)
+            event["soft_hard"] = str(entry.get("state_type") or "").upper() or None
+            dur = epoch - prev[1] if prev is not None else None
+            event["duration_in_state"] = dur
+            event["duration_in_state_human"] = _duration_human(dur) if dur is not None else None
+            last_seen[(host, svc)] = (to_state_int, epoch)
+        elif category == "notification":
+            event["state"] = _format_state_label(entry.get("state"), state_map)
+            event["contact"] = entry.get("contact_name") or None
+        else:
+            detail = _timeline_detail(entry)
+            if detail:
+                event["detail"] = detail
+        plugin = entry.get("plugin_output")
+        if plugin:
+            event["plugin_output"] = plugin
+        events.append(event)
+    return events
+
+
+def _timeline_summary(
+    rows: list[Any],
+    events: list[dict[str, Any]],
+    window_start: int | None,
+    window_end: int,
+) -> dict[str, Any]:
+    """Aggregate the post-mortem summary block from the fetched rows + events.
+
+    Incident-level metrics (count / total downtime / MTTR) reuse the
+    :mod:`thruk_mcp.reliability` reducer per ``(host, service)`` and are summed
+    across objects, so a hostgroup timeline reconciles every member's incidents.
+    """
+    type_counts: dict[str, int] = {}
+    for ev in events:
+        type_counts[ev["type"]] = type_counts.get(ev["type"], 0) + 1
+    hard_transitions = sum(
+        1 for ev in events if ev["type"] == "state_change" and ev.get("soft_hard") == "HARD"
+    )
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in rows:
+        if not isinstance(entry, dict):
+            continue
+        key = (entry.get("host_name") or "", entry.get("service_description") or "")
+        groups.setdefault(key, []).append(entry)
+
+    incidents: list[dict[str, Any]] = []
+    for entries in groups.values():
+        incidents.extend(
+            extract_incidents(entries, window_start=window_start, window_end=window_end)
+        )
+    recovered = [inc for inc in incidents if not inc["ongoing"]]
+    total_downtime = sum(inc["duration_seconds"] for inc in incidents)
+    longest = max((inc["duration_seconds"] for inc in incidents), default=0)
+    mttr: int | None = None
+    if recovered:
+        mttr = round(sum(inc["duration_seconds"] for inc in recovered) / len(recovered))
+
+    epochs = [ev["epoch"] for ev in events if ev.get("epoch")]
+    return {
+        "events": len(events),
+        "state_changes": type_counts.get("state_change", 0),
+        "hard_transitions": hard_transitions,
+        "notifications": type_counts.get("notification", 0),
+        "downtimes": type_counts.get("downtime", 0),
+        "flaps": type_counts.get("flap", 0),
+        "acks": type_counts.get("ack", 0),
+        "incidents": len(incidents),
+        "ongoing": any(inc["ongoing"] for inc in incidents),
+        "total_downtime_seconds": total_downtime,
+        "total_downtime_human": _duration_human(total_downtime),
+        "longest_incident_seconds": longest,
+        "longest_incident_human": _duration_human(longest),
+        "mttr_seconds": mttr,
+        "mttr_human": _duration_human(mttr) if mttr is not None else None,
+        "first_event": _ts(min(epochs)) if epochs else None,
+        "last_event": _ts(max(epochs)) if epochs else None,
+    }
+
+
+async def thruk_incident_timeline(
+    filter: dict[str, Any] | None = None,
+    since: str | None = _DEFAULT_SINCE,
+    until: str | None = None,
+    limit: int = 500,
+    backends: str | None = None,
+) -> str:
+    """Ordered event chronology for a host / service / hostgroup (post-mortem "déroulé").
+
+    Where ``thruk_reliability_report`` returns only *aggregate* MTTR / incident
+    metrics, this reconstructs the full **ordered sequence** of events from the
+    ``/logs`` table — every state change, notification, downtime, flap and
+    acknowledgement — so it can be dropped straight into the chronology section
+    of a post-mortem, per client or per host.
+
+    A scoping ``filter`` is **required** (``host``, ``service``, ``hostgroup``
+    or ``custom_var``): an unscoped parc-wide timeline is unbounded and
+    meaningless. ``hostgroup`` / ``custom_var`` are resolved to a
+    ``host_name[regex]`` via a ``/hosts`` lookup (AND-only), like the other
+    log-family tools.
+
+    ``since`` / ``until`` accept Thruk relative (``"-24h"``, ``"-7d"``) or
+    absolute (``"2026-05-21 14:00:00"``) values. Default window: last 24 h.
+    ``limit`` caps the number of timeline events returned (earliest first); the
+    summary is always computed over the full fetched set.
+
+    Each timeline event carries ``time`` / ``epoch``, ``host``, ``service``
+    (``null`` for host-level), ``type`` (``state_change`` / ``notification`` /
+    ``downtime`` / ``flap`` / ``ack``) and ``plugin_output`` when present.
+    ``state_change`` events add ``from_state`` / ``to_state`` / ``soft_hard``
+    and ``duration_in_state`` (seconds in the previous state, ``null`` for the
+    first); ``notification`` events add ``contact`` and ``state``;
+    downtime/flap/ack events add a ``detail`` (``STARTED`` / ``STOPPED`` / …).
+
+    The ``summary`` block reports event/transition counts, ``incidents``,
+    ``total_downtime``, ``longest_incident``, ``mttr`` and first/last event —
+    incident metrics reuse the same HARD-transition reducer as
+    ``thruk_reliability_report`` (consecutive non-OK HARD states collapse into
+    one incident; ongoing incidents clamp at ``until``).
+
+    Note: acknowledgements that the monitoring core logs only as a class-2
+    ``EXTERNAL COMMAND`` (rather than a native ``* ACKNOWLEDGE ALERT`` row) do
+    not appear in the timeline.
+
+    Returns a wrapped object: ``since``, ``until``, ``total_events``,
+    ``summary``, ``timeline`` (sorted ascending by time).
+    """
+    if not filter:
+        return _tool_response(
+            {
+                "error": (
+                    "thruk_incident_timeline requires a 'filter' scoping the timeline to "
+                    "a host, service, hostgroup or custom_var."
+                )
+            }
+        )
+    extra, errs, host_truncated = await _resolve_log_filter(filter, FIELDS_NOISY_SERVICES, backends)
+    if errs:
+        return _tool_response({"error": errs[0]})
+
+    extra["type[~]"] = _TIMELINE_TYPE_REGEX
+    if since:
+        extra["time[gte]"] = _epoch_filter_value(since)
+    if until:
+        extra["time[lte]"] = _epoch_filter_value(until)
+
+    # Cheap server-side count(*) so we can warn when the window holds more
+    # events than the raw-fetch cap and the timeline is therefore partial
+    # (mirrors thruk_reliability_report, issue #312).
+    count_rows, _count_warnings = await _get_client().get_with_fallback(
+        "/logs",
+        params={"columns": "count(*):cnt", "limit": 1, **extra},
+        backends=_backends(backends),
+        method="POST",
+    )
+    total_events = _sum_cnt(count_rows)
+
+    params: dict[str, Any] = {
+        "limit": _NOISY_MAX_ALERTS,
+        "sort": "time",  # ascending: a timeline must be chronological
+        "columns": _TIMELINE_COLUMNS,
+        **extra,
+    }
+    data, warnings = await _get_client().get_with_fallback(
+        "/logs", params=params, backends=_backends(backends), method="POST"
+    )
+    if not isinstance(data, list):
+        data = []
+
+    window_start = _parse_thruk_time(since) if since else None
+    window_end = _parse_thruk_time(until) if until else None
+    if window_end is None:
+        window_end = _now_utc_epoch()
+
+    events = _build_timeline(data)
+    summary = _timeline_summary(data, events, window_start, window_end)
+
+    truncated = len(events) > limit
+    payload: dict[str, Any] = {
+        "since": since,
+        "until": until,
+        "total_events": total_events,
+        "summary": summary,
+        "timeline": events[:limit],
+    }
+    if host_truncated:
+        payload["_warning"] = (
+            f"Host list truncated at {_RESOLVE_HOSTS_HARD_LIMIT} entries; "
+            "results may be incomplete."
+        )
+    elif total_events > _NOISY_MAX_ALERTS:
+        payload["_warning"] = (
+            f"Window holds {total_events} log entries but only {_NOISY_MAX_ALERTS} "
+            "were analysed; the timeline is partial. Narrow the window or filter." + _NOISY_CAP_HINT
+        )
+    elif truncated:
+        payload["_warning"] = (
+            f"Timeline truncated to the earliest {limit} of {len(events)} events; "
+            "the summary covers all of them. Raise 'limit' or narrow the window."
+        )
+    if warnings:
+        payload["_warnings"] = warnings
+    return _tool_response(payload)
+
+
 # ``_resolve_log_filter`` / ``_resolve_hosts_to_regex_from_params`` live in
 # :mod:`thruk_mcp.helpers` (issue #258); ``_resolve_log_filter`` is imported above.
 
@@ -1848,6 +2159,21 @@ HISTORY_TRENDS_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    ToolSpec(
+        name="thruk_incident_timeline",
+        fn=thruk_incident_timeline,
+        schema=build_tool_schema(
+            FIELDS_NOISY_SERVICES,
+            since=_SINCE_WINDOW,
+            until=_UNTIL,
+            limit=_int(
+                "Maximum number of timeline events to return, earliest first "
+                "(default 500). The summary always covers the full window.",
+                default=500,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 HISTORY_LOGS_REGISTRY: list[ToolSpec] = [
@@ -1954,6 +2280,7 @@ __all__ = [
     "_resolve_hosts_to_regex",
     "thruk_alert_heatmap",
     "thruk_flap_summary",
+    "thruk_incident_timeline",
     "thruk_list_alerts",
     "thruk_list_logs",
     "thruk_list_notifications",

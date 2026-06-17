@@ -31,6 +31,7 @@ _HISTORY_TOOL_NAMES = [
     "thruk_notification_heatmap",
     "thruk_recurring_problems",
     "thruk_reliability_report",
+    "thruk_incident_timeline",
     "thruk_list_logs",
     "thruk_list_alerts",
     "thruk_list_notifications",

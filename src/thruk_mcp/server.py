@@ -370,6 +370,9 @@ from .tools import (
     thruk_hostgroup_availability_summary as thruk_hostgroup_availability_summary,
 )
 from .tools import (
+    thruk_incident_timeline as thruk_incident_timeline,
+)
+from .tools import (
     thruk_list_alerts as thruk_list_alerts,
 )
 from .tools import (
