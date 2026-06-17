@@ -332,8 +332,10 @@ Conventions:
 - Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `test:`).
 - No direct push to `main`: branch → PR → squash merge.
-- Any new tool must come with a `respx`-mocked unit test in `tests/test_tools.py`
-  and an entry in `catalog/tools.json` (Docker MCP Registry contract).
+- Any new tool must come with a `respx`-mocked unit test in `tests/test_tools.py`;
+  regenerate `catalog/tools.json` (Docker MCP Registry contract) with
+  `python scripts/gen_tools_json.py` — it is generated from the live registry,
+  not hand-edited, and CI enforces it via `--check`.
 - CI gate: `ruff`, `ruff format --check`, `mypy`, `pytest` with **80 %
   coverage minimum**.
 

@@ -41,7 +41,9 @@ pytest -v --cov=thruk_mcp --cov-fail-under=80
    `_list_params()` + a `DEFAULT_*_COLUMNS` constant.
 3. **Write tools must** be added to `WRITE_TOOLS` in `server.py` so that
    `THRUK_READ_ONLY` and the audit log apply to them.
-4. Add an entry in `catalog/tools.json` (one line per tool).
+4. Regenerate `catalog/tools.json` with `python scripts/gen_tools_json.py`
+   (generated from the live registry — do not hand-edit; CI checks it with
+   `--check`).
 5. Add a `respx`-mocked routing test in `tests/test_tools.py` asserting the
    method, URL path and key params.
 6. Run the checks listed above. Coverage gate is **80 %**.
