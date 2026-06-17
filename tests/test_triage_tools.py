@@ -41,6 +41,8 @@ _EXPECTED_TRIAGE_ORDER = [
     "thruk_concurrent_failures",
     "thruk_stale_checks",
     "thruk_worker_health",
+    "thruk_root_cause",
+    "thruk_unreachable_vs_down",
 ]
 
 BASE_TS = 1_700_000_000

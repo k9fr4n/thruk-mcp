@@ -439,6 +439,9 @@ from .tools import (
     thruk_remove_acknowledgement as thruk_remove_acknowledgement,
 )
 from .tools import (
+    thruk_root_cause as thruk_root_cause,
+)
+from .tools import (
     thruk_run_background_query as thruk_run_background_query,
 )
 from .tools import (
@@ -482,6 +485,9 @@ from .tools import (
 )
 from .tools import (
     thruk_unacked_critical as thruk_unacked_critical,
+)
+from .tools import (
+    thruk_unreachable_vs_down as thruk_unreachable_vs_down,
 )
 from .tools import (
     thruk_worker_health as thruk_worker_health,
