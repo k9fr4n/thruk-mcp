@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`thruk-mcp` is a **Model Context Protocol (MCP) server** that exposes the [Thruk](https://www.thruk.org/) monitoring REST API (Naemon / Nagios / Icinga / Shinken) as ~57 MCP tools, so an LLM can query hosts/services, run analytics, and execute write actions (downtimes, acks, rechecks) over Thruk's REST API. Python package, `src/` layout, packaged with hatchling, published to PyPI and `ghcr.io/k9fr4n/thruk-mcp`.
+`thruk-mcp` is a **Model Context Protocol (MCP) server** that exposes the [Thruk](https://www.thruk.org/) monitoring REST API (Naemon / Nagios / Icinga / Shinken) as ~65 MCP tools, so an LLM can query hosts/services, run analytics, and execute write actions (downtimes, acks, rechecks) over Thruk's REST API. Python package, `src/` layout, packaged with hatchling, published to PyPI and `ghcr.io/k9fr4n/thruk-mcp`.
 
 ## Commands
 
