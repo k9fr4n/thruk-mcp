@@ -141,10 +141,12 @@ def test_registry_tool_count() -> None:
          → +1 thruk_incident_timeline (ordered post-mortem event chronology, issue #321)
          → +2 thruk_root_cause, thruk_unreachable_vs_down (parent-topology
               root-cause analysis, issue #322)
-      = 62
+         → +1 thruk_backend_health (per-site backend latency/replication-lag
+              health, issue #323)
+      = 63
     """
-    assert len(TOOL_REGISTRY) == 62, (
-        f"Expected 62 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
+    assert len(TOOL_REGISTRY) == 63, (
+        f"Expected 63 tools in TOOL_REGISTRY, got {len(TOOL_REGISTRY)}. "
         "Update this sentinel if you intentionally added/removed a tool."
     )
 

@@ -325,6 +325,9 @@ from .tools import (
     thruk_alert_heatmap as thruk_alert_heatmap,
 )
 from .tools import (
+    thruk_backend_health as thruk_backend_health,
+)
+from .tools import (
     thruk_bulk_acknowledge as thruk_bulk_acknowledge,
 )
 from .tools import (

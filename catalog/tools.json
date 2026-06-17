@@ -4134,6 +4134,37 @@
     }
   },
   {
+    "name": "thruk_backend_health",
+    "description": "Per-site supervision-backend health: Livestatus latency, replication/cache lag and blind spots. thruk_sites only reports connected/disconnected; this enriches that baseline so you can tell 'the estate is down' from 'the supervision backend is blind/late'. Merges three endpoints with graceful degradation: /sites (mandatory: connected, status, last_error, addr), /lmd/sites (optional, LMD only: response_time latency, last_online/last_update freshness, queries, byte counters) and /processinfo (optional: program_start uptime, accept_passive_*_checks, cached). Each site is classified disconnected (not connected / non-OK status — a blind spot, carries last_error), degraded (connected but latency > latency_warn_seconds, data age > lag_warn_seconds, passive checks off, or a non-empty error) or ok. Returns {now, summary:{total,ok,degraded,disconnected}, sites (worst-first), degraded_sites, disconnected_sites, lmd_available, processinfo_available, assessment}. When neither optional endpoint answers the report is connectivity-only and says so.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "latency_warn_seconds": {
+          "type": "number",
+          "default": 5.0,
+          "description": "Livestatus response time (seconds) above which a connected backend is flagged 'degraded' (default 5.0)."
+        },
+        "lag_warn_seconds": {
+          "type": "integer",
+          "default": 120,
+          "description": "Data-freshness age (seconds) above which a connected backend is flagged 'degraded' for stale cache / replication lag (default 120)."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
+  },
+  {
     "name": "thruk_recurring_problems",
     "description": "Return hosts/services that generated repeated alerts over a time window. Identifies chronic problems by counting non-recovery HOST/SERVICE ALERT entries per object and filtering by a minimum threshold. Results sorted by alert count descending.",
     "inputSchema": {

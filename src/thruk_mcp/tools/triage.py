@@ -1361,6 +1361,288 @@ async def thruk_worker_health(
 
 
 # ---------------------------------------------------------------------------
+# Backend health (issue #323) — Livestatus latency / replication lag per site
+# ---------------------------------------------------------------------------
+# /sites is the mandatory connectivity baseline (name/connected/status/
+# last_error). The richer per-peer metrics live in two *optional* endpoints
+# that not every Thruk deployment exposes: /lmd/sites (LMD only — response_time
+# latency, last_online/last_update freshness, queries, bytes) and /processinfo
+# (program_start, accept_passive_*_checks, cached). The tool merges whichever
+# answered, indexing peers by every identity key Thruk might emit.
+_BACKEND_PEER_KEYS: tuple[str, ...] = ("peer_key", "key", "id", "name", "peer_name")
+
+
+def _backend_num(value: Any) -> float | None:
+    """Coerce a Livestatus numeric field to float, or None when absent/garbage."""
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _backend_bool(value: Any) -> bool | None:
+    """Coerce a Naemon 0/1 flag (int or string) to bool, or None when absent."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        return int(value) != 0
+    except (TypeError, ValueError):
+        return None
+
+
+def _index_peer_rows(rows: Any) -> dict[str, dict[str, Any]]:
+    """Index /lmd/sites or /processinfo rows by every identity key they expose.
+
+    Thruk emits the peer identity under different keys across builds/endpoints
+    (``peer_key``/``key``/``id`` and ``name``/``peer_name``); indexing under all
+    of them lets a /sites row be matched by whichever the backend populated. A
+    bare dict (single-backend /processinfo) is treated as one row.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return index
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in _BACKEND_PEER_KEYS:
+            val = row.get(key)
+            if val:
+                index.setdefault(str(val), row)
+    return index
+
+
+def _lookup_peer(site: dict[str, Any], index: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Find the lmd/processinfo row for a /sites entry by any shared identity key."""
+    for key in ("id", "peer_key", "key", "name", "peer_name"):
+        val = site.get(key)
+        if val and str(val) in index:
+            return index[str(val)]
+    return {}
+
+
+def _backend_site_report(
+    site: dict[str, Any],
+    lmd: dict[str, Any],
+    proc: dict[str, Any],
+    *,
+    now: int,
+    latency_warn: float,
+    lag_warn: int,
+    latency_cap: float,
+) -> dict[str, Any]:
+    """Merge the three per-peer rows into one health report (pure / testable)."""
+    name = site.get("name") or site.get("peer_name") or site.get("id") or "<unknown>"
+    connected = _backend_bool(site.get("connected"))
+    status = int(_backend_num(site.get("status")) or 0) if site.get("status") is not None else None
+    last_error = str(site.get("last_error") or lmd.get("last_error") or "").strip()
+
+    report: dict[str, Any] = {
+        "name": name,
+        "id": site.get("id") or site.get("peer_key"),
+        "section": site.get("section"),
+        "type": site.get("type"),
+        "addr": site.get("addr"),
+        "connected": bool(connected),
+        "status": status,
+    }
+    reasons: list[str] = []
+
+    # Disconnected = the blind spot the issue is about: not connected, or the
+    # peer reports a non-OK Livestatus status.
+    if connected is not True or (status is not None and status != 0):
+        report["health"] = "disconnected"
+        report["reasons"] = ["backend disconnected"]
+        if last_error:
+            report["last_error"] = last_error
+        return report
+
+    # --- connected: enrich with latency / freshness when the optional endpoints
+    #     answered, and decide ok vs degraded.
+    latency = _backend_num(lmd.get("response_time"))
+    if latency is not None and 0 <= latency <= latency_cap:
+        report["latency_seconds"] = round(latency, 3)
+        if latency > latency_warn:
+            reasons.append(f"latency {report['latency_seconds']}s > {latency_warn}s")
+
+    last_online = _backend_num(lmd.get("last_online"))
+    if last_online:
+        report["last_online"] = int(last_online)
+        report["last_online_human"] = _ts(int(last_online))
+
+    # Replication / cache lag: how stale the served data is, measured against the
+    # backend host's own clock (localtime) when present to dodge clock skew.
+    ref = _backend_num(site.get("localtime")) or float(now)
+    fresh_src = _backend_num(lmd.get("last_update")) or last_online
+    if fresh_src:
+        age = max(0, int(ref - fresh_src))
+        report["data_age_seconds"] = age
+        report["data_age_human"] = _duration_human(age)
+        if age > lag_warn:
+            reasons.append(f"data age {report['data_age_human']} > {lag_warn}s (stale cache / lag)")
+
+    for k in ("queries", "bytes_send", "bytes_received"):
+        v = _backend_num(lmd.get(k))
+        if v is not None:
+            report[k] = int(v)
+    idling = _backend_bool(lmd.get("idling"))
+    if idling is not None:
+        report["idling"] = idling
+
+    program_start = _backend_num(proc.get("program_start"))
+    if program_start:
+        report["program_start"] = int(program_start)
+        report["uptime_human"] = _duration_human(max(0, now - int(program_start)))
+    if proc.get("program_version"):
+        report["program_version"] = proc.get("program_version")
+    cached = _backend_bool(proc.get("cached"))
+    if cached is not None:
+        report["cached"] = cached
+    for flag, label in (
+        ("accept_passive_host_checks", "passive host checks disabled"),
+        ("accept_passive_service_checks", "passive service checks disabled"),
+    ):
+        accepts = _backend_bool(proc.get(flag))
+        if accepts is not None:
+            report[flag] = accepts
+            if accepts is False:
+                reasons.append(label)
+
+    if last_error:
+        report["last_error"] = last_error
+        reasons.append(f"backend reports error: {last_error}")
+
+    report["health"] = "degraded" if reasons else "ok"
+    report["reasons"] = reasons
+    return report
+
+
+_BACKEND_HEALTH_RANK = {"disconnected": 0, "degraded": 1, "ok": 2}
+
+
+async def thruk_backend_health(
+    latency_warn_seconds: float = 5.0,
+    lag_warn_seconds: int = 120,
+    backends: str | None = None,
+) -> str:
+    """Per-site supervision-backend health: latency, replication lag, blind spots.
+
+    ``thruk_sites`` only reports connected/disconnected. During an incident that
+    is not enough: a **muted or lagging collector** turns its whole perimeter
+    into a green-looking blind spot, so you must distinguish "the estate is down"
+    from "the supervision backend is blind/late". This tool enriches the /sites
+    baseline with per-peer Livestatus **latency** and data **freshness**.
+
+    It merges three endpoints (concurrently, degrading gracefully — an optional
+    one that errors never sinks the call):
+
+    * ``/sites`` — mandatory: ``connected``, ``status``, ``last_error``, ``addr``.
+    * ``/lmd/sites`` — *optional* (LMD only): ``response_time`` (latency),
+      ``last_online`` / ``last_update`` (freshness), ``queries``, byte counters.
+    * ``/processinfo`` — *optional*: ``program_start`` (uptime),
+      ``accept_passive_*_checks``, ``cached``.
+
+    Each site is classified ``disconnected`` (not connected / non-OK status — a
+    blind spot, carries ``last_error``), ``degraded`` (connected but latency
+    ``> latency_warn_seconds``, data age ``> lag_warn_seconds``, passive checks
+    off, or a non-empty error), or ``ok``. Returns ``{now, summary, sites
+    (worst-first), degraded_sites, disconnected_sites, lmd_available,
+    processinfo_available, assessment}``. When neither optional endpoint answers
+    the report is connectivity-only (latency/lag unavailable) and says so.
+    """
+    now = _now_utc_epoch()
+    be = _backends(backends)
+    # Index (rather than tuple-unpack) the gather result: unpacking its overloaded
+    # return under return_exceptions trips mypy [has-type].
+    results = await asyncio.gather(
+        _get_client().get("/sites", backends=be),
+        _get_client().get("/lmd/sites", backends=be),
+        _get_client().get("/processinfo", backends=be),
+        return_exceptions=True,
+    )
+    sites_res = results[0]
+    lmd_res = results[1]
+    proc_res = results[2]
+    # /sites is mandatory — surface its ThrukError verbatim (per conventions).
+    if isinstance(sites_res, BaseException):
+        raise sites_res
+
+    sites_rows = sites_res if isinstance(sites_res, list) else []
+    lmd_available = not isinstance(lmd_res, BaseException)
+    processinfo_available = not isinstance(proc_res, BaseException)
+    lmd_index = _index_peer_rows(lmd_res) if lmd_available else {}
+    proc_index = _index_peer_rows(proc_res) if processinfo_available else {}
+
+    reports: list[dict[str, Any]] = []
+    for site in sites_rows:
+        if not isinstance(site, dict):
+            continue
+        reports.append(
+            _backend_site_report(
+                site,
+                _lookup_peer(site, lmd_index),
+                _lookup_peer(site, proc_index),
+                now=now,
+                latency_warn=latency_warn_seconds,
+                lag_warn=lag_warn_seconds,
+                latency_cap=LATENCY_SANITY_CAP_SECONDS,
+            )
+        )
+
+    reports.sort(key=lambda r: (_BACKEND_HEALTH_RANK.get(r["health"], 3), str(r["name"])))
+    ok_n = sum(1 for r in reports if r["health"] == "ok")
+    degraded = [r["name"] for r in reports if r["health"] == "degraded"]
+    disconnected = [
+        {"name": r["name"], "last_error": r.get("last_error", "")}
+        for r in reports
+        if r["health"] == "disconnected"
+    ]
+
+    total = len(reports)
+    if total == 0:
+        assessment = "No backends configured."
+    elif not degraded and not disconnected:
+        assessment = f"All {total} backend(s) connected and healthy."
+    else:
+        parts = [f"{len(degraded) + len(disconnected)}/{total} backend(s) unhealthy"]
+        if disconnected:
+            parts.append(f"{len(disconnected)} disconnected (blind spot)")
+        if degraded:
+            parts.append(f"{len(degraded)} degraded (latency/lag)")
+        assessment = (
+            ": ".join([parts[0], ", ".join(parts[1:])])
+            + " — analyses over their perimeter may be incomplete."
+        )
+    if not lmd_available and not processinfo_available:
+        assessment += (
+            " Latency / replication-lag metrics unavailable (no LMD and "
+            "/processinfo did not answer); report is connectivity-only."
+        )
+
+    payload: dict[str, Any] = {
+        "now": _ts(now),
+        "summary": {
+            "total": total,
+            "ok": ok_n,
+            "degraded": len(degraded),
+            "disconnected": len(disconnected),
+        },
+        "sites": reports,
+        "degraded_sites": degraded,
+        "disconnected_sites": disconnected,
+        "lmd_available": lmd_available,
+        "processinfo_available": processinfo_available,
+        "assessment": assessment,
+    }
+    return _tool_response(payload)
+
+
+# ---------------------------------------------------------------------------
 # TRIAGE_REGISTRY: co-located tool specs (spliced into server.TOOL_REGISTRY)
 # ---------------------------------------------------------------------------
 
@@ -1541,15 +1823,39 @@ TRIAGE_REGISTRY: list[ToolSpec] = [
             backends=_BACKENDS,
         ),
     ),
+    # ------------------------------------------ backend health / blind spots (issue #323)
+    ToolSpec(
+        name="thruk_backend_health",
+        fn=thruk_backend_health,
+        schema=_s(
+            latency_warn_seconds={
+                "type": "number",
+                "default": 5.0,
+                "description": (
+                    "Livestatus response time (seconds) above which a connected "
+                    "backend is flagged 'degraded' (default 5.0)."
+                ),
+            },
+            lag_warn_seconds=_int(
+                "Data-freshness age (seconds) above which a connected backend is "
+                "flagged 'degraded' for stale cache / replication lag (default 120).",
+                default=120,
+            ),
+            backends=_BACKENDS,
+        ),
+    ),
 ]
 
 
 __all__ = [
     "TRIAGE_REGISTRY",
     "_attribute_root_causes",
+    "_backend_site_report",
     "_classify_check",
     "_classify_worker_artefact",
+    "_index_peer_rows",
     "_project_problem_counts",
+    "thruk_backend_health",
     "thruk_concurrent_failures",
     "thruk_oldest_problems",
     "thruk_problem_counts",

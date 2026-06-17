@@ -3242,3 +3242,182 @@ async def test_worker_health_clean(mocked_server) -> None:
     assert payload["total_artefacts"] == 0
     assert payload["by_queue"] == {}
     assert payload["assessment"].startswith("No mod-gearman worker artefacts")
+
+
+# ----------------------------------------------------- thruk_backend_health (#323)
+
+
+@pytest.mark.asyncio
+async def test_backend_health_merges_three_endpoints(mocked_server) -> None:
+    """/sites + /lmd/sites + /processinfo are all queried and merged into one
+    per-site report; a fresh, fast, connected backend is classified ok."""
+    mcp, router = mocked_server
+    r_sites = router.get("https://thruk.test/r/sites").mock(
+        return_value=ok(
+            [
+                {
+                    "name": "wopr-naemon-01",
+                    "id": "abcd1",
+                    "section": "Main",
+                    "type": "livestatus",
+                    "addr": "10.0.0.1:6557",
+                    "connected": 1,
+                    "status": 0,
+                    "last_error": "",
+                    "localtime": 1_000_000,
+                }
+            ]
+        )
+    )
+    r_lmd = router.get("https://thruk.test/r/lmd/sites").mock(
+        return_value=ok(
+            [
+                {
+                    "peer_key": "abcd1",
+                    "name": "wopr-naemon-01",
+                    "response_time": 0.042,
+                    "last_online": 999_995,
+                    "last_update": 999_995,
+                    "queries": 1234,
+                    "bytes_send": 5000,
+                    "bytes_received": 9000,
+                    "idling": 0,
+                    "last_error": "",
+                }
+            ]
+        )
+    )
+    r_proc = router.get("https://thruk.test/r/processinfo").mock(
+        return_value=ok(
+            [
+                {
+                    "peer_key": "abcd1",
+                    "peer_name": "wopr-naemon-01",
+                    "program_start": 990_000,
+                    "program_version": "1.4.3",
+                    "accept_passive_host_checks": 1,
+                    "accept_passive_service_checks": 1,
+                    "cached": 0,
+                }
+            ]
+        )
+    )
+
+    result = await mcp.call_tool("thruk_backend_health", {})
+    payload = json.loads(result[0].text)
+
+    assert r_sites.called and r_lmd.called and r_proc.called
+    assert payload["lmd_available"] is True
+    assert payload["processinfo_available"] is True
+    assert payload["summary"] == {"total": 1, "ok": 1, "degraded": 0, "disconnected": 0}
+    site = payload["sites"][0]
+    assert site["name"] == "wopr-naemon-01"
+    assert site["health"] == "ok"
+    assert site["latency_seconds"] == 0.042
+    assert site["data_age_seconds"] == 5  # localtime - last_update
+    assert site["queries"] == 1234
+    assert site["accept_passive_host_checks"] is True
+    assert "program_start" in site
+    assert payload["assessment"].startswith("All 1 backend(s)")
+
+
+@pytest.mark.asyncio
+async def test_backend_health_disconnected_is_blind_spot(mocked_server) -> None:
+    """A backend with connected=0 / non-OK status is classified disconnected and
+    carries its raw last_error; the assessment names the blind spot."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(
+        return_value=ok(
+            [
+                {"name": "wopr-naemon-01", "id": "a1", "connected": 1, "status": 0},
+                {
+                    "name": "wopr-naemon-04",
+                    "id": "a4",
+                    "connected": 0,
+                    "status": 2,
+                    "last_error": "i/o timeout on 10.0.0.4:6557",
+                },
+            ]
+        )
+    )
+    router.get("https://thruk.test/r/lmd/sites").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/processinfo").mock(return_value=ok([]))
+
+    result = await mcp.call_tool("thruk_backend_health", {})
+    payload = json.loads(result[0].text)
+
+    assert payload["summary"]["disconnected"] == 1
+    assert payload["disconnected_sites"][0]["name"] == "wopr-naemon-04"
+    assert "i/o timeout" in payload["disconnected_sites"][0]["last_error"]
+    # worst-first ordering: the disconnected site sorts ahead of the ok one.
+    assert payload["sites"][0]["name"] == "wopr-naemon-04"
+    assert payload["sites"][0]["health"] == "disconnected"
+    assert "blind spot" in payload["assessment"]
+
+
+@pytest.mark.asyncio
+async def test_backend_health_degraded_on_latency_and_lag(mocked_server) -> None:
+    """A connected backend over the latency / freshness thresholds is degraded
+    with explanatory reasons; thresholds are honoured."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(
+        return_value=ok(
+            [{"name": "slow-01", "id": "s1", "connected": 1, "status": 0, "localtime": 2_000_000}]
+        )
+    )
+    router.get("https://thruk.test/r/lmd/sites").mock(
+        return_value=ok([{"peer_key": "s1", "response_time": 12.5, "last_update": 1_999_000}])
+    )
+    router.get("https://thruk.test/r/processinfo").mock(return_value=ok([]))
+
+    result = await mcp.call_tool(
+        "thruk_backend_health", {"latency_warn_seconds": 5.0, "lag_warn_seconds": 120}
+    )
+    payload = json.loads(result[0].text)
+
+    site = payload["sites"][0]
+    assert site["health"] == "degraded"
+    assert site["latency_seconds"] == 12.5
+    assert site["data_age_seconds"] == 1000
+    reasons = " ".join(site["reasons"])
+    assert "latency" in reasons and "data age" in reasons
+    assert payload["summary"]["degraded"] == 1
+    assert "slow-01" in payload["degraded_sites"]
+
+
+@pytest.mark.asyncio
+async def test_backend_health_graceful_degradation_no_lmd(mocked_server) -> None:
+    """When /lmd/sites and /processinfo are absent (404), the tool still returns a
+    connectivity-only report instead of failing."""
+    mcp, router = mocked_server
+    router.get("https://thruk.test/r/sites").mock(
+        return_value=ok([{"name": "n1", "id": "n1", "connected": 1, "status": 0}])
+    )
+    router.get("https://thruk.test/r/lmd/sites").mock(return_value=httpx.Response(404))
+    router.get("https://thruk.test/r/processinfo").mock(return_value=httpx.Response(404))
+
+    result = await mcp.call_tool("thruk_backend_health", {})
+    payload = json.loads(result[0].text)
+
+    assert payload["lmd_available"] is False
+    assert payload["processinfo_available"] is False
+    site = payload["sites"][0]
+    assert site["health"] == "ok"
+    assert "latency_seconds" not in site  # no metric source available
+    assert "connectivity-only" in payload["assessment"]
+
+
+@pytest.mark.asyncio
+async def test_backend_health_surfaces_sites_error(mocked_server) -> None:
+    """If the mandatory /sites call itself fails, the ThrukError surfaces (the
+    tool does not swallow it)."""
+    from thruk_mcp.client import ThrukError
+
+    mcp, router = mocked_server
+    # 404 (not a retry status) so the failure surfaces immediately, deterministically.
+    router.get("https://thruk.test/r/sites").mock(return_value=httpx.Response(404))
+    router.get("https://thruk.test/r/lmd/sites").mock(return_value=ok([]))
+    router.get("https://thruk.test/r/processinfo").mock(return_value=ok([]))
+
+    with pytest.raises(ThrukError):
+        await mcp.call_tool("thruk_backend_health", {})
