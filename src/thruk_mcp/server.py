@@ -480,6 +480,9 @@ from .tools import (
 from .tools import (
     thruk_unacked_critical as thruk_unacked_critical,
 )
+from .tools import (
+    thruk_worker_health as thruk_worker_health,
+)
 
 __all__ = ["WRITE_TOOLS", "ThrukMCPServer", "build_server"]
 
