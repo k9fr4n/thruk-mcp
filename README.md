@@ -158,6 +158,9 @@ All accept `since`/`until` (Thruk relative or ISO) or a `timeperiod` shortcut
 (`lastmonth`, `thismonth`, `last24hours`, `lastweek`, …).
 `thruk_reliability_report` (per host/service reliability metrics — MTTR / MTBF /
 incident counts — derived from the log over a window).
+`thruk_incident_timeline` (ordered event chronology — the post-mortem "déroulé" — for a
+host, service or hostgroup: every state change, notification, downtime, flap and
+acknowledgement in time order, plus an incident/MTTR summary; a scoping `filter` is required).
 
 **Read — performance data**
 `thruk_get_perfdata` (fetch and parse performance data for a single host or service),

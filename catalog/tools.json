@@ -4382,5 +4382,67 @@
         }
       }
     }
+  },
+  {
+    "name": "thruk_incident_timeline",
+    "description": "Ordered event chronology (post-mortem \"déroulé\") for a host, service or hostgroup, reconstructed from /logs: every state change, notification, downtime, flap and acknowledgement in chronological order. state_change events carry from_state/to_state, soft_hard and duration_in_state; notifications carry the contact; downtime/flap/ack carry a STARTED/STOPPED detail. A summary block reports transition counts, total downtime, longest incident and MTTR (same HARD-transition reducer as thruk_reliability_report). A scoping filter (host/service/hostgroup/custom_var) is required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Structured AND/OR filter tree (required). Fields: host, service, hostgroup, custom_var."
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "-24h",
+          "description": "Start of analysis window. Thruk relative time (\"-2h\", \"-7d\") or ISO datetime (\"2026-05-21 14:00:00\"). Default: last 24 h."
+        },
+        "until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "End of analysis window. Omit for now."
+        },
+        "limit": {
+          "type": "integer",
+          "default": 500,
+          "description": "Maximum number of timeline events to return, earliest first (default 500). The summary always covers the full window."
+        },
+        "backends": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Comma-separated backend names (sites). Omit for all backends."
+        }
+      }
+    }
   }
 ]
