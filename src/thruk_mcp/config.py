@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["ThrukConfig", "HttpAuthConfig"]
+__all__ = ["HttpAuthConfig", "ThrukConfig"]
 
 # Default Host allowlist (anti-DNS-rebinding) when MCP_HTTP_ALLOWED_HOSTS is unset.
 _DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")

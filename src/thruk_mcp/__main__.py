@@ -225,19 +225,20 @@ def main(argv: list[str] | None = None) -> int:
             # in stateful mode they bind once at session init (see plan/issue).
             parser.error("--header-auth requires --stateless")
 
-    if transport == "streamable-http":
-        # Fail closed: serving over HTTP exposes token-bearing monitoring tools
-        # (and, in header-auth mode, an open credential-relay endpoint) on the
-        # network. Require a bearer token unless the operator explicitly opts out
-        # (e.g. when fronting the server with their own auth proxy).
-        if _raw_env("MCP_HTTP_TOKEN") is None and not _envbool(
-            "MCP_HTTP_ALLOW_UNAUTHENTICATED", False
-        ):
-            parser.error(
-                "HTTP transport requires MCP_HTTP_TOKEN to be set (clients must send "
-                "'Authorization: Bearer <token>'). To run unauthenticated behind your own "
-                "auth proxy, set MCP_HTTP_ALLOW_UNAUTHENTICATED=true."
-            )
+    # Fail closed: serving over HTTP exposes token-bearing monitoring tools
+    # (and, in header-auth mode, an open credential-relay endpoint) on the
+    # network. Require a bearer token unless the operator explicitly opts out
+    # (e.g. when fronting the server with their own auth proxy).
+    if (
+        transport == "streamable-http"
+        and _raw_env("MCP_HTTP_TOKEN") is None
+        and not _envbool("MCP_HTTP_ALLOW_UNAUTHENTICATED", False)
+    ):
+        parser.error(
+            "HTTP transport requires MCP_HTTP_TOKEN to be set (clients must send "
+            "'Authorization: Bearer <token>'). To run unauthenticated behind your own "
+            "auth proxy, set MCP_HTTP_ALLOW_UNAUTHENTICATED=true."
+        )
 
     if transport == "stdio":
         if args.listen is not None:
