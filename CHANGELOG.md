@@ -6,7 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-06-22
+
 ### Added
+- Transport-level HTTP auth gating the Streamable-HTTP `/mcp` endpoint,
+  independent of the Thruk credentials a request carries (no effect on stdio).
+  `MCP_HTTP_TOKEN` enforces an `Authorization: Bearer <token>` header via a
+  pure-ASGI `BearerAuthMiddleware` (constant-time compare, `401` +
+  `WWW-Authenticate: Bearer`); HTTP serving **fails closed** at startup unless
+  the token is set or `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` opts out (for
+  proxy-fronted deploys). `MCP_HTTP_ALLOWED_HOSTS` enforces a `Host` allowlist
+  (anti-DNS-rebinding) via Starlette `TrustedHostMiddleware`, defaulting to
+  loopback. Middleware chain `TrustedHost → Bearer → HeaderAuth → /mcp`, so the
+  bearer gate composes with header-auth multi-tenant mode. Token redacted in
+  `HttpAuthConfig` repr; new env vars wired into `.env.example` and
+  `catalog/server.yaml` (token as a secret) (#341).
+
+## [2.0.1] - 2026-06-17
+
+### Fixed
+- `ThrukMCPServer.run` dropped trailing kwargs when overriding `Server.run`, so
+  the MCP SDK's `StreamableHTTPSessionManager.run_server()` crashed every
+  streamable-http session at creation with `TypeError: run() got an unexpected
+  keyword argument 'stateless'`. Forward `**kwargs` to the wrapped
+  `Server.run()` (#338).
+
+## [2.0.0] - 2026-06-17
+
+### Changed
+- **BREAKING** — replaced the deprecated SSE transport with Streamable-HTTP (MCP
+  spec 2025-03-26). The `/sse` + `/messages/` endpoints and the `--transport sse`
+  choice are removed; HTTP serving now always means streamable-http (endpoint
+  `/mcp`). New `--transport {stdio,streamable-http}` flag (`--listen` alone
+  implies streamable-http), plus `--stateless` / `--json-response` for serving
+  behind a load balancer without sticky sessions. `mcp[cli]` floor bumped to
+  `>=1.8.0` (`StreamableHTTPSessionManager`) (#325).
+
+### Added
+- Header-auth multi-tenant mode for Streamable-HTTP: serve many users from one
+  process, each supplying their own Thruk credentials per request via `X-Thruk-*`
+  headers. `--header-auth` (`THRUK_HTTP_HEADER_AUTH`) requires
+  streamable-http + `--stateless`; a pure-ASGI `HeaderAuthMiddleware` binds
+  per-request config through a `ContextVar` and per-tenant HTTP clients are
+  pooled in a bounded LRU cache. `THRUK_READ_ONLY` / `THRUK_ENABLED_TOOLS` /
+  `THRUK_AUDIT_LOG` stay server-owned; API key redacted in repr (#326).
+- `thruk_hostgroup_availability_summary`: aggregated SLA rollup for a hostgroup —
+  a single time-weighted `availability_percent` (from raw second counters,
+  indeterminate time excluded), worst/best object, `below_threshold` count +
+  capped list, and the up/problem/indeterminate distribution, instead of one row
+  per host (≈380 rows for a large group). `type = hosts | services`; reuses the
+  `/hostgroups/<hg>/availability` endpoint with the siblings' since/until/
+  timeperiod/with_downtimes/include_soft_states semantics (#328).
 - `thruk_state_at` / `thruk_state_diff`: point-in-time parc-state reconstruction
   from `/logs` for post-mortems. `thruk_state_at(timestamp, filter)` answers
   "qu'est-ce qui était DOWN à 15h45 ?" — it replays HOST/SERVICE ALERT +
@@ -78,6 +128,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counts are aggregated per host/(host,service) and fanned out across each
   object's group membership via a `/hosts` or `/services` lookup (an object in
   N groups counts in each; objects in none land in a `"(none)"` bucket) (#318).
+
+### Fixed
+- Absolute ISO `since`/`until` matched nothing on `/logs`: Thruk's
+  `time[gte]`/`time[lte]` filter accepts epoch integers and relative expressions
+  (`-4h`) but silently ignores a bare ISO datetime, so every log/history/triage
+  tool returned empty results for an absolute window while the equivalent
+  relative window worked. Normalise only ISO datetimes to epoch at every
+  `time[gte]`/`time[lte]` assignment (relative expressions, bare epochs and
+  unparseable values pass through); covers the structured-filter path too. Tool
+  payloads still echo the operator's original input (#327).
 
 ## [1.10.1] - 2026-06-11
 
