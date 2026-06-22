@@ -271,6 +271,9 @@ client UI:
 | `THRUK_AUDIT_LOG`         | `true`  | Emit one JSON audit line on stderr per write tool invocation          |
 | `THRUK_MAX_CONCURRENT`    | `0`     | Cap of concurrent in-flight HTTP requests. 0 = unlimited              |
 | `THRUK_HTTP_HEADER_AUTH`  | `false` | Streamable-HTTP multi-tenant: take credentials from per-request headers (= `--header-auth`) |
+| `MCP_HTTP_TOKEN`          |         | Bearer token gating the `/mcp` endpoint (transport level). HTTP serving fails closed unless this or the opt-out is set |
+| `MCP_HTTP_ALLOW_UNAUTHENTICATED` | `false` | Opt out of the bearer requirement (proxy-fronted deploys). Leaves `/mcp` open — TLS + your own auth layer only |
+| `MCP_HTTP_ALLOWED_HOSTS`  | `localhost,127.0.0.1,[::1]` | CSV `Host` header allowlist (anti-DNS-rebinding) via `TrustedHostMiddleware` |
 
 ## Security
 
@@ -296,6 +299,17 @@ client UI:
 - **Rate limit** — `THRUK_MAX_CONCURRENT=8` caps in-flight HTTP requests with
   an `asyncio.Semaphore`. Combined with the v0.3 TTL cache, this protects the
   Thruk core from an LLM that loops on tools or chains them aggressively.
+- **Transport-level HTTP auth** — gate the Streamable-HTTP `/mcp` endpoint
+  itself, independently of the Thruk credentials a request carries (no effect on
+  stdio). Set `MCP_HTTP_TOKEN=<secret>` to require an `Authorization: Bearer
+  <token>` header (constant-time compare; `401` + `WWW-Authenticate: Bearer`
+  otherwise). HTTP serving **fails closed** — `--listen` / `--transport
+  streamable-http` refuses to start unless `MCP_HTTP_TOKEN` is set or
+  `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` is given (explicit opt-out for
+  proxy-fronted deploys). `MCP_HTTP_ALLOWED_HOSTS` enforces a `Host` allowlist
+  (anti-DNS-rebinding, defaults to loopback). The chain is `TrustedHost → Bearer
+  → HeaderAuth → /mcp`, so the bearer gate composes with header-auth multi-tenant
+  mode below.
 - **Header-auth multi-tenant** — run `thruk-mcp --listen 8001 --stateless
   --header-auth` (or `THRUK_HTTP_HEADER_AUTH=1`) to serve many users from one
   process, each with their own Thruk credentials supplied **per request** via
