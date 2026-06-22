@@ -135,7 +135,7 @@ async def test_bearer_ignores_non_http_scope() -> None:
     app = _Recorder()
     mw = BearerAuthMiddleware(app, token="abc")
     # lifespan / websocket scopes must pass straight through, unauthenticated.
-    await mw({"type": "lifespan"}, None, None)
+    await _drive(mw, {"type": "lifespan"})
     assert app.called is True
 
 
