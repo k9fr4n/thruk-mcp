@@ -196,9 +196,7 @@ def test_http_with_token_starts(_clean_http_env: None) -> None:
 
 
 def test_http_with_optout_starts(_clean_http_env: None) -> None:
-    assert (
-        _run_main(["--listen", "8001"], env={"MCP_HTTP_ALLOW_UNAUTHENTICATED": "true"}) == 0
-    )
+    assert _run_main(["--listen", "8001"], env={"MCP_HTTP_ALLOW_UNAUTHENTICATED": "true"}) == 0
 
 
 def test_stdio_unaffected_by_missing_token(_clean_http_env: None) -> None:
