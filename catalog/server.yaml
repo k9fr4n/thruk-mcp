@@ -36,6 +36,9 @@ config:
     - name: thruk-mcp.api_key
       env: THRUK_API_KEY
       example: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    - name: thruk-mcp.http_token
+      env: MCP_HTTP_TOKEN
+      example: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
   env:
     - name: THRUK_BASE_URL
       example: https://monitor.example.com/thruk
@@ -67,6 +70,12 @@ config:
     - name: THRUK_TIMEOUT
       example: "30"
       value: '{{thruk-mcp.timeout}}'
+    - name: MCP_HTTP_ALLOW_UNAUTHENTICATED
+      example: "false"
+      value: '{{thruk-mcp.http_allow_unauthenticated}}'
+    - name: MCP_HTTP_ALLOWED_HOSTS
+      example: "localhost,127.0.0.1,[::1]"
+      value: '{{thruk-mcp.http_allowed_hosts}}'
   parameters:
     type: object
     properties:
@@ -109,6 +118,18 @@ config:
         type: string
         description: Per-request HTTP timeout to Thruk, in seconds.
         default: "30"
+      http_allow_unauthenticated:
+        type: string
+        description: >-
+          Set 'true' to serve /mcp without a bearer token (only behind your own
+          TLS + auth proxy). Otherwise HTTP transport refuses to start without
+          MCP_HTTP_TOKEN.
+        default: "false"
+      http_allowed_hosts:
+        type: string
+        description: >-
+          Comma-separated Host header allowlist (anti-DNS-rebinding).
+          Empty = localhost,127.0.0.1,[::1].
     required:
       - base_url
 # allowHosts restricts outbound network access when running under the Docker MCP Gateway.

@@ -7,7 +7,8 @@ ever binding a socket: ``_serve`` (uvicorn) and the run helpers are patched.
 from __future__ import annotations
 
 import logging
-from unittest.mock import AsyncMock, patch
+import os
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -36,7 +37,10 @@ def _dispatch(argv):
     # return un-awaited coroutines. asyncio.run is stubbed to close that
     # coroutine (instead of running it), keeping the test off the event loop and
     # silencing "coroutine was never awaited" warnings.
+    # Allow unauthenticated so the streamable-http fail-closed gate in main()
+    # doesn't reject these routing-focused cases (bearer auth has its own tests).
     with (
+        patch.dict(os.environ, {"MCP_HTTP_ALLOW_UNAUTHENTICATED": "true"}),
         patch.object(m.asyncio, "run", side_effect=lambda coro: coro.close()),
         patch.object(m, "_run_stdio") as stdio,
         patch.object(m, "_run_streamable_http") as shttp,
@@ -149,7 +153,7 @@ async def test_run_streamable_http_passes_flags_and_serves(caplog) -> None:
         await m._run_streamable_http(8001, "0.0.0.0", "INFO", stateless=True, json_response=True)
 
     build_app.assert_called_once_with(
-        fake_server, stateless=True, json_response=True, header_auth=False
+        fake_server, stateless=True, json_response=True, header_auth=False, http_auth=ANY
     )
     serve.assert_awaited_once_with(fake_app, "0.0.0.0", 8001, "INFO")
     # verify_ssl=False must surface the SSL warning.
