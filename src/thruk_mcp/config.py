@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["ThrukConfig"]
+__all__ = ["ThrukConfig", "HttpAuthConfig"]
+
+# Default Host allowlist (anti-DNS-rebinding) when MCP_HTTP_ALLOWED_HOSTS is unset.
+_DEFAULT_ALLOWED_HOSTS: tuple[str, ...] = ("localhost", "127.0.0.1", "[::1]")
 
 # Inbound HTTP headers (lower-cased) that may override credential / endpoint
 # fields per request in header-auth multi-tenant mode. Security knobs
@@ -192,3 +195,48 @@ class ThrukConfig:
         if backends:
             overrides["default_backends"] = _split_csv(backends)
         return base.with_overrides(**overrides)
+
+
+@dataclass(frozen=True)
+class HttpAuthConfig:
+    """Transport-level auth for the Streamable-HTTP endpoint (provider-agnostic).
+
+    These knobs gate *access to* the ``/mcp`` endpoint, independently of which
+    Thruk credentials a request ultimately uses (those are ``THRUK_*`` /
+    header-auth). Hence the ``MCP_HTTP_*`` prefix rather than ``THRUK_*``.
+
+    - ``token`` (``MCP_HTTP_TOKEN``): bearer token required in the
+      ``Authorization: Bearer <token>`` header. ``None`` = no bearer gate, which
+      is only reachable via the explicit ``allow_unauthenticated`` opt-in
+      (enforced at startup in ``__main__``).
+    - ``allow_unauthenticated`` (``MCP_HTTP_ALLOW_UNAUTHENTICATED``): opt out of
+      the bearer requirement, e.g. when fronting the server with an auth proxy.
+    - ``allowed_hosts`` (``MCP_HTTP_ALLOWED_HOSTS``): ``Host`` header allowlist
+      (anti-DNS-rebinding). Defaults to loopback names.
+    """
+
+    token: str | None = None
+    allow_unauthenticated: bool = False
+    allowed_hosts: tuple[str, ...] = _DEFAULT_ALLOWED_HOSTS
+
+    @classmethod
+    def from_env(cls) -> HttpAuthConfig:
+        raw_token = _str_env("MCP_HTTP_TOKEN").strip()
+        hosts = _split_csv(_str_env("MCP_HTTP_ALLOWED_HOSTS"))
+        return cls(
+            token=raw_token or None,
+            allow_unauthenticated=_envbool("MCP_HTTP_ALLOW_UNAUTHENTICATED", False),
+            allowed_hosts=hosts or _DEFAULT_ALLOWED_HOSTS,
+        )
+
+    def __repr__(self) -> str:
+        """Redact the token so it never lands in logs / tracebacks."""
+        return (
+            f"HttpAuthConfig("
+            f"token={'***' if self.token else None!r}, "
+            f"allow_unauthenticated={self.allow_unauthenticated!r}, "
+            f"allowed_hosts={self.allowed_hosts!r})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()

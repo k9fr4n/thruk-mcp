@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.server.stdio import stdio_server
 
-from .config import _envbool
+from .config import HttpAuthConfig, _envbool, _raw_env
 from .server import build_server
 
 if TYPE_CHECKING:
@@ -40,13 +40,23 @@ async def _run_stdio(log_level: str) -> None:
 
 
 def _build_streamable_app(
-    server: Any, *, stateless: bool, json_response: bool, header_auth: bool = False
+    server: Any,
+    *,
+    stateless: bool,
+    json_response: bool,
+    header_auth: bool = False,
+    http_auth: HttpAuthConfig | None = None,
 ) -> Starlette:
     """Build the Starlette app exposing the Streamable-HTTP endpoint at /mcp.
 
     When ``header_auth`` is set, the /mcp mount is wrapped in
     :class:`HeaderAuthMiddleware` so each request's ``X-Thruk-*`` headers select
     the tenant credentials, and the per-tenant client cache is closed on shutdown.
+
+    When ``http_auth`` is given, the app is fronted by two transport-level
+    middlewares (outermost first): ``TrustedHostMiddleware`` (anti-DNS-rebinding)
+    then :class:`BearerAuthMiddleware`. They run *before* header-auth, so the
+    final chain is TrustedHost → Bearer → HeaderAuth → handle_mcp.
     """
     from contextlib import asynccontextmanager
 
@@ -80,7 +90,21 @@ def _build_streamable_app(
                 if cache is not None:
                     await cache.aclose_all()
 
-    return Starlette(routes=[Mount("/mcp", app=mount_app)], lifespan=lifespan)
+    middleware = []
+    if http_auth is not None:
+        from starlette.middleware import Middleware
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+        from .httpauth import BearerAuthMiddleware
+
+        middleware = [
+            Middleware(TrustedHostMiddleware, allowed_hosts=list(http_auth.allowed_hosts)),
+            Middleware(BearerAuthMiddleware, token=http_auth.token),
+        ]
+
+    return Starlette(
+        routes=[Mount("/mcp", app=mount_app)], middleware=middleware, lifespan=lifespan
+    )
 
 
 async def _serve(app: Starlette, host: str, port: int, log_level: str) -> None:
@@ -111,8 +135,19 @@ async def _run_streamable_http(
             "header-auth mode: Thruk credentials are read from per-request headers. "
             "Serve only over TLS — credentials travel in X-Thruk-Auth-Key."
         )
+    http_auth = HttpAuthConfig.from_env()
+    if http_auth.token is None and http_auth.allow_unauthenticated:
+        log.warning(
+            "HTTP transport is running WITHOUT bearer authentication "
+            "(MCP_HTTP_ALLOW_UNAUTHENTICATED=true). Ensure a TLS + auth reverse proxy "
+            "sits in front of /mcp before exposing it."
+        )
     app = _build_streamable_app(
-        server, stateless=stateless, json_response=json_response, header_auth=header_auth
+        server,
+        stateless=stateless,
+        json_response=json_response,
+        header_auth=header_auth,
+        http_auth=http_auth,
     )
     await _serve(app, host, port, log_level)
 
@@ -189,6 +224,20 @@ def main(argv: list[str] | None = None) -> int:
             # Headers are only reliably present per request in stateless mode;
             # in stateful mode they bind once at session init (see plan/issue).
             parser.error("--header-auth requires --stateless")
+
+    if transport == "streamable-http":
+        # Fail closed: serving over HTTP exposes token-bearing monitoring tools
+        # (and, in header-auth mode, an open credential-relay endpoint) on the
+        # network. Require a bearer token unless the operator explicitly opts out
+        # (e.g. when fronting the server with their own auth proxy).
+        if _raw_env("MCP_HTTP_TOKEN") is None and not _envbool(
+            "MCP_HTTP_ALLOW_UNAUTHENTICATED", False
+        ):
+            parser.error(
+                "HTTP transport requires MCP_HTTP_TOKEN to be set (clients must send "
+                "'Authorization: Bearer <token>'). To run unauthenticated behind your own "
+                "auth proxy, set MCP_HTTP_ALLOW_UNAUTHENTICATED=true."
+            )
 
     if transport == "stdio":
         if args.listen is not None:
