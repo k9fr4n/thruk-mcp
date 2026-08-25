@@ -28,7 +28,7 @@ jobs:
       - name: Wait for OMD to boot
         run: |
           for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null "http://localhost:8080/demo/thruk/cgi-bin/login.cgi"; then
+            if curl -fsSk -o /dev/null "https://localhost:8443/demo/thruk/cgi-bin/login.cgi"; then
               echo "OMD ready after ${i}0s"; exit 0
             fi
             sleep 10
@@ -45,7 +45,7 @@ jobs:
 
       - name: Run live integration tests
         env:
-          THRUK_BASE_URL: http://localhost:8080/demo
+          THRUK_BASE_URL: https://localhost:8443/demo/thruk
           THRUK_API_KEY: ${{ steps.apikey.outputs.key }}
           THRUK_VERIFY_SSL: "false"
         run: pytest -v -m integration

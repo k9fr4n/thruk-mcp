@@ -3,9 +3,15 @@
 #
 #   docker compose -f compose.test.yml up -d
 #   # wait ~30s for OMD to bootstrap
-#   THRUK_BASE_URL=http://localhost:8080/demo \
+#   THRUK_BASE_URL=https://localhost:8443/demo/thruk \
+#       THRUK_VERIFY_SSL=false \
 #       THRUK_API_KEY=$(./scripts/get-test-api-key.sh) \
 #       pytest -m integration
+#
+# The image redirects all plain HTTP traffic on /demo to HTTPS (see
+# etc/apache/proxy-port.conf), so port 8080 is unusable for the REST API —
+# only port 443 (self-signed cert) serves it. The REST alias also only
+# exists under /demo/thruk/r/..., not /demo/r/...
 services:
   omd:
     # The upstream `:edge` tag was removed (manifest unknown). `:nightly` is its
@@ -16,11 +22,12 @@ services:
     hostname: omd
     ports:
       - "8080:80"
+      - "8443:443"
     environment:
       - OMD_SITE=demo
       - OMD_ROOT_PASSWORD=omd
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost/demo/thruk/r/processinfo", "-H", "X-Thruk-Auth-Key: $OMD_API_KEY"]
+      test: ["CMD", "curl", "-fsSk", "https://localhost/demo/thruk/r/processinfo", "-H", "X-Thruk-Auth-Key: $OMD_API_KEY"]
       interval: 10s
       timeout: 5s
       retries: 30

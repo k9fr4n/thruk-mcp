@@ -29,8 +29,9 @@ pytest -m integration                          # live suite (skipped by default 
 `pytest.ini_options.addopts` defaults to `-m 'not integration'`, so plain `pytest` never hits a live Thruk. The integration suite needs a running instance:
 
 ```bash
-docker compose -f compose.test.yml up -d       # OMD demo on :8080, wait ~30s
-THRUK_BASE_URL=http://localhost:8080/demo \
+docker compose -f compose.test.yml up -d       # OMD demo on :8443 (HTTPS only), wait ~30s
+THRUK_BASE_URL=https://localhost:8443/demo/thruk \
+  THRUK_VERIFY_SSL=false \
   THRUK_API_KEY=$(./scripts/get-test-api-key.sh) \
   pytest -m integration
 ```

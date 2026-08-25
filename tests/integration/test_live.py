@@ -2,7 +2,8 @@
 
 Skipped by default. Run with:
 
-    THRUK_BASE_URL=http://localhost:8080/demo \
+    THRUK_BASE_URL=https://localhost:8443/demo/thruk \
+    THRUK_VERIFY_SSL=false \
     THRUK_API_KEY=$(./scripts/get-test-api-key.sh) \
         pytest -m integration
 
