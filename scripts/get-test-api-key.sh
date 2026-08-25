@@ -12,6 +12,6 @@ SITE="${OMD_SITE:-demo}"
 USER="${THRUK_USER:-omdadmin}"
 
 docker exec -i "$CONTAINER" su - "$SITE" -c \
-  "thruk r -m POST '/thruk/r/thruk/api_keys' \
+  "thruk r -m POST '/thruk/api_keys' \
       -d 'comment=integration-test' -d 'username=$USER' -d 'superuser=1'" \
   | jq -r '.private_key'
